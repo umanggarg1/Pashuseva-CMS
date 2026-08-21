@@ -1,0 +1,10 @@
+/*
+  Warnings:
+
+  - You are about to drop the column `trackingNumber` on the `Order` table. All the data in the column will be lost.
+
+*/
+-- AlterTable
+ALTER TABLE "Order" DROP COLUMN "trackingNumber",
+ADD COLUMN     "articleNumber" TEXT,
+ADD COLUMN     "estimatedDeliveryCharges" DOUBLE PRECISION;

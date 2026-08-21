@@ -1,0 +1,5 @@
+# Uploaded files don't belong in version control — only the folder structure does.
+*
+!.gitignore
+!*/
+!*/.gitkeep

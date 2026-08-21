@@ -1,0 +1,15 @@
+node_modules
+dist
+backend/src/generated/
+.env
+.env.local
+.DS_Store
+.vscode/
+coverage/
+*.log
+npm-debug.log*
+.Yarn*
+.idea/
+*.tgz
+*.zip
+.claude/

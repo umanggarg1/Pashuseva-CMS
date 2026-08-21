@@ -1,0 +1,563 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  EMPLOYEE
+}
+
+enum AccountStatus {
+  PENDING
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  REJECTED
+}
+
+// Per-module list/record visibility for a Manager or Employee — Admin is always
+// "All", hardcoded in code, never stored (Phase 15 addendum). Null means "use the
+// pre-addendum default" (Manager: their team, Employee: their own), so every
+// existing account keeps its exact current behavior with no backfill needed.
+enum DataScope {
+  ALL
+  ASSIGNED
+}
+
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  PARTIAL
+  PAID
+  REFUNDED
+}
+
+enum DeliveryStatus {
+  NOT_DISPATCHED
+  DISPATCHED
+  IN_TRANSIT
+  DELIVERED
+}
+
+enum PaymentMethod {
+  CASH
+  UPI
+  BANK_TRANSFER
+  CARD
+  ONLINE
+  OTHER
+}
+
+enum WeightUnit {
+  G
+  KG
+  ML
+  L
+}
+
+enum PackagingUnit {
+  PIECE
+  PACKET
+  BOX
+  BAG
+  BOTTLE
+}
+
+model User {
+  id           Int           @id @default(autoincrement())
+  email        String        @unique
+  passwordHash String
+  name         String?
+  // Required at public signup, not required for an Admin/Manager-created account
+  // (enforced in the zod schemas, not here) — existing rows predate this field.
+  phone        String?
+  // Null until an Admin approves the account (Phase 15) — a self-signed-up user has
+  // no role and no access until then. Still non-null for every Admin/Manager-created
+  // account, which stays a one-step "create with a role" flow, not signup+approval.
+  role         Role?
+  // A signup-time hint only ("I'm applying as...") — never authoritative. The Admin
+  // picks the real `role` at approval time, independently of this value.
+  requestedRole Role?
+  status       AccountStatus @default(ACTIVE)
+  // Per-module Data Scope (Phase 15 addendum) — Products has no equivalent field,
+  // since products aren't per-employee. Null = pre-addendum default, see DataScope.
+  customerDataScope DataScope?
+  orderDataScope    DataScope?
+  manager      User?         @relation("ManagerEmployees", fields: [managerId], references: [id])
+  managerId    Int?
+  employees    User[]        @relation("ManagerEmployees")
+  // Who approved/rejected this account, and when — set once, at that decision.
+  reviewedBy   User?         @relation("UserReviewedBy", fields: [reviewedById], references: [id])
+  reviewedById Int?
+  reviewedAt   DateTime?
+  reviewedUsers User[]       @relation("UserReviewedBy")
+  // Who suspended this account, and when — cleared back to null on reactivation, so
+  // this always reflects the current suspension (if any), not a full history.
+  suspendedBy   User?        @relation("UserSuspendedBy", fields: [suspendedById], references: [id])
+  suspendedById Int?
+  suspendedAt   DateTime?
+  suspendedUsers User[]      @relation("UserSuspendedBy")
+  // Trash (Phase 3 addendum) — an Employee/Manager moved to Trash by Admin.
+  // deletedAt set = hidden from every normal list; purgedAt set = permanently
+  // anonymized, no longer restorable, no longer shown in Trash either.
+  deletedBy    User?         @relation("UserDeletedBy", fields: [deletedById], references: [id])
+  deletedById  Int?
+  deletedAt    DateTime?
+  deletionExpiresAt DateTime?
+  purgedAt     DateTime?
+  deletedUsers User[]        @relation("UserDeletedBy")
+  lastLoginAt  DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  customerDeletions             Customer[]          @relation("CustomerDeletedBy")
+  orderDeletions                 Order[]            @relation("OrderDeletedBy")
+  productDeletions                Product[]         @relation("ProductDeletedBy")
+  activities                   CustomerActivity[]
+  auditLogs                    AuditLog[]
+  customerNotes                CustomerNote[]
+  notifications                Notification[]
+  DeliveryTrackingUpdated      DeliveryTracking[]   @relation("DeliveryUpdatedBy")
+  permissions                  UserPermission[]     @relation("UserPermissions")
+  grantedPermissions           UserPermission[]     @relation("PermissionGrantedBy")
+  passwordResetTokens          PasswordResetToken[]
+  assignedCustomersAsEmployee  Customer[]           @relation("CustomerAssignedEmployee")
+  assignedCustomersAsManager   Customer[]           @relation("CustomerAssignedManager")
+  createdCustomers             Customer[]           @relation("CustomerCreatedBy")
+  createdProducts               Product[]           @relation("ProductCreatedBy")
+  productActivities             ProductActivity[]
+  createdOrders                 Order[]             @relation("OrderCreatedBy")
+  assignedOrders                Order[]             @relation("OrderAssignedEmployee")
+  cancelledOrders                Order[]            @relation("OrderCancelledBy")
+  orderActivities                OrderActivity[]
+  orderNotes                     OrderNote[]
+  stockHistoryEntries             StockHistory[]     @relation("StockHistoryCreatedBy")
+  paymentsCreated                 Payment[]          @relation("PaymentCreatedBy")
+
+  @@index([managerId])
+}
+
+model UserPermission {
+  id          Int      @id @default(autoincrement())
+  user        User     @relation("UserPermissions", fields: [userId], references: [id])
+  userId      Int
+  permission  String
+  grantedBy   User?    @relation("PermissionGrantedBy", fields: [grantedById], references: [id])
+  grantedById Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, permission])
+  @@index([userId])
+  @@index([grantedById])
+}
+
+model PasswordResetToken {
+  id        Int       @id @default(autoincrement())
+  user      User      @relation(fields: [userId], references: [id])
+  userId    Int
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model Customer {
+  id                 Int               @id @default(autoincrement())
+  name               String
+  email              String?
+  notes              String?
+  status             CustomerStatus    @default(ACTIVE)
+  phones             CustomerPhone[]
+  addresses          CustomerAddress[]
+  orders             Order[]
+  customerNotes      CustomerNote[]
+  activities         CustomerActivity[]
+  assignedEmployee   User?             @relation("CustomerAssignedEmployee", fields: [assignedEmployeeId], references: [id])
+  assignedEmployeeId Int?
+  assignedManager    User?             @relation("CustomerAssignedManager", fields: [assignedManagerId], references: [id])
+  assignedManagerId  Int?
+  createdBy          User?             @relation("CustomerCreatedBy", fields: [createdById], references: [id])
+  createdById        Int?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+  // Trash (Phase 3 addendum). deletedAt set = hidden from every normal list, but
+  // Orders referencing this customer are untouched — see phases.md's addendum for
+  // why. purgedAt set = permanently anonymized (name/email/phones/addresses
+  // scrubbed), no longer restorable — a real `DELETE FROM` isn't possible here,
+  // every order ever placed blocks it at the database level.
+  deletedBy          User?             @relation("CustomerDeletedBy", fields: [deletedById], references: [id])
+  deletedById        Int?
+  deletedAt          DateTime?
+  deletionExpiresAt  DateTime?
+  purgedAt           DateTime?
+
+  @@index([assignedEmployeeId])
+  @@index([assignedManagerId])
+  @@index([createdById])
+  @@index([deletedAt])
+}
+
+model CustomerPhone {
+  id         Int     @id @default(autoincrement())
+  customer   Customer @relation(fields: [customerId], references: [id])
+  customerId Int
+  phone      String
+  label      String?
+  isPrimary  Boolean @default(false)
+
+  @@index([customerId])
+}
+
+model CustomerAddress {
+  id         Int     @id @default(autoincrement())
+  customer   Customer @relation(fields: [customerId], references: [id])
+  customerId Int
+  line1      String
+  line2      String?
+  city       String
+  district   String?
+  state      String
+  pincode    String
+  landmark   String?
+  country    String   @default("India")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([customerId])
+}
+
+model ProductCategory {
+  id          Int      @id @default(autoincrement())
+  name        String
+  slug        String   @unique
+  description String?
+  active      Boolean  @default(true)
+  products    Product[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Product {
+  id            Int      @id @default(autoincrement())
+  name          String
+  description   String?
+  category      ProductCategory? @relation(fields: [categoryId], references: [id])
+  categoryId    Int?
+  sku           String   @unique
+  price         Float
+  // Net weight/quantity, separate from `unit` (packaging type) below — e.g.
+  // weightValue=1, weightUnit=KG for a 1kg bag. Both optional and always set
+  // together (enforced in the zod schemas, not here): not every product has a
+  // meaningful net weight.
+  weightValue   Float?
+  weightUnit    WeightUnit?
+  // Packaging type (Piece/Packet/Box/Bag/Bottle) — was free text, now a fixed
+  // dropdown for consistent reporting/filtering.
+  unit          PackagingUnit?
+  availableQty  Int      @default(0)
+  minimumStock  Int      @default(0)
+  image         String?
+  active        Boolean  @default(true)
+  createdBy     User?    @relation("ProductCreatedBy", fields: [createdById], references: [id])
+  createdById   Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  orderItems    OrderItem[]
+  activities    ProductActivity[]
+  stockHistory  StockHistory[]
+  // Trash (Phase 3 addendum). No `purgedAt` here — Product is the one entity where
+  // Permanent Delete is a real `DELETE FROM` (OrderItem.productId is already
+  // ON DELETE SET NULL, and productName/productSKU/unitPrice are already snapshotted
+  // there independently, so nothing historical breaks). Once purged the row is
+  // simply gone, not marked.
+  deletedBy         User?      @relation("ProductDeletedBy", fields: [deletedById], references: [id])
+  deletedById       Int?
+  deletedAt         DateTime?
+  deletionExpiresAt DateTime?
+
+  @@index([categoryId])
+  @@index([createdById])
+  @@index([deletedAt])
+}
+
+model StockHistory {
+  id          Int      @id @default(autoincrement())
+  product     Product  @relation(fields: [productId], references: [id])
+  productId   Int
+  change      Int
+  reason      String
+  note        String?
+  order       Order?   @relation(fields: [orderId], references: [id])
+  orderId     Int?
+  createdBy   User?    @relation("StockHistoryCreatedBy", fields: [createdById], references: [id])
+  createdById Int?
+  createdAt   DateTime @default(now())
+
+  @@index([productId])
+  @@index([orderId])
+}
+
+// Append-only payment ledger (Phase 13) — same shape/philosophy as StockHistory and
+// DeliveryTracking: never mutated or deleted after creation. A mistaken payment is
+// corrected by adding a negative row that references the original via
+// reversesPaymentId, not by editing or deleting the original — Order.paymentStatus is
+// always derived from SUM(amount) over this table, never set directly.
+model Payment {
+  id                Int           @id @default(autoincrement())
+  order             Order         @relation(fields: [orderId], references: [id])
+  orderId           Int
+  amount            Float
+  method            PaymentMethod
+  referenceNumber   String?
+  paymentDate       DateTime      @default(now())
+  notes             String?
+  reversesPayment   Payment?      @relation("PaymentReversal", fields: [reversesPaymentId], references: [id])
+  reversesPaymentId Int?
+  reversedBy        Payment[]     @relation("PaymentReversal")
+  createdBy         User?         @relation("PaymentCreatedBy", fields: [createdById], references: [id])
+  createdById       Int?
+  createdAt         DateTime      @default(now())
+
+  @@index([orderId])
+  @@index([createdById])
+}
+
+model ProductActivity {
+  id          Int      @id @default(autoincrement())
+  product     Product  @relation(fields: [productId], references: [id])
+  productId   Int
+  activity    String
+  metadata    Json?
+  createdBy   User?    @relation(fields: [createdById], references: [id])
+  createdById Int?
+  createdAt   DateTime @default(now())
+
+  @@index([productId])
+  @@index([createdById])
+}
+
+model Order {
+  id                  Int            @id @default(autoincrement())
+  orderNumber         String         @unique
+  customer            Customer       @relation(fields: [customerId], references: [id])
+  customerId          Int
+  orderDate           DateTime       @default(now())
+  subtotal            Float
+  discount             Float         @default(0)
+  shipping             Float         @default(0)
+  total               Float
+  paymentMethod       PaymentMethod
+  // Computed, not directly settable via API — written by orderService whenever a
+  // Payment is added/reversed (SUM(payments.amount) vs. total), replacing the old
+  // bare manual dropdown from Phase 6 (Phase 13). Kept as a real column, not derived
+  // on every read, so list/filter queries stay fast — same tradeoff already made for
+  // every other status field on this model.
+  paymentStatus       PaymentStatus  @default(PENDING)
+  // Generated alongside orderNumber at creation (Phase 13) — every order always has
+  // one, no "not yet generated" state to handle anywhere.
+  invoiceNumber       String?        @unique
+  orderStatus         OrderStatus    @default(PENDING)
+  deliveryStatus      DeliveryStatus @default(NOT_DISPATCHED)
+  // Renamed from the unused `trackingNumber` (was never wired up anywhere since
+  // Phase 6) rather than adding a new column — same concept, courier-provided
+  // reference number, just a name that matches what the UI/API actually call it.
+  articleNumber       String?
+  courier             String?
+  // Informational only — deliberately NOT part of subtotal/discount/shipping/total.
+  // Float, matching every other money field on this model (subtotal/discount/
+  // shipping/total) — introducing Decimal for just this one field would mean
+  // different serialization/type handling for a single sibling field with no
+  // practical benefit at this app's scale.
+  estimatedDeliveryCharges Float?
+  expectedDelivery    DateTime?
+  deliveredDate       DateTime?
+  notes               String?
+  createdBy           User?    @relation("OrderCreatedBy", fields: [createdById], references: [id])
+  createdById         Int?
+  assignedEmployee    User?    @relation("OrderAssignedEmployee", fields: [assignedEmployeeId], references: [id])
+  assignedEmployeeId  Int?
+  cancelledBy         User?    @relation("OrderCancelledBy", fields: [cancelledById], references: [id])
+  cancelledById       Int?
+  cancelledAt         DateTime?
+  cancellationReason  String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  items               OrderItem[]
+  address             OrderAddress?
+  activities          OrderActivity[]
+  orderNotes          OrderNote[]
+  tracking            DeliveryTracking[]
+  stockHistory        StockHistory[]
+  payments            Payment[]
+  // Trash (Phase 3 addendum). purgedAt set = permanently removed from Trash view;
+  // unlike Customer, nothing is scrubbed on purge — an Order is a financial/business
+  // record (it has its own Payment ledger), not personal data, so there's nothing
+  // here that needs anonymizing the way Customer's contact details do.
+  deletedBy           User?             @relation("OrderDeletedBy", fields: [deletedById], references: [id])
+  deletedById         Int?
+  deletedAt           DateTime?
+  deletionExpiresAt   DateTime?
+  purgedAt            DateTime?
+
+  @@index([customerId])
+  @@index([createdById])
+  @@index([assignedEmployeeId])
+  @@index([cancelledById])
+  @@index([deletedAt])
+  // Phase 14 §15: every Orders-list filter, every Dashboard groupBy, and every
+  // Report's date-range query filters or sorts on one of these four — none of them
+  // had an index before this.
+  @@index([orderStatus])
+  @@index([deliveryStatus])
+  @@index([paymentStatus])
+  @@index([orderDate])
+}
+
+model OrderItem {
+  id         Int    @id @default(autoincrement())
+  order      Order  @relation(fields: [orderId], references: [id])
+  orderId    Int
+  product    Product? @relation(fields: [productId], references: [id])
+  productId  Int?
+  productName String
+  productSKU  String
+  unit       String?
+  quantity   Int
+  unitPrice  Float
+  discount   Float  @default(0)
+  totalPrice Float
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+model OrderAddress {
+  id          Int      @id @default(autoincrement())
+  order       Order    @relation(fields: [orderId], references: [id])
+  orderId     Int      @unique
+  addressLine String
+  landmark    String?
+  city        String
+  district    String?
+  state       String
+  pincode     String
+  country     String   @default("India")
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+}
+
+model OrderActivity {
+  id          Int      @id @default(autoincrement())
+  order       Order    @relation(fields: [orderId], references: [id])
+  orderId     Int
+  action      String
+  oldValue    String?
+  newValue    String?
+  createdBy   User?    @relation(fields: [createdById], references: [id])
+  createdById Int?
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+  @@index([createdById])
+}
+
+model OrderNote {
+  id          Int      @id @default(autoincrement())
+  order       Order    @relation(fields: [orderId], references: [id])
+  orderId     Int
+  note        String
+  createdBy   User?    @relation(fields: [createdById], references: [id])
+  createdById Int?
+  createdAt   DateTime @default(now())
+
+  @@index([orderId])
+  @@index([createdById])
+}
+
+model DeliveryTracking {
+  id         Int      @id @default(autoincrement())
+  order      Order    @relation(fields: [orderId], references: [id])
+  orderId    Int
+  status     String
+  note       String?
+  location   String?
+  receivedBy String?
+  updatedBy  User?    @relation("DeliveryUpdatedBy", fields: [updatedById], references: [id])
+  updatedById Int?
+  createdAt  DateTime @default(now())
+
+  @@index([orderId])
+  @@index([updatedById])
+}
+
+model CustomerNote {
+  id         Int      @id @default(autoincrement())
+  customer   Customer @relation(fields: [customerId], references: [id])
+  customerId Int
+  note       String
+  createdBy  User?    @relation(fields: [createdById], references: [id])
+  createdById Int?
+  createdAt  DateTime @default(now())
+
+  @@index([customerId])
+  @@index([createdById])
+}
+
+model CustomerActivity {
+  id         Int      @id @default(autoincrement())
+  customer   Customer @relation(fields: [customerId], references: [id])
+  customerId Int
+  activity   String
+  metadata   Json?
+  createdBy  User?    @relation(fields: [createdById], references: [id])
+  createdById Int?
+  createdAt  DateTime @default(now())
+
+  @@index([customerId])
+  @@index([createdById])
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  user      User?    @relation(fields: [userId], references: [id])
+  userId    Int?
+  title     String
+  body      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  user      User?    @relation(fields: [userId], references: [id])
+  userId    Int?
+  action    String
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
