@@ -19,16 +19,14 @@ export function verifyAuthToken(token: string): AuthTokenPayload {
 }
 
 export function authCookieOptions() {
-  // Frontend and backend are deployed on separate domains, so a cross-origin fetch
-  // needs SameSite=None to have the cookie attached at all (Lax is dropped from
-  // cross-site XHR/fetch, only sent on top-level navigations) — this always pairs
-  // with Secure=true, since browsers reject SameSite=None without it. Dev stays Lax
-  // (no HTTPS locally), matching secure's own dev/prod split below.
-  const isProduction = config.nodeEnv === 'production';
+  // The frontend proxies /api/* through to this backend (see frontend/vercel.json),
+  // so from the browser's point of view every request is same-origin — SameSite=Lax
+  // is correct and safer than None (which was only ever needed when the frontend
+  // called this backend's real cross-domain URL directly).
   return {
     httpOnly: true,
-    secure: isProduction,
-    sameSite: isProduction ? ('none' as const) : ('lax' as const),
+    secure: config.nodeEnv === 'production',
+    sameSite: 'lax' as const,
     maxAge: 7 * 24 * 60 * 60 * 1000,
     path: '/',
   };
