@@ -1,16 +1,20 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import PDFDocument from 'pdfkit';
 import { paymentRepository } from '../repositories/payment.repository';
 import { PARCEL_SETTINGS } from '../constants/parcelSettings';
 import type { orderRepository } from '../repositories/order.repository';
 
 // pdfkit's built-in fonts have no Devanagari glyphs, so the Hindi return-policy note
-// needs a font that does. This is the Windows system font (dev-machine only) — it is
-// NOT licensed for redistribution, so it can't be bundled into the repo. If this ever
-// runs on a non-Windows host, this path won't exist and the Hindi line is silently
-// skipped rather than crashing PDF generation; swap in an open-licensed Devanagari
-// font (e.g. Noto Sans Devanagari) at that point.
-const HINDI_FONT_PATH = 'C:\\Windows\\Fonts\\Nirmala.ttf';
+// needs a font that does. Noto Sans Devanagari (SIL Open Font License — free to
+// bundle/redistribute) lives in backend/assets/, a sibling of src/ and dist/ rather
+// than something tsc compiles, same pattern as backend/public/ in app.ts — so this
+// path is correct whether __dirname is src/services (ts-node-dev) or
+// dist/services (compiled).
+const HINDI_FONT_PATH = path.join(
+  __dirname,
+  '../../assets/fonts/NotoSansDevanagari_Condensed-Regular.ttf'
+);
 const HINDI_NOTE =
   'नोट: पार्सल वापस करने से पहले भेजने वाले से कन्फर्म कर लें। अगर पार्सल पोस्टमैन की गलती से वापस होता है, तो उसका जिम्मेदार पोस्टमैन होगा।';
 
