@@ -1,82 +1,102 @@
-# CRM — Customer, Orders, Products & Delivery Management
+# Pashuseva CRM
 
-This workspace contains a phased implementation plan for a CRM focused on customers, orders, products, and delivery tracking.
+A CRM built for **Pashuseva 24 Carat Gold** (Akash Enterprises) — an animal herbal treatment products business — to manage customers, products, orders, payments, and deliveries end to end, including generating printable courier shipping labels.
 
-Core requirements and data model are defined in `crm.md`. The phase-by-phase build order (Phase 1 through Phase 14) is defined in `phases.md`. Current status and changelog live in `about.md`. For setup, conventions, and a step-by-step build guide, see `development.md`.
+## What it does
 
-Project layout (Phase 1 skeleton):
+- **Customers** — contact records with multiple phone numbers, addresses, notes, and a full activity timeline. Each customer can be assigned to a Manager and/or Employee for accountability.
+- **Products** — categorized inventory with stock tracking (add/adjust with a full history log), weight and packaging units, low-stock/out-of-stock alerts, and images.
+- **Orders** — line items priced live from current product prices, discounts and delivery charges, an append-only payment ledger (supports partial payments and advances), order and delivery status lifecycles with a full tracking history, and printable invoices.
+- **Parcel Summary** — a one-click, auto-generated PDF shipping label for any order, pulling customer/order/product data directly from the database (nothing is typed by hand). Shows COD amount, amount due, or Paid depending on the order's actual payment state, plus the business's courier Contract ID / Biller ID, and a bilingual (English + Hindi) return-policy notice.
+- **Trash / Recycle Bin** — soft-deleting Customers, Orders, Products, and Employees moves them to an Admin-only Trash with a 10-day recovery window, after which an automatic background job permanently purges them. Permanent deletion is also available immediately, gated behind a typed "DELETE" confirmation.
+- **Dashboard** — role-aware overview: today's sales, order/delivery status breakdowns, low-stock warnings, recent orders/customers, and top-selling products.
+- **Reports** — permission-gated reporting views for staff who need visibility beyond their own assigned customers/orders.
+- **Access control** — Admin / Manager / Employee roles, with granular per-user permission overrides and a "data scope" setting (own records vs. the full team's), so what any given account can see and do is configurable rather than hardcoded to their role alone.
+- **Account lifecycle** — public signup requires Admin approval before an account can do anything; Admins can suspend, reactivate, or permanently remove accounts, reassigning their customers/orders in the process.
 
-- frontend/ — React + Vite + TypeScript app (scaffold placeholder)
-- backend/ — Node + Express + TypeScript API (scaffold placeholder)
+## Tech stack
 
-See `crm.md` for full requirements and `phases.md` for the phased plan.
+**Backend** — Node.js, Express, TypeScript, Prisma ORM 7 (driver-adapter based, no Rust engine) against PostgreSQL (developed against [Neon](https://neon.tech)'s serverless Postgres), JWT auth via HttpOnly cookies, Zod for request validation, bcrypt for password hashing, `express-rate-limit` on auth endpoints, and `pdfkit` for PDF generation.
 
-## Developer — Run placeholders
+**Frontend** — React 18, Vite, TypeScript, TanStack Query, React Hook Form + Zod, Tailwind CSS with a Radix UI–based component library, React Router, Sonner for toasts, Lucide for icons, and Motion for animation.
 
-To run the backend placeholder server:
+**Structure** — an npm workspaces monorepo (`frontend/`, `backend/`), sharing lint/format config from the root.
+
+## Project layout
+
+```
+backend/
+  prisma/            schema + migrations
+  src/
+    routes/api/       Express routes
+    controllers/       request/response handling
+    services/          business logic
+    repositories/       the only layer that touches Prisma
+    schemas/            Zod validation
+    middleware/          auth, rate limiting, access checks
+frontend/
+  src/
+    pages/              one file per route
+    components/          shared UI (incl. a shadcn-style ui/ primitives folder)
+    lib/                  API client, auth hooks, misc utilities
+```
+
+## Getting started
+
+**Prerequisites:** Node.js 18+, and a PostgreSQL database (a free [Neon](https://neon.tech) project works well).
+
+```bash
+# from the repo root — installs both workspace packages
+npm run install-all
+```
+
+Set up the backend environment:
 
 ```bash
 cd backend
-npm install   # optional, placeholder package.json exists
-npm run dev
+cp .env.example .env
 ```
 
-To run the frontend placeholder (Vite scaffolding to add):
+Then edit `backend/.env`:
+- `DATABASE_URL` — your Postgres connection string
+- `JWT_SECRET` — **required**, the server refuses to start without one. Generate one, don't hand-type it:
+  ```bash
+  node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+  ```
+- `CORS_ORIGIN` — the frontend's origin (`http://localhost:5173` for local dev)
+- `ADMIN_EMAIL` / `ADMIN_PASSWORD` — used once by the seed script to create the first Admin account
+
+Apply the database schema and seed the first Admin account:
 
 ```bash
-cd frontend
-npm install   # optional, placeholder package.json exists
-npm run dev
+# from backend/
+npx prisma migrate deploy
+npx prisma generate
+npm run seed
 ```
 
-Add real dependencies and replace placeholder scripts when you start implementing Phase 1 frontend and backend stacks.
-
-## Phase 1 — Completed Work
-
-The following Phase 1 tasks and scaffolding have been completed and committed to this workspace:
-
-- Created the full project requirements and spec: `crm.md`
-- Repository skeleton and documentation: `README.md` (this file)
-- Tooling files: `.gitignore`, `.env.example`, `.editorconfig`, `.eslintrc.json`, `.prettierrc`
-- Backend (TypeScript + Express + Prisma):
-  - `backend/package.json`, `backend/tsconfig.json`, `backend/README.md`
-  - Basic Express app and health route: `backend/src/app.ts`, `backend/src/routes/health.ts`, `backend/src/index.ts`
-  - Prisma schema with core models: `backend/prisma/schema.prisma`
-  - Prisma client wrapper: `backend/src/lib/prisma.ts`
-  - Backend `.env.example` with `DATABASE_URL` and `PORT` placeholders
-- Frontend (Vite + React + TypeScript + Tailwind) scaffold:
-  - `frontend/package.json`, `frontend/vite.config.ts`, `frontend/index.html`
-  - React entry and routes: `frontend/src/main.tsx`, `frontend/src/App.tsx`
-  - Basic layout components: `frontend/src/components/Sidebar.tsx`, `Navbar.tsx`, `PageContainer.tsx`
-  - UI placeholders: `Card`, `Button`, `Table`, `Dialog`, `Toast` in `frontend/src/components`
-  - Tailwind config and styles: `frontend/tailwind.config.cjs`, `frontend/postcss.config.cjs`, `frontend/src/styles/tailwind.css`
-
-## Next steps (recommended)
-
-1. Configure a local PostgreSQL database and update `backend/.env` from `backend/.env.example`.
-2. From `backend/`: run `npx prisma generate` and `npx prisma migrate dev --name init` to generate the client and apply the schema.
-3. Implement Authentication (register/login) and secure APIs with JWT.
-4. Begin Customer CRUD endpoints and frontend pages (Phase 4).
-
-If you want, I can run through the Prisma migration steps next or scaffold the Authentication endpoints now.
-
-## Running both frontend and backend
-
-This repo is configured as an npm workspace. From the repository root you can:
+Run everything:
 
 ```bash
-# install all dependencies for workspace packages
-npm run install-all
-
-# run backend and frontend concurrently (opens two processes in the same shell)
-npm run dev
-
-# or run individually in separate terminals
+# from the repo root
+npm run dev              # backend + frontend together
+# or, in two separate terminals:
 npm run dev:backend
 npm run dev:frontend
 ```
 
-Notes:
+The backend serves on `http://localhost:4000` and the frontend dev server on `http://localhost:5173` by default. Log in with the `ADMIN_EMAIL` / `ADMIN_PASSWORD` you set above.
 
-- The `dev` script uses a simple shell `&` to start both processes; on Windows you may prefer running `dev:backend` and `dev:frontend` in two separate terminals.
-- Update `backend/.env` before running Prisma migrations.
+## Documentation
+
+This project's build history is tracked in a set of living docs at the repo root:
+
+- **`crm.md`** — the original requirements and data model
+- **`phases.md`** — the phase-by-phase build plan (master spec)
+- **`PHASE*_TODO.md`** — the curated plan and completion record for each individual phase
+- **`about.md`** — a running changelog of everything built, in order
+- **`development.md`** — setup notes and development conventions
+
+## License
+
+Private/internal project — not licensed for redistribution.

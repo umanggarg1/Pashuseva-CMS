@@ -5,6 +5,7 @@ import { auditLogRepository } from '../repositories/auditLog.repository';
 import { authService } from './auth.service';
 import { HttpError, NotFoundError } from '../utils/httpError';
 import { computeDeletionExpiry } from '../utils/trash';
+import { hasFullBusinessAccess } from '../utils/dataScope';
 import {
   DEFAULT_EMPLOYEE_PERMISSIONS,
   DEFAULT_MANAGER_PERMISSIONS,
@@ -12,7 +13,13 @@ import {
 } from '../schemas/permission.schema';
 import type { Role, AccountStatus, DataScope } from '../generated/prisma/enums';
 
-type ActingUser = { id: number; role: Role | null; permissions?: string[] };
+type ActingUser = {
+  id: number;
+  role: Role | null;
+  permissions?: string[];
+  customerDataScope?: DataScope | null;
+  orderDataScope?: DataScope | null;
+};
 
 function sanitizeUser(user: {
   id: number;
@@ -54,14 +61,22 @@ export async function assertManagesUser(actingUser: ActingUser, targetUserId: nu
 
   if (actingUser.role === 'ADMIN') return target;
   if (actingUser.role === 'MANAGER' && target.managerId === actingUser.id) return target;
+  if (hasFullBusinessAccess(actingUser, actingUser.customerDataScope, actingUser.orderDataScope)) {
+    return target;
+  }
 
   throw new HttpError(403, 'You do not manage this user');
 }
 
 export const userService = {
   async list(actingUser: ActingUser, search?: string, status?: AccountStatus) {
+    const fullAccess = hasFullBusinessAccess(
+      actingUser,
+      actingUser.customerDataScope,
+      actingUser.orderDataScope
+    );
     const where: { managerId?: number; search?: string; status?: AccountStatus } =
-      actingUser.role === 'MANAGER' ? { managerId: actingUser.id } : {};
+      actingUser.role === 'MANAGER' && !fullAccess ? { managerId: actingUser.id } : {};
     if (search) where.search = search;
     if (status) where.status = status;
     const users = await userRepository.list(where);
@@ -74,8 +89,15 @@ export const userService = {
   // not just filtered.
   async searchForGlobalSearch(actingUser: ActingUser, q: string, limit: number) {
     if (actingUser.role !== 'ADMIN' && actingUser.role !== 'MANAGER') return [];
+    const fullAccess = hasFullBusinessAccess(
+      actingUser,
+      actingUser.customerDataScope,
+      actingUser.orderDataScope
+    );
     const where: { managerId?: number; search: string } =
-      actingUser.role === 'MANAGER' ? { managerId: actingUser.id, search: q } : { search: q };
+      actingUser.role === 'MANAGER' && !fullAccess
+        ? { managerId: actingUser.id, search: q }
+        : { search: q };
     const users = await userRepository.list(where, limit);
     return users.map(sanitizeUser);
   },

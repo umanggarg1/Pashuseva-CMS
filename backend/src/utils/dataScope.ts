@@ -49,3 +49,17 @@ export function hasOrderDataAccess(
   if (actingUser.role === 'MANAGER') return order.customer.assignedManagerId === actingUser.id;
   return order.customer.assignedEmployeeId === actingUser.id;
 }
+
+// A Manager whose Customer AND Order data scope are both "All" (the "Full Access"
+// permission preset) also gets full visibility into — and management authority
+// over — every Employee/Manager in the company, not just their own direct reports.
+// "All" already means company-wide rather than "my team" for Customers/Orders; this
+// extends that same meaning to the Employees list, rather than inventing a separate
+// employeeDataScope concept for what is really the same "Full Access" grant.
+export function hasFullBusinessAccess(
+  actingUser: { role: Role | null },
+  customerDataScope: DataScope | null | undefined,
+  orderDataScope: DataScope | null | undefined
+): boolean {
+  return actingUser.role === 'ADMIN' || (customerDataScope === 'ALL' && orderDataScope === 'ALL');
+}
