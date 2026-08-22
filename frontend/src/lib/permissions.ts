@@ -29,6 +29,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
       { value: 'order:create', label: 'Create' },
       { value: 'order:update', label: 'Edit' },
       { value: 'order:cancel', label: 'Cancel' },
+      { value: 'order:delete', label: 'Delete' },
     ],
   },
   {
