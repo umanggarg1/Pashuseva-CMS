@@ -3,3 +3,9 @@
 !.gitignore
 !*/
 !*/.gitkeep
+
+# Exceptions: the site logo/footer brand images are referenced directly by the app
+# (Navbar, Login, Signup, Footer) and need to exist on every deploy, not just this
+# dev machine — everything else in this folder stays untracked as before.
+!store/Pashuseva logo light.jpeg
+!store/pashuseva-png.png
