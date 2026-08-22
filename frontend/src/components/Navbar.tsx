@@ -6,9 +6,11 @@ import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { NavLinks } from './Sidebar';
 import { useCurrentUser, useLogout } from '@/lib/auth';
-import { assetUrl } from '@/lib/api';
 
-const LOGO_URL = assetUrl('/public/uploads/store/Pashuseva logo light.jpeg');
+// Bundled as a static frontend asset (frontend/public/) rather than served by the
+// backend — it's site branding, not user-uploaded content, so it doesn't need to
+// exist on the backend at all, and Vercel serves it directly with no proxy hop.
+const LOGO_URL = '/pashuseva-logo.jpeg';
 
 export default function Navbar({ onOpenSearch }: { onOpenSearch: () => void }) {
   const [open, setOpen] = useState(false);

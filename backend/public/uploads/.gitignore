@@ -1,11 +1,8 @@
 # Uploaded files don't belong in version control — only the folder structure does.
+# The site logo/footer images used to live here as a tracked exception, but they're
+# static branding, not user-uploaded content, so they've moved to frontend/public/
+# instead — served directly by Vercel, no backend dependency at all.
 *
 !.gitignore
 !*/
 !*/.gitkeep
-
-# Exceptions: the site logo/footer brand images are referenced directly by the app
-# (Navbar, Login, Signup, Footer) and need to exist on every deploy, not just this
-# dev machine — everything else in this folder stays untracked as before.
-!store/Pashuseva logo light.jpeg
-!store/pashuseva-png.png

@@ -1,9 +1,10 @@
 import type { SVGProps } from 'react';
 import { Link } from 'react-router-dom';
 import { Phone, Mail, MapPin } from 'lucide-react';
-import { assetUrl } from '@/lib/api';
 
-const FOOTER_LOGO_URL = assetUrl('/public/uploads/store/pashuseva-png.png');
+// Bundled as a static frontend asset (frontend/public/) — see Navbar.tsx's LOGO_URL
+// for why this isn't backend-served.
+const FOOTER_LOGO_URL = '/pashuseva-footer-logo.png';
 
 // CMS-style footer fields, kept as plain constants for now (no admin-editable
 // settings page — see Phase 3 addendum discussion). Phone numbers and address were

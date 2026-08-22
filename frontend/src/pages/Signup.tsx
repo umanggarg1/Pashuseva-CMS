@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/form';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { useCurrentUser } from '@/lib/auth';
-import { apiFetch, ApiError, assetUrl } from '@/lib/api';
+import { apiFetch, ApiError } from '@/lib/api';
 
 const signupSchema = z
   .object({
@@ -87,7 +87,7 @@ export default function Signup() {
             <>
               <CardHeader className="items-center text-center">
                 <img
-                  src={assetUrl('/public/uploads/store/Pashuseva logo light.jpeg')}
+                  src="/pashuseva-logo.jpeg"
                   alt="Pashuseva"
                   className="mb-2 h-16 w-16 rounded-full object-cover"
                 />
