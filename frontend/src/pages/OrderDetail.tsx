@@ -168,9 +168,17 @@ async function fetchParcelSummaryPdf(orderId: number): Promise<Blob> {
 // silently does nothing there. Opening the blob directly works everywhere: desktop
 // gets the browser's PDF viewer (Ctrl+P from there), mobile gets its native PDF
 // viewer with the OS share/print sheet.
-function openPdfBlob(blob: Blob) {
+//
+// `tab` must come from a window.open() call made synchronously inside the click
+// handler, not here — the PDF isn't fetched yet at that point, but a window.open()
+// fired only after the fetch resolves happens well after the click's "user
+// activation" window has expired, so browsers (mobile especially) silently block it
+// as a popup. Opening a blank tab immediately on click and filling it in once the
+// PDF is ready keeps it tied to the original gesture.
+function fillPdfTab(tab: Window | null, blob: Blob) {
   const url = URL.createObjectURL(blob);
-  window.open(url, '_blank');
+  if (tab) tab.location.href = url;
+  else window.open(url, '_blank'); // popup was blocked even for the blank tab — fall back
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
@@ -283,9 +291,12 @@ export default function OrderDetail() {
   // fresh from the current Order/Customer/Product data every time, so re-printing
   // later always reflects whatever has changed since the first print.
   const parcelSummary = useMutation({
-    mutationFn: () => fetchParcelSummaryPdf(id!),
-    onSuccess: (blob) => openPdfBlob(blob),
-    onError: () => toast.error('Failed to generate parcel summary'),
+    mutationFn: (_tab: Window | null) => fetchParcelSummaryPdf(id!),
+    onSuccess: (blob, tab) => fillPdfTab(tab, blob),
+    onError: (_err, tab) => {
+      tab?.close();
+      toast.error('Failed to generate parcel summary');
+    },
   });
 
   const reorder = useMutation({
@@ -380,7 +391,15 @@ export default function OrderDetail() {
           <Button
             variant="outline"
             disabled={parcelSummary.isPending}
-            onClick={() => parcelSummary.mutate()}
+            onClick={() => {
+              // Must open synchronously, right here in the click handler — see
+              // fillPdfTab's comment for why.
+              const tab = window.open('', '_blank');
+              tab?.document.write(
+                '<p style="font-family: sans-serif; padding: 2rem;">Generating parcel summary…</p>'
+              );
+              parcelSummary.mutate(tab);
+            }}
           >
             <Printer className="mr-1.5 h-4 w-4" /> Print Parcel Summary
           </Button>
