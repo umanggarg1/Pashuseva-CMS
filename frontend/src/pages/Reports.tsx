@@ -408,6 +408,7 @@ interface ProductsReportData {
   activeProducts: number;
   lowStock: number;
   outOfStock: number;
+  stockValue: number;
   bestSelling: { productId: number; name: string; unit: string | null; quantitySold: number }[];
 }
 
@@ -424,11 +425,12 @@ function ProductsReportTab() {
 
       {query.data && (
         <>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-5">
             <StatCard label="Total Products" value={String(query.data.totalProducts)} />
             <StatCard label="Active Products" value={String(query.data.activeProducts)} />
             <StatCard label="Low Stock" value={String(query.data.lowStock)} href="/products?stock=low" />
             <StatCard label="Out of Stock" value={String(query.data.outOfStock)} href="/products?stock=out" />
+            <StatCard label="Stock Value" value={`₹${query.data.stockValue.toLocaleString()}`} />
           </div>
 
           <Card>

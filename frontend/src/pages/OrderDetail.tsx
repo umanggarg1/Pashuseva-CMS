@@ -235,6 +235,11 @@ export default function OrderDetail() {
   function invalidateOrder() {
     queryClient.invalidateQueries({ queryKey: ['order', orderNumber] });
     queryClient.invalidateQueries({ queryKey: ['order', id, 'activity'] });
+    // Every status/field/payment change here can shift dashboard and report numbers
+    // (order counts, sales, outstanding, paid/unpaid totals) — both are computed live
+    // from the database, but the cached copies still need to be told to refetch.
+    queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    queryClient.invalidateQueries({ queryKey: ['reports'] });
   }
 
   function invalidatePayments() {
@@ -274,6 +279,8 @@ export default function OrderDetail() {
     mutationFn: () => apiFetch(`/orders/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['orders'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
       toast.success('Order moved to Trash');
       navigate('/orders');
     },

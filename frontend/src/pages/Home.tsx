@@ -20,10 +20,14 @@ interface DashboardSummary {
     byStatus: Record<string, number>;
     byDeliveryStatus: Record<string, number>;
     todayDeliveryStatusCounts: Record<string, number>;
+    paidOrders: number;
+    unpaidOrCodOrders: number;
+    partiallyPaidOrders: number;
   };
-  sales: { today: number; thisWeek: number; thisMonth: number };
+  sales: { allTime: number; today: number; thisWeek: number; thisMonth: number };
   outstanding: number;
   paymentsToday: number;
+  totalProducts: number;
   lowStockCount: number;
   outOfStockCount: number;
   lowStockProducts: { id: number; name: string; unit: string | null; availableQty: number }[];
@@ -212,19 +216,23 @@ function AdminManagerDashboard({ summary }: { summary: DashboardSummary }) {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard title="Total Sales" value={`₹${summary.sales.allTime.toLocaleString()}`} />
         <StatCard
-          title="Customers"
-          value={summary.customers.total.toLocaleString()}
-          hint={`+${summary.customers.newToday} today`}
-        />
-        <StatCard
-          title="Orders"
+          title="Total Orders"
           value={summary.orders.total.toLocaleString()}
           hint={`+${summary.orders.today} today`}
         />
-        <StatCard title="Sales" value={`₹${summary.sales.today.toLocaleString()}`} hint="Today" />
-        <StatCard title="Pending" value={String(summary.orders.pending)} hint="Orders" />
+        <StatCard title="Paid Orders" value={String(summary.orders.paidOrders)} />
+        <StatCard title="Unpaid / COD Orders" value={String(summary.orders.unpaidOrCodOrders)} />
+        <StatCard title="Outstanding Amount" value={`₹${summary.outstanding.toLocaleString()}`} />
+        <StatCard
+          title="Total Customers"
+          value={summary.customers.total.toLocaleString()}
+          hint={`+${summary.customers.newToday} today`}
+        />
+        <StatCard title="Total Products" value={summary.totalProducts.toLocaleString()} />
+        <StatCard title="Low Stock Products" value={String(summary.lowStockCount)} />
       </div>
 
       <ParcelBookingCard />

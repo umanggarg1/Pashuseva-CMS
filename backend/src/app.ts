@@ -9,6 +9,13 @@ import config from './config';
 
 const app = express();
 
+// Deployed behind a reverse proxy/load balancer (Render, Railway, etc. — one hop).
+// Without this, express-rate-limit sees every request as coming from the proxy's own
+// IP (rate-limiting becomes effectively global instead of per-client), and
+// req.protocol/req.secure can't be trusted either — both derive from the
+// X-Forwarded-* headers, which Express ignores unless trust proxy is set.
+app.set('trust proxy', 1);
+
 // The frontend runs on a different origin (Vite dev server) and uses HttpOnly-cookie
 // auth (`credentials: 'include'` in lib/api.ts), so both an explicit origin (not `*`)
 // and `credentials: true` are required — the browser rejects wildcard-origin CORS

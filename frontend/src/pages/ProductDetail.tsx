@@ -90,6 +90,7 @@ export default function ProductDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['product', id] });
       queryClient.invalidateQueries({ queryKey: ['product', id, 'activity'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
       toast.success('Status updated');
     },
     onError: (err) =>
@@ -103,6 +104,8 @@ export default function ProductDetail() {
     mutationFn: () => apiFetch(`/products/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
       toast.success('Product moved to Trash');
       navigate('/products');
     },
@@ -113,6 +116,10 @@ export default function ProductDetail() {
     queryClient.invalidateQueries({ queryKey: ['product', id] });
     queryClient.invalidateQueries({ queryKey: ['product', id, 'activity'] });
     queryClient.invalidateQueries({ queryKey: ['product', id, 'stock-history'] });
+    // Stock changes shift low-stock/out-of-stock counts and stock value on both the
+    // Dashboard and the Inventory report.
+    queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    queryClient.invalidateQueries({ queryKey: ['reports'] });
   }
 
   if (productQuery.isPending) return <Skeleton className="h-96 w-full" />;

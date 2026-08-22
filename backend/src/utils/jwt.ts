@@ -19,10 +19,16 @@ export function verifyAuthToken(token: string): AuthTokenPayload {
 }
 
 export function authCookieOptions() {
+  // Frontend and backend are deployed on separate domains, so a cross-origin fetch
+  // needs SameSite=None to have the cookie attached at all (Lax is dropped from
+  // cross-site XHR/fetch, only sent on top-level navigations) — this always pairs
+  // with Secure=true, since browsers reject SameSite=None without it. Dev stays Lax
+  // (no HTTPS locally), matching secure's own dev/prod split below.
+  const isProduction = config.nodeEnv === 'production';
   return {
     httpOnly: true,
-    secure: config.nodeEnv === 'production',
-    sameSite: 'lax' as const,
+    secure: isProduction,
+    sameSite: isProduction ? ('none' as const) : ('lax' as const),
     maxAge: 7 * 24 * 60 * 60 * 1000,
     path: '/',
   };

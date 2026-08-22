@@ -163,7 +163,11 @@ export default function Customers() {
           canCreateCustomer && (
             <AddCustomerDialog
               trigger={<Button>+ Add Customer</Button>}
-              onCreated={() => queryClient.invalidateQueries({ queryKey: ['customers'] })}
+              onCreated={() => {
+                queryClient.invalidateQueries({ queryKey: ['customers'] });
+                queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+                queryClient.invalidateQueries({ queryKey: ['reports'] });
+              }}
               defaultOpen={openAddOnLoad}
             />
           )

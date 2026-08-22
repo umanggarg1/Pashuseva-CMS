@@ -23,12 +23,20 @@ type ActingUser = {
 // customer.service.ts (Phase 15 addendum) — shared via utils/dataScope.ts so the
 // dashboard/reports and the list endpoints never see a different answer to "which
 // records can this user see."
+//
+// deletedAt: null is added here explicitly because this service queries `prisma.*`
+// directly rather than going through orderRepository/customerRepository — every
+// repository already filters trashed rows out by default, but bypassing that layer
+// means this filter has to be applied at each call site instead. Without it, an order
+// or customer that's Recently Deleted (in Trash) or even Permanently Deleted (Order
+// permanent-delete only sets purgedAt, never a real DELETE FROM — see
+// orderRepository.permanentDelete) keeps counting in every dashboard/report number.
 function orderScope(actingUser: ActingUser): Prisma.OrderWhereInput {
-  return orderDataWhere(actingUser, actingUser.orderDataScope);
+  return { ...orderDataWhere(actingUser, actingUser.orderDataScope), deletedAt: null };
 }
 
 function customerScope(actingUser: ActingUser): Prisma.CustomerWhereInput {
-  return customerDataWhere(actingUser, actingUser.customerDataScope);
+  return { ...customerDataWhere(actingUser, actingUser.customerDataScope), deletedAt: null };
 }
 
 function startOfDay(d: Date) {
@@ -115,7 +123,7 @@ async function topProducts(scope: Prisma.OrderWhereInput, take: number) {
     take,
   });
   const products = await prisma.product.findMany({
-    where: { id: { in: grouped.map((g) => g.productId!) } },
+    where: { id: { in: grouped.map((g) => g.productId!) }, deletedAt: null },
     select: { id: true, name: true, unit: true },
   });
   const byId = new Map(products.map((p) => [p.id, p]));
@@ -145,11 +153,14 @@ export const dashboardService = {
       ordersToday,
       byOrderStatus,
       byDeliveryStatus,
+      byPaymentStatus,
+      totalSalesAllTime,
       salesToday,
       salesThisWeek,
       salesThisMonth,
       outstanding,
       paymentsToday,
+      totalProducts,
       recentOrders,
       recentCustomers,
       top,
@@ -162,11 +173,16 @@ export const dashboardService = {
       prisma.order.count({ where: { ...oScope, orderDate: { gte: today.start, lte: today.end } } }),
       prisma.order.groupBy({ by: ['orderStatus'], where: oScope, _count: true }),
       prisma.order.groupBy({ by: ['deliveryStatus'], where: oScope, _count: true }),
+      prisma.order.groupBy({ by: ['paymentStatus'], where: oScope, _count: true }),
+      prisma.order
+        .aggregate({ where: { ...oScope, ...salesEligibleFilter }, _sum: { total: true } })
+        .then((r) => r._sum.total ?? 0),
       salesTotal(oScope, today.start, today.end),
       salesTotal(oScope, week.start, week.end),
       salesTotal(oScope, month.start, month.end),
       outstandingTotal(oScope),
       paymentsCollected(oScope, today.start, today.end),
+      prisma.product.count({ where: { deletedAt: null } }),
       prisma.order.findMany({
         where: oScope,
         orderBy: { orderDate: 'desc' },
@@ -215,6 +231,9 @@ export const dashboardService = {
     const deliveryStatusCounts = Object.fromEntries(
       byDeliveryStatus.map((r) => [r.deliveryStatus, r._count])
     );
+    const paymentStatusCounts = Object.fromEntries(
+      byPaymentStatus.map((r) => [r.paymentStatus, r._count])
+    );
 
     return {
       customers: { total: totalCustomers, newToday: newCustomersToday },
@@ -225,10 +244,22 @@ export const dashboardService = {
         byStatus: orderStatusCounts,
         byDeliveryStatus: deliveryStatusCounts,
         todayDeliveryStatusCounts,
+        // PENDING here means "nothing paid yet" — Cash on Delivery until proven
+        // otherwise (see parcelSummary.service.ts's identical PAID/PARTIAL/PENDING
+        // → PAID/DUE/COD mapping, the same source of truth used on the printed label).
+        paidOrders: paymentStatusCounts.PAID ?? 0,
+        unpaidOrCodOrders: paymentStatusCounts.PENDING ?? 0,
+        partiallyPaidOrders: paymentStatusCounts.PARTIAL ?? 0,
       },
-      sales: { today: salesToday, thisWeek: salesThisWeek, thisMonth: salesThisMonth },
+      sales: {
+        allTime: totalSalesAllTime,
+        today: salesToday,
+        thisWeek: salesThisWeek,
+        thisMonth: salesThisMonth,
+      },
       outstanding,
       paymentsToday,
+      totalProducts,
       lowStockCount: lowStock.total,
       outOfStockCount: outOfStock.total,
       lowStockProducts: lowStock.data.map((p) => ({
@@ -338,7 +369,7 @@ export const dashboardService = {
     ]);
 
     const customers = await prisma.customer.findMany({
-      where: { id: { in: topSpendersRaw.map((r) => r.customerId) } },
+      where: { id: { in: topSpendersRaw.map((r) => r.customerId) }, deletedAt: null },
       select: { id: true, name: true },
     });
     const byId = new Map(customers.map((c) => [c.id, c.name]));
@@ -362,19 +393,27 @@ export const dashboardService = {
     // Products themselves aren't assignment-scoped (no employee-owns-a-product
     // concept), so the catalog counts are global — only "best selling" is scoped, since
     // that's derived from this user's visible orders.
-    const [total, active, low, out, top] = await Promise.all([
-      prisma.product.count(),
-      prisma.product.count({ where: { active: true } }),
+    const [total, active, low, out, top, stockValueRows] = await Promise.all([
+      prisma.product.count({ where: { deletedAt: null } }),
+      prisma.product.count({ where: { active: true, deletedAt: null } }),
       productService.list({ stock: 'low', page: 1, pageSize: 1, sortBy: 'availableQty', sortDir: 'asc' }),
       productService.list({ stock: 'out', page: 1, pageSize: 1, sortBy: 'availableQty', sortDir: 'asc' }),
       topProducts(orderScope(actingUser), 5),
+      // No SUM(availableQty * price) in Prisma's aggregate API — summed in JS instead
+      // of dropping to raw SQL for one number.
+      prisma.product.findMany({
+        where: { deletedAt: null },
+        select: { availableQty: true, price: true },
+      }),
     ]);
+    const stockValue = stockValueRows.reduce((sum, p) => sum + p.availableQty * p.price, 0);
 
     return {
       totalProducts: total,
       activeProducts: active,
       lowStock: low.total,
       outOfStock: out.total,
+      stockValue,
       bestSelling: top,
     };
   },

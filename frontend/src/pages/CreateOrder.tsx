@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ArrowLeft, Search, Trash2 } from 'lucide-react';
 
@@ -64,6 +64,7 @@ export default function CreateOrder() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
+  const queryClient = useQueryClient();
 
   // Two independent prefill sources (Phase 11): a customerId in the URL (Customer
   // Detail's "+ Create Order", §3) and/or router state from "Duplicate Order" (§18,
@@ -199,6 +200,12 @@ export default function CreateOrder() {
         }),
       }),
     onSuccess: (order) => {
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
+      // A new order shifts dashboard/report totals — both are computed live from the
+      // database, but the cached copies still need to be told to refetch rather than
+      // keep showing pre-creation numbers.
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
       toast.success('Order created');
       navigate(`/orders/${order.orderNumber}`);
     },

@@ -136,6 +136,7 @@ export default function CustomerDetail() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['customer', id] });
       queryClient.invalidateQueries({ queryKey: ['customer', id, 'activity'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
       toast.success('Status updated');
     },
     onError: (err) =>
@@ -148,6 +149,8 @@ export default function CustomerDetail() {
     mutationFn: () => apiFetch(`/customers/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['customers'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
       toast.success('Customer moved to Trash');
       navigate('/customers');
     },

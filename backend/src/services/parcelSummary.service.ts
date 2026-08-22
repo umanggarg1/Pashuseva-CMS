@@ -91,9 +91,10 @@ export async function generateParcelSummaryPdf(order: OrderWithDetails): Promise
 
     doc.fontSize(14).font('Helvetica-Bold').text('DELIVER TO', { underline: true });
     doc.moveDown(0.25);
-    doc.fontSize(13);
+    // Name, full address, pincode, and phone are all bold — the courier's most-scanned block.
+    doc.font('Helvetica-Bold').fontSize(13);
     doc.text(order.customer.name.toUpperCase());
-    doc.font('Helvetica').fontSize(12);
+    doc.fontSize(12);
     if (address) {
       doc.text(address.addressLine.toUpperCase());
       if (address.landmark) doc.text(`LANDMARK: ${address.landmark.toUpperCase()}`);
@@ -105,6 +106,7 @@ export async function generateParcelSummaryPdf(order: OrderWithDetails): Promise
       doc.text('No delivery address on file.');
     }
     if (phones.length > 0) doc.text(`PHONE: ${phones.map((p) => p.phone).join(', ')}`);
+    doc.font('Helvetica');
     doc.moveDown(0.75);
 
     if (amountLine) {

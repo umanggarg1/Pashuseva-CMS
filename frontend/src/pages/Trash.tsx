@@ -66,15 +66,30 @@ export default function Trash() {
       ),
   });
 
-  function invalidate() {
+  // Restoring or permanently deleting any of these changes both its own list AND
+  // every dashboard/report number derived from it (Total Orders, Total Customers,
+  // stock counts, sales/outstanding totals, etc.) — all of those are computed live
+  // from the database on every request, but the frontend still has to be told its
+  // cached copies are stale, or it'll keep showing pre-restore/pre-purge numbers.
+  const LIST_QUERY_KEY: Record<TrashType, string> = {
+    customer: 'customers',
+    order: 'orders',
+    product: 'products',
+    employee: 'users',
+  };
+
+  function invalidate(type: TrashType) {
     queryClient.invalidateQueries({ queryKey: ['trash'] });
+    queryClient.invalidateQueries({ queryKey: [LIST_QUERY_KEY[type]] });
+    queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    queryClient.invalidateQueries({ queryKey: ['reports'] });
   }
 
   const restore = useMutation({
     mutationFn: (item: TrashItem) =>
       apiFetch(`/trash/${item.type}/${item.id}/restore`, { method: 'POST' }),
-    onSuccess: () => {
-      invalidate();
+    onSuccess: (_data, item) => {
+      invalidate(item.type);
       toast.success('Restored');
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to restore'),
@@ -86,8 +101,8 @@ export default function Trash() {
         method: 'POST',
         body: JSON.stringify({ confirm: 'DELETE' }),
       }),
-    onSuccess: () => {
-      invalidate();
+    onSuccess: (_data, item) => {
+      invalidate(item.type);
       toast.success('Permanently deleted');
     },
     onError: (err) =>

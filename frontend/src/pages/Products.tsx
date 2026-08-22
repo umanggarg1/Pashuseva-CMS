@@ -442,6 +442,8 @@ function AddProductDialog({
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
       toast.success('Product created');
       setOpen(false);
       setSkuTouched(false);
@@ -723,6 +725,8 @@ function EditProductDialog({
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
       toast.success('Product updated');
       setOpen(false);
     },
