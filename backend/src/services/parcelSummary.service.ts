@@ -152,7 +152,7 @@ export async function generateParcelSummaryPdf(order: OrderWithDetails): Promise
 
     if (hindiFontAvailable) {
       doc.moveDown(0.5);
-      doc.font('Hindi').fontSize(11).text(HINDI_NOTE, { align: 'center' });
+      doc.font('Hindi').fontSize(13).text(HINDI_NOTE, { align: 'center' });
     }
 
     doc.end();
