@@ -162,24 +162,16 @@ async function fetchParcelSummaryPdf(orderId: number): Promise<Blob> {
   return res.blob();
 }
 
-// A hidden iframe + contentWindow.print() is the reliable cross-browser way to print
-// a generated PDF blob directly — window.open(blobUrl) + .print() on the popup is
-// flaky because the browser's built-in PDF viewer often ignores a scripted print()
-// call fired before it's finished rendering.
-function printPdfBlob(blob: Blob) {
+// Opens the PDF in a new tab rather than trying to auto-trigger a print dialog via
+// a hidden iframe — that trick only works on desktop. Mobile browsers (iOS Safari,
+// Chrome on Android) have no PDF plugin to drive print() on, so a hidden iframe
+// silently does nothing there. Opening the blob directly works everywhere: desktop
+// gets the browser's PDF viewer (Ctrl+P from there), mobile gets its native PDF
+// viewer with the OS share/print sheet.
+function openPdfBlob(blob: Blob) {
   const url = URL.createObjectURL(blob);
-  const iframe = document.createElement('iframe');
-  iframe.style.display = 'none';
-  iframe.src = url;
-  document.body.appendChild(iframe);
-  iframe.onload = () => {
-    iframe.contentWindow?.focus();
-    iframe.contentWindow?.print();
-  };
-  setTimeout(() => {
-    document.body.removeChild(iframe);
-    URL.revokeObjectURL(url);
-  }, 60_000);
+  window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 export default function OrderDetail() {
@@ -292,7 +284,7 @@ export default function OrderDetail() {
   // later always reflects whatever has changed since the first print.
   const parcelSummary = useMutation({
     mutationFn: () => fetchParcelSummaryPdf(id!),
-    onSuccess: (blob) => printPdfBlob(blob),
+    onSuccess: (blob) => openPdfBlob(blob),
     onError: () => toast.error('Failed to generate parcel summary'),
   });
 
