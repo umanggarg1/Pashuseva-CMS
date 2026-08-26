@@ -30,7 +30,7 @@ export const customerController = {
 
   async getById(req: Request, res: Response) {
     const { id } = customerIdParamSchema.parse(req.params);
-    const customer = await customerService.getById(id);
+    const customer = await customerService.getById(id, requireActingUser(req));
     res.json(customer);
   },
 
@@ -70,7 +70,7 @@ export const customerController = {
 
   async getActivity(req: Request, res: Response) {
     const { id } = customerIdParamSchema.parse(req.params);
-    const activity = await customerService.getActivity(id);
+    const activity = await customerService.getActivity(id, requireActingUser(req));
     res.json(activity);
   },
 

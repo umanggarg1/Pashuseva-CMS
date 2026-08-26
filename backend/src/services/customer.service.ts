@@ -178,9 +178,16 @@ export const customerService = {
     });
   },
 
-  async getById(id: number) {
+  // An Employee never sees who's assigned to a customer (Manager/Admin only) — a
+  // flat role rule, not a Data Scope/permission distinction like the rest of this
+  // module, per explicit request. Stripped here rather than just hidden in the
+  // frontend, so it's actually withheld, not just unrendered.
+  async getById(id: number, actingUser: ActingUser) {
     const customer = await customerRepository.findById(id);
     if (!customer) throw new NotFoundError('Customer not found');
+    if (actingUser.role === 'EMPLOYEE') {
+      return { ...customer, assignedManager: undefined, assignedEmployees: undefined };
+    }
     return customer;
   },
 
@@ -229,7 +236,12 @@ export const customerService = {
   // called from order.service.ts whenever an order's active/done state can change).
   // No service method left here to set it directly from a request body.
 
-  getActivity(customerId: number) {
+  // Same flat rule as getById above — an Employee never sees a customer's Activity
+  // log, Manager/Admin only.
+  getActivity(customerId: number, actingUser: ActingUser) {
+    if (actingUser.role === 'EMPLOYEE') {
+      throw new HttpError(403, 'You do not have access to this customer’s activity');
+    }
     return customerRepository.findActivity(customerId);
   },
 

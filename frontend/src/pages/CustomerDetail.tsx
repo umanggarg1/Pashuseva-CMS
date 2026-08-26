@@ -73,9 +73,10 @@ interface CustomerDetailData {
   addresses: Address[];
   orders: OrderRow[];
   // Phase 19: several employees can share a customer now (replaces the old single
-  // assignedEmployee).
-  assignedEmployees: { employeeId: number; employee: { id: number; name: string | null } }[];
-  assignedManager: { id: number; name: string | null } | null;
+  // assignedEmployee). Both fields are omitted entirely by the backend for an
+  // Employee actor — Assignment is Manager/Admin-only, a flat role rule.
+  assignedEmployees?: { employeeId: number; employee: { id: number; name: string | null } }[];
+  assignedManager?: { id: number; name: string | null } | null;
   createdAt: string;
 }
 
@@ -109,6 +110,11 @@ export default function CustomerDetail() {
   // Phase 19: split out of the old role-only check — manual (re)assignment is its
   // own grant now, not implied by being a Manager/Admin.
   const canManageAssignment = hasPermission(currentUser, 'customer:assign');
+  // A flat role rule, not a permission — an Employee never sees the Assignment or
+  // Activity sections at all, regardless of any other grant. The backend enforces
+  // this too (customerService.getById/getActivity), so this only controls what's
+  // fetched/rendered here, not the actual access boundary.
+  const canViewAssignmentAndActivity = currentUser?.role !== 'EMPLOYEE';
 
   const customerQuery = useQuery({
     queryKey: ['customer', id],
@@ -121,6 +127,7 @@ export default function CustomerDetail() {
   const activityQuery = useQuery({
     queryKey: ['customer', id, 'activity'],
     queryFn: () => apiFetch<ActivityRow[]>(`/customers/${id}/activity`),
+    enabled: canViewAssignmentAndActivity,
   });
   const employeesQuery = useQuery({
     queryKey: ['users'],
@@ -263,20 +270,22 @@ export default function CustomerDetail() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Assignment</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-1 text-sm">
-            <p>Manager: {customer.assignedManager?.name ?? 'Unassigned'}</p>
-            <AssignedEmployeesRow
-              customerId={customer.id}
-              currentEmployees={customer.assignedEmployees}
-              employees={employeesQuery.data}
-              canEdit={canManageAssignment}
-            />
-          </CardContent>
-        </Card>
+        {canViewAssignmentAndActivity && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Assignment</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-1 text-sm">
+              <p>Manager: {customer.assignedManager?.name ?? 'Unassigned'}</p>
+              <AssignedEmployeesRow
+                customerId={customer.id}
+                currentEmployees={customer.assignedEmployees ?? []}
+                employees={employeesQuery.data}
+                canEdit={canManageAssignment}
+              />
+            </CardContent>
+          </Card>
+        )}
 
         <OrderHistoryCard customerId={customer.id} orders={recentOrders} total={customer.orders.length} />
       </div>
@@ -287,7 +296,9 @@ export default function CustomerDetail() {
           notes={notesQuery.data}
           isPending={notesQuery.isPending}
         />
-        <ActivityPanel activity={activityQuery.data} isPending={activityQuery.isPending} />
+        {canViewAssignmentAndActivity && (
+          <ActivityPanel activity={activityQuery.data} isPending={activityQuery.isPending} />
+        )}
       </div>
     </div>
   );
