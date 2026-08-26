@@ -161,7 +161,7 @@ model User {
   permissions                  UserPermission[]     @relation("UserPermissions")
   grantedPermissions           UserPermission[]     @relation("PermissionGrantedBy")
   passwordResetTokens          PasswordResetToken[]
-  assignedCustomersAsEmployee  Customer[]           @relation("CustomerAssignedEmployee")
+  assignedCustomersAsEmployee  CustomerAssignedEmployee[] @relation("CustomerAssignedEmployees")
   assignedCustomersAsManager   Customer[]           @relation("CustomerAssignedManager")
   createdCustomers             Customer[]           @relation("CustomerCreatedBy")
   createdProducts               Product[]           @relation("ProductCreatedBy")
@@ -224,14 +224,19 @@ model Customer {
   name               String
   email              String?
   notes              String?
-  status             CustomerStatus    @default(ACTIVE)
+  // Phase 19: fully derived from order history now (see
+  // utils/customerAutomation.ts's recalculateCustomerState) — a brand-new customer
+  // with no orders yet defaults to Inactive, same as the derived rule would compute.
+  status             CustomerStatus    @default(INACTIVE)
   phones             CustomerPhone[]
   addresses          CustomerAddress[]
   orders             Order[]
   customerNotes      CustomerNote[]
   activities         CustomerActivity[]
-  assignedEmployee   User?             @relation("CustomerAssignedEmployee", fields: [assignedEmployeeId], references: [id])
-  assignedEmployeeId Int?
+  // Phase 19: replaced the single assignedEmployeeId FK — several employees can now
+  // share a customer (e.g. one per order they've each created for that customer),
+  // not just one. See CustomerAssignedEmployee below and utils/dataScope.ts.
+  assignedEmployees  CustomerAssignedEmployee[]
   assignedManager    User?             @relation("CustomerAssignedManager", fields: [assignedManagerId], references: [id])
   assignedManagerId  Int?
   createdBy          User?             @relation("CustomerCreatedBy", fields: [createdById], references: [id])
@@ -249,10 +254,26 @@ model Customer {
   deletionExpiresAt  DateTime?
   purgedAt           DateTime?
 
-  @@index([assignedEmployeeId])
   @@index([assignedManagerId])
   @@index([createdById])
   @@index([deletedAt])
+}
+
+// Phase 19: several employees can share a customer (all see it, one row per
+// employee who's worked an order for them), replacing the old single
+// Customer.assignedEmployeeId. No extra metadata beyond who/when — same pattern as
+// OrderAssignedEmployee/EmployeeManager.
+model CustomerAssignedEmployee {
+  id         Int      @id @default(autoincrement())
+  customer   Customer @relation(fields: [customerId], references: [id])
+  customerId Int
+  employee   User     @relation("CustomerAssignedEmployees", fields: [employeeId], references: [id])
+  employeeId Int
+  assignedAt DateTime @default(now())
+
+  @@unique([customerId, employeeId])
+  @@index([customerId])
+  @@index([employeeId])
 }
 
 model CustomerPhone {

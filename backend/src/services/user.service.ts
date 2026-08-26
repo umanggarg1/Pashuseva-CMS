@@ -274,7 +274,9 @@ export const userService = {
 
     if (target.role === 'EMPLOYEE') {
       const [assignedCustomerCount, activeOrderCount] = await Promise.all([
-        prisma.customer.count({ where: { assignedEmployeeId: id, deletedAt: null } }),
+        prisma.customer.count({
+          where: { assignedEmployees: { some: { employeeId: id } }, deletedAt: null },
+        }),
         prisma.order.count({
           where: {
             assignedEmployees: { some: { employeeId: id } },
@@ -320,10 +322,21 @@ export const userService = {
       if (!newEmployee || newEmployee.role !== 'EMPLOYEE') {
         throw new HttpError(400, 'reassignToUserId does not refer to an existing Employee');
       }
-      await prisma.customer.updateMany({
-        where: { assignedEmployeeId: id },
-        data: { assignedEmployeeId: reassignToUserId },
-      });
+      // Phase 19: Customer.assignedEmployeeId is now a join table too — same
+      // carry-over pattern as Order.assignedEmployeeId below.
+      const affectedCustomerIds = (
+        await prisma.customerAssignedEmployee.findMany({
+          where: { employeeId: id },
+          select: { customerId: true },
+        })
+      ).map((r) => r.customerId);
+      await prisma.customerAssignedEmployee.deleteMany({ where: { employeeId: id } });
+      if (affectedCustomerIds.length > 0) {
+        await prisma.customerAssignedEmployee.createMany({
+          data: affectedCustomerIds.map((customerId) => ({ customerId, employeeId: reassignToUserId })),
+          skipDuplicates: true,
+        });
+      }
       // Phase 18: Order.assignedEmployeeId is now a join table, not a scalar — carry
       // the departing Employee's share of each shared order over to the new one.
       // skipDuplicates covers the (rare) case where reassignToUserId was already one

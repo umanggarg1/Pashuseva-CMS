@@ -19,6 +19,8 @@ export const PERMISSION_MODULES: PermissionModule[] = [
       { value: 'customer:create', label: 'Create' },
       { value: 'customer:update', label: 'Edit' },
       { value: 'customer:delete', label: 'Delete' },
+      // Phase 19: split out of Edit — manual assign/reassign/unassign/bulk-assign.
+      { value: 'customer:assign', label: 'Assign' },
     ],
   },
   {
@@ -30,6 +32,9 @@ export const PERMISSION_MODULES: PermissionModule[] = [
       { value: 'order:update', label: 'Edit' },
       { value: 'order:cancel', label: 'Cancel' },
       { value: 'order:delete', label: 'Delete' },
+      // Phase 19: search every active customer (not just Data Scope) when creating
+      // an order — independent of the Customers module's own View/Data Scope.
+      { value: 'order:customerSearchAll', label: 'Search All Customers (Order Creation)' },
     ],
   },
   {

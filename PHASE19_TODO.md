@@ -104,29 +104,29 @@ transcription:
 
 ## A. Customer search for order creation
 
-- [ ] New permission `order:customerSearchAll` (schemas/permission.schema.ts +
+- [x] New permission `order:customerSearchAll` (schemas/permission.schema.ts +
       frontend lib/permissions.ts's Orders module) — not in
       `DEFAULT_EMPLOYEE_PERMISSIONS`.
-- [ ] New route `GET /customers/search-for-order?search=` — `order:create`-gated,
+- [x] New route `GET /customers/search-for-order?search=` — `order:create`-gated,
       `customerRepository`/`customerService` gets a new `searchForOrder()` pair.
       Returns `{ id, name, phones: [{phone, isPrimary}], addresses[0].city,
       assignedEmployees: [{id, name}] }` shaped rows only.
-- [ ] `CustomerPicker.tsx` (used by Create Order) switches from `/customers?search=`
+- [x] `CustomerPicker.tsx` (used by Create Order) switches from `/customers?search=`
       to `/customers/search-for-order?search=`.
-- [ ] Customers page (`Customers.tsx`) keeps using `/customers?search=` unchanged —
+- [x] Customers page (`Customers.tsx`) keeps using `/customers?search=` unchanged —
       still gated purely by `customer:view` + Data Scope, no behavior change.
 
 ## B. Customer ↔ Employee assignment: single → multiple
 
-- [ ] Schema: new `CustomerAssignedEmployee` join table (`customerId`, `employeeId`,
+- [x] Schema: new `CustomerAssignedEmployee` join table (`customerId`, `employeeId`,
       `assignedAt`, unique on the pair) — same shape as Phase 18's
       `OrderAssignedEmployee`. Migration backfills every existing
       `Customer.assignedEmployeeId` into the join table before dropping the column.
-- [ ] `customerDataWhere` / `hasCustomerDataAccess` (Employee branch): membership in
+- [x] `customerDataWhere` / `hasCustomerDataAccess` (Employee branch): membership in
       the join table instead of scalar equality. Manager branch's join-table fallback
       (Phase 18 item 3 — "any of this customer's assigned employees reports to me")
       updated to check *any* assigned employee, not a single one.
-- [ ] `resolveEmployeeAssignment`, `assign`/`reassign`/`unassign`/`bulkAssign`
+- [x] `resolveEmployeeAssignment`, `assign`/`reassign`/`unassign`/`bulkAssign`
       (customer.service.ts): assign/bulkAssign add a row (no-op if it already exists,
       per the "prevent duplicate assignment" requirement); reassign becomes "assign
       another employee alongside the existing ones" (there's no single slot to swap
@@ -134,30 +134,30 @@ transcription:
       calls it that way, but behaviorally identical to assign now that it's additive,
       not exclusive; unassign removes one specific employee's row (needs an
       `employeeId` now, not just a customer id).
-- [ ] Gate assign/reassign/unassign/bulk-assign behind the new `customer:assign`
+- [x] Gate assign/reassign/unassign/bulk-assign behind the new `customer:assign`
       permission instead of `customer:update` (see design note 7).
-- [ ] `user.service.ts`'s `getDeleteImpact`/`delete()` (deleting an Employee) —
+- [x] `user.service.ts`'s `getDeleteImpact`/`delete()` (deleting an Employee) —
       reworked for the join table, same pattern as Phase 18's `OrderAssignedEmployee`
       reassignment.
-- [ ] **Auto-assign on order creation**: `orderService.create()`, after creating the
+- [x] **Auto-assign on order creation**: `orderService.create()`, after creating the
       order, if `actingUser.role === 'EMPLOYEE'`, upsert a
       `CustomerAssignedEmployee(customerId, actingUser.id)` row (idempotent — no
       duplicate if already assigned).
-- [ ] **Auto-removal on order completion**: shared `recalculateCustomerState(customerId,
+- [x] **Auto-removal on order completion**: shared `recalculateCustomerState(customerId,
       tx)` helper (see part C) removes an Employee's `CustomerAssignedEmployee` row
       once none of their created orders for that customer are still active, called
       from every place an order's active/done state can change for that customer.
-- [ ] Frontend: `CustomerDetail.tsx`, `Customers.tsx`, and Employees.tsx's
+- [x] Frontend: `CustomerDetail.tsx`, `Customers.tsx`, and Employees.tsx's
       `CustomerAssignmentTable` become multi-value (reusing the `EmployeeMultiSelect`
       component built for Phase 18's Order assignment).
 
 ## C. Customer status: manual → fully derived
 
-- [ ] Remove `PATCH /customers/:id/status`, `customerService.updateStatus`,
+- [x] Remove `PATCH /customers/:id/status`, `customerService.updateStatus`,
       `updateStatusSchema`, and the Deactivate/Reactivate buttons on Customer Detail
       (design note 3).
-- [ ] Remove order creation's "customer must be ACTIVE" gate (design note 2).
-- [ ] New shared helper (`backend/src/lib/orderMetrics.ts` or a new
+- [x] Remove order creation's "customer must be ACTIVE" gate (design note 2).
+- [x] New shared helper (`backend/src/lib/orderMetrics.ts` or a new
       `customerAutomation.ts`) exporting `isOrderActive(order)` (design note 1) and
       `recalculateCustomerState(customerId, tx)`:
       - Recomputes `Customer.status` from scratch: `ACTIVE` if any non-trashed order
@@ -168,7 +168,7 @@ transcription:
       - Idempotent, full-recompute (not incremental) — self-heals rather than
         drifting, matters for the "edge cases" section (concurrent updates, failed
         transactions) at the bottom of the spec.
-- [ ] Call sites: `orderService.create()` (new order → recompute, will flip to
+- [x] Call sites: `orderService.create()` (new order → recompute, will flip to
       ACTIVE), `orderService.updateDeliveryStatus()` (every change — matters most for
       reaching `DELIVERED`/`RETURNED`), `orderService.cancel()`'s immediate-restore
       branch (the `NOT_DISPATCHED` case from design note 1 — `updateDeliveryStatus`
@@ -183,6 +183,51 @@ transcription:
 | `customer:assign` (new, replaces assign/reassign/unassign/bulk-assign's old ride on `customer:update`) | No | Yes |
 | `customer:view` / Data Scope (`ALL` vs `ASSIGNED`) | unchanged | unchanged |
 | `order:create` | unchanged | unchanged |
+
+### Built as planned, plus one more bug found and fixed along the way
+
+Implemented exactly per the plan above, including a one-time production data
+reconciliation migration (`20260827094500_customer_status_derived_default`) that
+recomputed every existing non-trashed customer's status against the new derived rule
+right away, rather than leaving old manually-set statuses to silently disagree with
+it — 5 flipped ACTIVE, 2 stayed/became INACTIVE, out of 7 non-trashed customers in
+the shared database at the time.
+
+**Bug found and fixed during live verification** (not anticipated in the plan):
+`order:customerSearchAll` let an Employee *find* a customer outside their normal Data
+Scope, but `orderService.create()`'s own access check (`assertCustomerAccessible`)
+still only honored the narrower normal scope — so an Employee could search up a
+customer via the new permission and then get a 403 trying to actually place the
+order for them, making the permission useless for its actual purpose. Fixed by
+having `assertCustomerAccessible` bypass the normal Data Scope check when the actor
+has `order:customerSearchAll`, mirroring what the search endpoint already does.
+
+Live-tested end-to-end with disposable test data (two employees, one manager-owned
+customer) before committing: new customer defaults to Inactive; an order (including
+one placed via the broad search permission on a customer outside normal scope)
+flips it to Active and auto-assigns the creating Employee; a second order from the
+same Employee doesn't duplicate the assignment; a second Employee's order adds them
+without disturbing the first; delivering one Employee's only remaining active order
+removes just that Employee while the customer stays Active (another Employee's order
+still open); delivering the last active order flips the customer to Inactive and
+clears every assignment; a new order after that reactivates it. Also confirmed the
+design note 1 correction directly: cancelling *before* dispatch flips the customer
+to Inactive immediately (as intended — the naive "check deliveryStatus terminal"
+definition would have missed this and left it stuck Active forever), while
+cancelling *after* dispatch keeps it Active through `RETURN_PENDING`/
+`RETURN_IN_TRANSIT` and only flips to Inactive once `RETURNED`. Permission gating
+verified directly against the API in both directions for `order:create`,
+`order:customerSearchAll`, and `customer:assign`. All test data purged via Trash
+afterward.
+
+Not independently live-tested this round (lower-risk, covered by code review/
+transaction semantics rather than a dedicated scenario): the "cancelled + returned
+but another active order exists → assignment remains" case specifically (the
+general mechanism was verified via customer status; this exact combination wasn't
+separately walked through), and the concurrency/failure edge cases at the bottom of
+the testing checklist (two orders completing simultaneously, order-creation
+transaction rollback) — these rely on the same `$transaction` wrapping already
+established for order creation/cancellation in earlier phases, not new machinery.
 
 ## Sequencing
 
@@ -201,62 +246,71 @@ transcription:
 ## Testing checklist (from the spec, kept verbatim as the acceptance list)
 
 ### Customer status
-- [ ] New customer with no orders → Inactive.
-- [ ] Create an order for an inactive customer → customer automatically becomes Active.
-- [ ] Create another order for an already active customer → remains Active.
-- [ ] Customer with one/multiple active orders → Active.
-- [ ] Deliver the only active order → customer becomes Inactive.
-- [ ] Deliver one order while another is still active → customer remains Active.
-- [ ] Complete all active orders → customer becomes Inactive.
-- [ ] Cancel pre-dispatch → customer status recalculated correctly (Inactive if that
+- [x] New customer with no orders → Inactive.
+- [x] Create an order for an inactive customer → customer automatically becomes Active.
+- [x] Create another order for an already active customer → remains Active.
+- [x] Customer with one/multiple active orders → Active.
+- [x] Deliver the only active order → customer becomes Inactive.
+- [x] Deliver one order while another is still active → customer remains Active.
+- [x] Complete all active orders → customer becomes Inactive.
+- [x] Cancel pre-dispatch → customer status recalculated correctly (Inactive if that
       was the only order).
-- [ ] Cancel post-dispatch, not yet returned → customer remains Active.
-- [ ] Cancelled + returned, no other active orders → Inactive.
-- [ ] Cancelled + returned, another active order exists → remains Active.
-- [ ] After becoming inactive, a new order → Active again.
+- [x] Cancel post-dispatch, not yet returned → customer remains Active.
+- [x] Cancelled + returned, no other active orders → Inactive.
+- [ ] Cancelled + returned, another active order exists → remains Active. (not
+      independently tested — same recompute mechanism as the row above, verified
+      generally, just not this exact combination)
+- [x] After becoming inactive, a new order → Active again.
 
 ### Employee assignment
-- [ ] Employee creates an order for an unassigned customer → auto-assigned.
-- [ ] Employee creates another order for the same customer → no duplicate assignment.
-- [ ] Customer assigned to multiple employees at once.
-- [ ] Employee B orders for a customer already assigned to Employee A → B added, A
+- [x] Employee creates an order for an unassigned customer → auto-assigned.
+- [x] Employee creates another order for the same customer → no duplicate assignment.
+- [x] Customer assigned to multiple employees at once.
+- [x] Employee B orders for a customer already assigned to Employee A → B added, A
       untouched.
-- [ ] Employee A's order delivered while B still has an active order → A removed, B
+- [x] Employee A's order delivered while B still has an active order → A removed, B
       remains.
-- [ ] Employee A has multiple active orders → delivering one doesn't remove A.
-- [ ] Employee A's last active order completes → A removed.
-- [ ] Cancelled + return pending → assignment remains.
-- [ ] Cancelled + returned, no other active order → assignment removed.
-- [ ] Cancelled + returned, another active order exists → assignment remains.
+- [x] Employee A has multiple active orders → delivering one doesn't remove A.
+- [x] Employee A's last active order completes → A removed.
+- [x] Cancelled + return pending → assignment remains.
+- [x] Cancelled + returned, no other active order → assignment removed.
+- [ ] Cancelled + returned, another active order exists → assignment remains. (same
+      as the customer-status row above — not independently tested)
 
 ### Customer search
-- [ ] Employee can search all active customers while creating an order (with the new
+- [x] Employee can search all active customers while creating an order (with the new
       permission).
-- [ ] Employee can search a customer not assigned to them / assigned to someone else.
-- [ ] Employee can find and select an Inactive customer, and creating the order makes
+- [x] Employee can search a customer not assigned to them / assigned to someone else.
+- [x] Employee can find and select an Inactive customer, and creating the order makes
       them Active.
-- [ ] Search response never includes notes/order history/full profile.
+- [x] Search response never includes notes/order history/full profile.
 - [ ] Search can't be used to bypass normal Customers-page permissions (no
-      `customer:view`/Data Scope escalation).
+      `customer:view`/Data Scope escalation). (true by construction — the search
+      endpoint is entirely separate code from `/customers`, which is untouched — but
+      not separately tested as an attempted bypass)
 
 ### Permissions & security
-- [ ] `order:create` + `order:customerSearchAll` → search-all works.
-- [ ] `order:create` without `order:customerSearchAll` → falls back to normal scope.
-- [ ] No `order:create` → search endpoint itself is forbidden.
-- [ ] No `customer:assign` → manual assign/reassign/unassign/bulk-assign forbidden.
-- [ ] Every above check re-verified directly against the API (not just hidden UI).
+- [x] `order:create` + `order:customerSearchAll` → search-all works.
+- [x] `order:create` without `order:customerSearchAll` → falls back to normal scope.
+- [x] No `order:create` → search endpoint itself is forbidden.
+- [x] No `customer:assign` → manual assign/reassign/unassign/bulk-assign forbidden.
+- [x] Every above check re-verified directly against the API (not just hidden UI).
 
 ### Order status / return
 - [ ] Dispatched → Confirmed, Transit → Processing, Out for Delivery → Out for
-      Delivery, Delivered → Delivered (Phase 17, unchanged — regression check only).
-- [ ] Cancelled + return pending → customer stays Active.
-- [ ] Cancelled + returned → recalculated correctly.
+      Delivery, Delivered → Delivered (Phase 17, unchanged — not re-verified this
+      round; nothing in Phase 19 touches this mapping).
+- [x] Cancelled + return pending → customer stays Active.
+- [x] Cancelled + returned → recalculated correctly.
 
 ### Multiple orders / edge cases
-- [ ] 3 active orders → Active; completing them one at a time stays Active until the
-      last one, then Inactive; a new order after that → Active again.
+- [x] 3 active orders → Active; completing them one at a time stays Active until the
+      last one, then Inactive; a new order after that → Active again. (verified with
+      3 total active orders across two Employees on one customer, delivered one at a
+      time, then a fresh order after going Inactive)
 - [ ] Order-creation failure never leaves a stray Active flip or assignment row
-      (recompute only runs after a successful transaction commit).
-- [ ] Customer with only historical completed / only cancelled-and-returned orders →
+      (recompute only runs after a successful transaction commit). (relies on the
+      same `$transaction` wrapping already in place, not independently tested)
+- [x] Customer with only historical completed / only cancelled-and-returned orders →
       Inactive.
-- [ ] Customer with one cancelled-return-pending order → Active.
+- [x] Customer with one cancelled-return-pending order → Active.

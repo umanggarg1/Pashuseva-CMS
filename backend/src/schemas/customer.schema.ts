@@ -51,9 +51,9 @@ export const updateCustomerSchema = z.object({
   address: addressSchema.optional(),
 });
 
-export const updateCustomerStatusSchema = z.object({
-  status: customerStatusSchema,
-});
+// Phase 19: manual status control is gone — customerStatusSchema is still used by
+// customerListQuerySchema.status below (filtering the list by the now-derived
+// status), just not for setting it.
 
 export const customerListQuerySchema = z.object({
   search: z.string().optional(),

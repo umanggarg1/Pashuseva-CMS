@@ -10,6 +10,7 @@ import { HttpError, NotFoundError } from '../utils/httpError';
 import { hasPermission } from '../utils/permissions';
 import { orderDataWhere, hasCustomerDataAccess, hasOrderDataAccess } from '../utils/dataScope';
 import { computeDeletionExpiry } from '../utils/trash';
+import { recalculateCustomerState } from '../utils/customerAutomation';
 import type { Role, OrderStatus, DeliveryStatus, PaymentStatus, DataScope } from '../generated/prisma/enums';
 import type { CreateOrderInput, UpdateOrderInput, OrderListQuery } from '../schemas/order.schema';
 import type { CreatePaymentInput } from '../schemas/payment.schema';
@@ -168,7 +169,14 @@ function assertCancellable(order: OrderWithItemsAndStatus) {
   }
 }
 
+// Phase 19 §A: order:customerSearchAll exists specifically so an Employee can find
+// *and then place an order for* a customer outside their normal Data Scope — the
+// search endpoint already honors it (customerService.searchForOrder), so order
+// creation's own access check has to as well, or the permission would only ever
+// let someone look, never actually act on what they found.
 async function assertCustomerAccessible(customerId: number, actingUser: ActingUser) {
+  if (hasPermission(actingUser, 'order:customerSearchAll')) return;
+
   const customer = await customerRepository.findAssignmentById(customerId);
   if (!customer) throw new NotFoundError('Customer not found');
 
@@ -183,7 +191,10 @@ async function assertCustomerAccessible(customerId: number, actingUser: ActingUs
 // second identifier type (ORDER_DETAILS_UPGRADE_TODO.md §1).
 function assertOrderAccessible(
   order: {
-    customer: { assignedEmployeeId: number | null; assignedManagerId: number | null };
+    customer: {
+      assignedManagerId: number | null;
+      assignedEmployees: { employeeId: number; employee?: { managedBy: { managerId: number }[] } | null }[];
+    };
     assignedEmployees?: { employeeId: number }[];
   },
   actingUser: ActingUser
@@ -348,9 +359,11 @@ export const orderService = {
       await assertCustomerAccessible(input.customerId!, actingUser);
       existingCustomer = await customerRepository.findById(input.customerId!);
       if (!existingCustomer) throw new NotFoundError('Customer not found');
-      if (existingCustomer.status !== 'ACTIVE') {
-        throw new HttpError(400, 'Cannot create an order for an inactive customer');
-      }
+      // Phase 19: Customer.status is now fully derived from order history — placing
+      // a new order for an Inactive customer is exactly what's supposed to bring
+      // them back to Active (see recalculateCustomerState below), so this used to
+      // block that from ever happening. No status gate here anymore; "the customer
+      // exists and isn't trashed" (already checked above) is the only requirement.
     }
 
     // Phase 18: who to assign is an Admin/Manager decision made on the Create Order
@@ -465,6 +478,19 @@ export const orderService = {
         undefined,
         tx
       );
+
+      // Phase 19 §B: an Employee creating an order for a customer is automatically
+      // assigned to that customer (idempotent — a no-op if already assigned). The
+      // new-customer path already got this via customerRepository.create's initial
+      // assignedEmployeeId above; this covers ordering for an existing customer.
+      if (actingUser.role === 'EMPLOYEE' && !input.newCustomer) {
+        await customerRepository.autoAssignEmployee(customerId, actingUser.id, tx);
+      }
+
+      // Phase 19 §C: a new order can only ever make its customer more "active" —
+      // recalculateCustomerState both derives Customer.status from the order set it
+      // now belongs to and is the only place that ever writes it (see its comment).
+      await recalculateCustomerState(customerId, tx);
 
       await Promise.all(
         resolved.map((item) =>
@@ -916,6 +942,14 @@ export const orderService = {
         }
       }
 
+      // Phase 19 §C: every delivery status change can shift whether this order still
+      // counts as "active" for its customer (most notably reaching DELIVERED or
+      // RETURNED) — recalculateCustomerState re-derives Customer.status and prunes
+      // any Employee's auto-assignment whose orders for this customer are all done
+      // now. A no-op recompute (e.g. DISPATCHED -> IN_TRANSIT) costs one query and
+      // changes nothing, which is fine — it's meant to be cheap to call anywhere.
+      await recalculateCustomerState(existing.customerId, tx);
+
       return order;
     });
   },
@@ -988,6 +1022,13 @@ export const orderService = {
           tx
         );
       }
+
+      // Phase 19 §C: the immediate-restore branch above (never dispatched) makes
+      // this order "done" right here — deliveryStatus never changes for it, so
+      // updateDeliveryStatus's own recompute never runs for that path; this is the
+      // only place it happens. The wasInTransit branch (-> RETURN_PENDING) is still
+      // "active," so this recompute is a no-op there, which is correct and cheap.
+      await recalculateCustomerState(existing.customerId, tx);
 
       return order;
     }, { timeout: 15000 });

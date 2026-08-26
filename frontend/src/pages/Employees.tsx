@@ -73,7 +73,8 @@ interface EmployeeUser {
 interface CustomerRow {
   id: number;
   name: string;
-  assignedEmployeeId: number | null;
+  // Phase 19: several employees can share a customer now.
+  assignedEmployees: { employeeId: number; employee: { id: number; name: string | null } }[];
   assignedManagerId: number | null;
 }
 
@@ -98,11 +99,13 @@ export default function Employees() {
     queryKey: ['users', 'pending'],
     queryFn: () => apiFetch<EmployeeUser[]>('/users?status=PENDING'),
   });
+  const canAssignCustomers = hasPermission(currentUser, 'customer:assign');
   const customersQuery = useQuery({
     queryKey: ['customers'],
     // pageSize=100 (the API's max) rather than true pagination — this table is for
     // bulk-assigning across the whole customer list, not browsing it page by page.
     queryFn: () => apiFetch<{ data: CustomerRow[] }>('/customers?pageSize=100'),
+    enabled: canAssignCustomers,
   });
 
   const [permissionsUser, setPermissionsUser] = useState<EmployeeUser | null>(null);
@@ -298,24 +301,28 @@ export default function Employees() {
         <PermissionsDialog user={permissionsUser} onClose={() => setPermissionsUser(null)} />
       )}
 
-      <div>
-        <h2 className="mb-4 text-xl font-semibold">Customer Assignment</h2>
-        {customersQuery.isPending && <Skeleton className="h-48 w-full" />}
-        {customersQuery.isError && (
-          <ErrorState
-            message="Could not load customers."
-            onRetry={() => customersQuery.refetch()}
-          />
-        )}
-        {customersQuery.data && (
-          <CustomerAssignmentTable
-            customers={customersQuery.data.data}
-            employees={employees}
-            selectedIds={selectedCustomerIds}
-            onSelectionChange={setSelectedCustomerIds}
-          />
-        )}
-      </div>
+      {/* Phase 19: manual (re)assignment is its own customer:assign grant now, not
+          implied by reaching this Admin/Manager-only page. */}
+      {canAssignCustomers && (
+        <div>
+          <h2 className="mb-4 text-xl font-semibold">Customer Assignment</h2>
+          {customersQuery.isPending && <Skeleton className="h-48 w-full" />}
+          {customersQuery.isError && (
+            <ErrorState
+              message="Could not load customers."
+              onRetry={() => customersQuery.refetch()}
+            />
+          )}
+          {customersQuery.data && (
+            <CustomerAssignmentTable
+              customers={customersQuery.data.data}
+              employees={employees}
+              selectedIds={selectedCustomerIds}
+              onSelectionChange={setSelectedCustomerIds}
+            />
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1014,6 +1021,9 @@ function CustomerAssignmentTable({
 }) {
   const queryClient = useQueryClient();
 
+  // Phase 19: assign is additive now (adds one more employee alongside whoever's
+  // already there) — /reassign behaves identically now that there's no single slot
+  // to swap, so this just always calls /assign.
   const assign = useMutation({
     mutationFn: ({ customerId, employeeId }: { customerId: number; employeeId: number }) =>
       apiFetch(`/customers/${customerId}/assign`, {
@@ -1028,26 +1038,13 @@ function CustomerAssignmentTable({
       toast.error(err instanceof ApiError ? err.message : 'Failed to assign customer'),
   });
 
-  // A customer that already has an employee gets /reassign (phases.md §18) instead of
-  // /assign (§16) — same outcome, but keeps the activity log wording and the intent
-  // ("first assignment" vs "moved between employees") accurate.
-  const reassign = useMutation({
+  // Removes one specific employee's assignment, leaving any others untouched.
+  const unassign = useMutation({
     mutationFn: ({ customerId, employeeId }: { customerId: number; employeeId: number }) =>
-      apiFetch(`/customers/${customerId}/reassign`, {
+      apiFetch(`/customers/${customerId}/unassign`, {
         method: 'POST',
         body: JSON.stringify({ employeeId }),
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['customers'] });
-      toast.success('Customer reassigned');
-    },
-    onError: (err) =>
-      toast.error(err instanceof ApiError ? err.message : 'Failed to reassign customer'),
-  });
-
-  const unassign = useMutation({
-    mutationFn: (customerId: number) =>
-      apiFetch(`/customers/${customerId}/unassign`, { method: 'POST' }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       toast.success('Customer unassigned');
@@ -1070,11 +1067,6 @@ function CustomerAssignmentTable({
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : 'Failed to assign customers'),
   });
-
-  function employeeName(id: number | null) {
-    if (!id) return 'Unassigned';
-    return employees.find((e) => e.id === id)?.name ?? `#${id}`;
-  }
 
   function toggleSelected(id: number, checked: boolean) {
     onSelectionChange(checked ? [...selectedIds, id] : selectedIds.filter((i) => i !== id));
@@ -1110,60 +1102,75 @@ function CustomerAssignmentTable({
             <TableHead className="w-10" />
             <TableHead>Customer</TableHead>
             <TableHead>Assigned To</TableHead>
-            <TableHead className="w-56">Reassign</TableHead>
-            <TableHead className="w-28" />
+            <TableHead className="w-56">Add Employee</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {customers.map((customer) => (
-            <TableRow key={customer.id}>
-              <TableCell>
-                <Checkbox
-                  checked={selectedIds.includes(customer.id)}
-                  onCheckedChange={(checked) => toggleSelected(customer.id, checked === true)}
-                />
-              </TableCell>
-              <TableCell className="font-medium">{customer.name}</TableCell>
-              <TableCell>{employeeName(customer.assignedEmployeeId)}</TableCell>
-              <TableCell>
-                <Select
-                  value={
-                    customer.assignedEmployeeId ? String(customer.assignedEmployeeId) : undefined
-                  }
-                  onValueChange={(employeeId) => {
-                    const mutation = customer.assignedEmployeeId ? reassign : assign;
-                    mutation.mutate({ customerId: customer.id, employeeId: Number(employeeId) });
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select employee" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {employees.map((e) => (
-                      <SelectItem key={e.id} value={String(e.id)}>
-                        {e.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </TableCell>
-              <TableCell>
-                {customer.assignedEmployeeId && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => unassign.mutate(customer.id)}
-                    disabled={unassign.isPending}
+          {customers.map((customer) => {
+            const assignedIds = customer.assignedEmployees.map((a) => a.employeeId);
+            // The select only offers employees not already assigned — picking one
+            // always means "add," never "swap," now that assignment is multi-value.
+            const availableEmployees = employees.filter((e) => !assignedIds.includes(e.id));
+            return (
+              <TableRow key={customer.id}>
+                <TableCell>
+                  <Checkbox
+                    checked={selectedIds.includes(customer.id)}
+                    onCheckedChange={(checked) => toggleSelected(customer.id, checked === true)}
+                  />
+                </TableCell>
+                <TableCell className="font-medium">{customer.name}</TableCell>
+                <TableCell>
+                  {customer.assignedEmployees.length === 0 ? (
+                    'Unassigned'
+                  ) : (
+                    <div className="flex flex-wrap gap-1">
+                      {customer.assignedEmployees.map((a) => (
+                        <span
+                          key={a.employeeId}
+                          className="flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-xs"
+                        >
+                          {a.employee.name ?? `#${a.employeeId}`}
+                          <button
+                            type="button"
+                            className="text-muted-foreground hover:text-foreground"
+                            disabled={unassign.isPending}
+                            onClick={() =>
+                              unassign.mutate({ customerId: customer.id, employeeId: a.employeeId })
+                            }
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <Select
+                    value=""
+                    onValueChange={(employeeId) =>
+                      assign.mutate({ customerId: customer.id, employeeId: Number(employeeId) })
+                    }
                   >
-                    Unassign
-                  </Button>
-                )}
-              </TableCell>
-            </TableRow>
-          ))}
+                    <SelectTrigger>
+                      <SelectValue placeholder="Add employee…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {availableEmployees.map((e) => (
+                        <SelectItem key={e.id} value={String(e.id)}>
+                          {e.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </TableCell>
+              </TableRow>
+            );
+          })}
           {customers.length === 0 && (
             <TableRow>
-              <TableCell colSpan={5} className="text-center text-muted-foreground">
+              <TableCell colSpan={4} className="text-center text-muted-foreground">
                 No customers yet.
               </TableCell>
             </TableRow>

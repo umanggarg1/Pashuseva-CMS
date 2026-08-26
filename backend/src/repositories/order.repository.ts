@@ -68,17 +68,24 @@ export const orderRepository = {
           },
         },
         address: true,
-        // assignedEmployee.managedBy (Phase 18 item 3) is fetched here too, not just
-        // in findAssignmentById — assertOrderAccessible (order.service.ts) runs
-        // against this full object for the /number/:orderNumber lookup path, which
-        // doesn't go through the checkOrderAccess middleware/findAssignmentById at
-        // all. Without it here, a Manager's join-table fallback silently evaluates
-        // to false and a legitimately-visible order 403s.
+        // The assigned Employees' own set of Managers (Phase 18 item 3) is fetched
+        // here too, not just in findAssignmentById — assertOrderAccessible
+        // (order.service.ts) runs against this full object for the
+        // /number/:orderNumber lookup path, which doesn't go through the
+        // checkOrderAccess middleware/findAssignmentById at all. Without it here, a
+        // Manager's join-table fallback silently evaluates to false and a
+        // legitimately-visible order 403s. Phase 19: a customer can have several
+        // assigned Employees now, not just one.
         customer: {
           include: {
             phones: true,
             addresses: true,
-            assignedEmployee: { select: { managedBy: { select: { managerId: true } } } },
+            assignedEmployees: {
+              select: {
+                employeeId: true,
+                employee: { select: { managedBy: { select: { managerId: true } } } },
+              },
+            },
           },
         },
         assignedEmployees: { include: { employee: { select: { id: true, name: true } } } },
@@ -102,17 +109,24 @@ export const orderRepository = {
           },
         },
         address: true,
-        // assignedEmployee.managedBy (Phase 18 item 3) is fetched here too, not just
-        // in findAssignmentById — assertOrderAccessible (order.service.ts) runs
-        // against this full object for the /number/:orderNumber lookup path, which
-        // doesn't go through the checkOrderAccess middleware/findAssignmentById at
-        // all. Without it here, a Manager's join-table fallback silently evaluates
-        // to false and a legitimately-visible order 403s.
+        // The assigned Employees' own set of Managers (Phase 18 item 3) is fetched
+        // here too, not just in findAssignmentById — assertOrderAccessible
+        // (order.service.ts) runs against this full object for the
+        // /number/:orderNumber lookup path, which doesn't go through the
+        // checkOrderAccess middleware/findAssignmentById at all. Without it here, a
+        // Manager's join-table fallback silently evaluates to false and a
+        // legitimately-visible order 403s. Phase 19: a customer can have several
+        // assigned Employees now, not just one.
         customer: {
           include: {
             phones: true,
             addresses: true,
-            assignedEmployee: { select: { managedBy: { select: { managerId: true } } } },
+            assignedEmployees: {
+              select: {
+                employeeId: true,
+                employee: { select: { managedBy: { select: { managerId: true } } } },
+              },
+            },
           },
         },
         assignedEmployees: { include: { employee: { select: { id: true, name: true } } } },
@@ -136,13 +150,29 @@ export const orderRepository = {
         orderStatus: true,
         customer: {
           select: {
-            assignedEmployeeId: true,
             assignedManagerId: true,
-            assignedEmployee: { select: { managedBy: { select: { managerId: true } } } },
+            // Phase 19: a customer can have several assigned Employees now, not
+            // just one — see utils/dataScope.ts's hasOrderDataAccess.
+            assignedEmployees: {
+              select: {
+                employeeId: true,
+                employee: { select: { managedBy: { select: { managerId: true } } } },
+              },
+            },
           },
         },
         assignedEmployees: { select: { employeeId: true } },
       },
+    });
+  },
+
+  // Phase 19: every non-trashed order for a customer, just the fields
+  // utils/customerAutomation.ts's recalculateCustomerState needs to decide the
+  // customer's derived status and which Employees' auto-assignments should survive.
+  findForCustomerRecalc(customerId: number, client: PrismaClientOrTx = prisma) {
+    return client.order.findMany({
+      where: { customerId, deletedAt: null },
+      select: { orderStatus: true, deliveryStatus: true, createdById: true },
     });
   },
 

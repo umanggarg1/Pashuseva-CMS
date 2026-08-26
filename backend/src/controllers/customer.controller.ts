@@ -5,7 +5,6 @@ import {
   customerIdParamSchema,
   createCustomerSchema,
   updateCustomerSchema,
-  updateCustomerStatusSchema,
   customerListQuerySchema,
 } from '../schemas/customer.schema';
 import { createCustomerNoteSchema } from '../schemas/customerNote.schema';
@@ -13,6 +12,7 @@ import {
   assignCustomerSchema,
   reassignCustomerSchema,
   bulkAssignCustomerSchema,
+  unassignCustomerSchema,
 } from '../schemas/customerAssignment.schema';
 import { HttpError } from '../utils/httpError';
 
@@ -47,11 +47,12 @@ export const customerController = {
     res.json(customer);
   },
 
-  async updateStatus(req: Request, res: Response) {
-    const { id } = customerIdParamSchema.parse(req.params);
-    const { status } = updateCustomerStatusSchema.parse(req.body);
-    const customer = await customerService.updateStatus(id, status, requireActingUser(req));
-    res.json(customer);
+  // Phase 19: manual status control is gone — see customerService's comment.
+
+  async searchForOrder(req: Request, res: Response) {
+    const search = String(req.query.search ?? '');
+    const results = await customerService.searchForOrder(requireActingUser(req), search);
+    res.json({ data: results });
   },
 
   async listNotes(req: Request, res: Response) {
@@ -89,7 +90,8 @@ export const customerController = {
 
   async unassign(req: Request, res: Response) {
     const { id } = customerIdParamSchema.parse(req.params);
-    const customer = await customerService.unassign(id, requireActingUser(req));
+    const { employeeId } = unassignCustomerSchema.parse(req.body);
+    const customer = await customerService.unassign(id, employeeId, requireActingUser(req));
     res.json(customer);
   },
 

@@ -12,8 +12,22 @@ import { useCurrentUser, hasPermission } from '@/lib/auth';
 export interface CustomerOption {
   id: number;
   name: string;
-  status: 'ACTIVE' | 'INACTIVE';
+  // Phase 19: status is fully derived/backend-only now and isn't part of the
+  // limited order-search shape — optional here since nothing in Create Order reads
+  // it (creating an order for an Inactive customer is exactly what reactivates them).
+  status?: 'ACTIVE' | 'INACTIVE';
   phones: { phone: string; isPrimary: boolean }[];
+}
+
+// Phase 19 §A: the order-creation-time search's fixed limited shape — name/phone/
+// city/currently-assigned-employees only, never the full profile. See
+// customerService.searchForOrder's comment on the backend.
+interface OrderSearchResult {
+  id: number;
+  name: string;
+  phones: { phone: string; isPrimary: boolean }[];
+  addresses: { city: string }[];
+  assignedEmployees: { employee: { id: number; name: string | null } }[];
 }
 
 // Reusable customer search-or-create picker. Built for Create Order, kept generic
@@ -32,11 +46,15 @@ export default function CustomerPicker({
   const { data: currentUser } = useCurrentUser();
   const canCreateCustomer = hasPermission(currentUser, 'customer:create');
 
+  // Phase 19 §A: order-creation-time search — not the regular /customers list, so
+  // it works regardless of the caller's own Data Scope (gated server-side on a
+  // separate order:customerSearchAll permission), and always returns the limited
+  // shape (name/phone/city/currently-assigned employees), never the full profile.
   const query = useQuery({
     queryKey: ['customer-picker-search', debouncedSearch],
     queryFn: () =>
-      apiFetch<{ data: CustomerOption[] }>(
-        `/customers?search=${encodeURIComponent(debouncedSearch)}&pageSize=8`
+      apiFetch<{ data: OrderSearchResult[] }>(
+        `/customers/search-for-order?search=${encodeURIComponent(debouncedSearch)}`
       ),
     enabled: debouncedSearch.length > 1,
   });
@@ -80,11 +98,21 @@ export default function CustomerPicker({
             <button
               key={c.id}
               type="button"
-              onClick={() => onChange(c)}
+              onClick={() => onChange({ id: c.id, name: c.name, phones: c.phones })}
               className="flex w-full items-center justify-between gap-3 p-2 text-left text-sm hover:bg-accent"
             >
-              <span className="min-w-0 truncate">{c.name}</span>
-              <span className="shrink-0 text-muted-foreground">{c.phones[0]?.phone}</span>
+              <span className="min-w-0 truncate">
+                {c.name}
+                {c.assignedEmployees.length > 0 && (
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    ({c.assignedEmployees.map((a) => a.employee.name ?? 'Unknown').join(', ')})
+                  </span>
+                )}
+              </span>
+              <span className="shrink-0 text-right text-muted-foreground">
+                {c.phones[0]?.phone}
+                {c.addresses[0]?.city && <span className="block text-xs">{c.addresses[0].city}</span>}
+              </span>
             </button>
           ))}
           {query.data.data.length === 0 && (

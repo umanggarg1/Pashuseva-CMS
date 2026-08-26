@@ -20,10 +20,17 @@ type ScopedUser = { id: number; role: Role | null };
 // (set by a Manager assigning themselves, or by resolveEmployeeAssignment resolving
 // to exactly one manager) always wins and is authoritative once set — the
 // join-table fallback only applies while it's still null.
+//
+// Phase 19: a customer (and therefore an order, via its customer) can have several
+// assigned Employees now, not just one — the Manager fallback fires if *any* of
+// them reports to the acting Manager.
 type ManagedEmployee = { managedBy: { managerId: number }[] };
+type AssignedEmployeeRow = { employee?: ManagedEmployee | null };
 
-function managerSeesViaEmployee(managerId: number, assignedEmployee: ManagedEmployee | null | undefined): boolean {
-  return assignedEmployee?.managedBy.some((m) => m.managerId === managerId) ?? false;
+function managerSeesViaEmployees(managerId: number, assignedEmployees: AssignedEmployeeRow[] | undefined): boolean {
+  return (
+    assignedEmployees?.some((a) => a.employee?.managedBy.some((m) => m.managerId === managerId)) ?? false
+  );
 }
 
 export function customerDataWhere(
@@ -37,12 +44,12 @@ export function customerDataWhere(
         { assignedManagerId: actingUser.id },
         {
           assignedManagerId: null,
-          assignedEmployee: { managedBy: { some: { managerId: actingUser.id } } },
+          assignedEmployees: { some: { employee: { managedBy: { some: { managerId: actingUser.id } } } } },
         },
       ],
     };
   }
-  return { assignedEmployeeId: actingUser.id };
+  return { assignedEmployees: { some: { employeeId: actingUser.id } } };
 }
 
 export function orderDataWhere(
@@ -57,7 +64,7 @@ export function orderDataWhere(
           { assignedManagerId: actingUser.id },
           {
             assignedManagerId: null,
-            assignedEmployee: { managedBy: { some: { managerId: actingUser.id } } },
+            assignedEmployees: { some: { employee: { managedBy: { some: { managerId: actingUser.id } } } } },
           },
         ],
       },
@@ -68,7 +75,7 @@ export function orderDataWhere(
   // several employees can now share/work an order without owning the customer).
   return {
     OR: [
-      { customer: { assignedEmployeeId: actingUser.id } },
+      { customer: { assignedEmployees: { some: { employeeId: actingUser.id } } } },
       { assignedEmployees: { some: { employeeId: actingUser.id } } },
     ],
   };
@@ -79,17 +86,16 @@ export function hasCustomerDataAccess(
   dataScope: DataScope | null | undefined,
   customer: {
     assignedManagerId: number | null;
-    assignedEmployeeId: number | null;
-    assignedEmployee?: ManagedEmployee | null;
+    assignedEmployees: { employeeId: number; employee?: ManagedEmployee | null }[];
   }
 ): boolean {
   if (actingUser.role === 'ADMIN' || dataScope === 'ALL') return true;
   if (actingUser.role === 'MANAGER') {
     if (customer.assignedManagerId === actingUser.id) return true;
     if (customer.assignedManagerId !== null) return false;
-    return managerSeesViaEmployee(actingUser.id, customer.assignedEmployee);
+    return managerSeesViaEmployees(actingUser.id, customer.assignedEmployees);
   }
-  return customer.assignedEmployeeId === actingUser.id;
+  return customer.assignedEmployees.some((a) => a.employeeId === actingUser.id);
 }
 
 export function hasOrderDataAccess(
@@ -98,8 +104,7 @@ export function hasOrderDataAccess(
   order: {
     customer: {
       assignedManagerId: number | null;
-      assignedEmployeeId: number | null;
-      assignedEmployee?: ManagedEmployee | null;
+      assignedEmployees: { employeeId: number; employee?: ManagedEmployee | null }[];
     };
     // Phase 18: optional so existing call sites that don't fetch it still type-check;
     // absent is treated the same as empty (no shared-assignment access).
@@ -110,10 +115,10 @@ export function hasOrderDataAccess(
   if (actingUser.role === 'MANAGER') {
     if (order.customer.assignedManagerId === actingUser.id) return true;
     if (order.customer.assignedManagerId !== null) return false;
-    return managerSeesViaEmployee(actingUser.id, order.customer.assignedEmployee);
+    return managerSeesViaEmployees(actingUser.id, order.customer.assignedEmployees);
   }
   return (
-    order.customer.assignedEmployeeId === actingUser.id ||
+    order.customer.assignedEmployees.some((a) => a.employeeId === actingUser.id) ||
     (order.assignedEmployees?.some((a) => a.employeeId === actingUser.id) ?? false)
   );
 }

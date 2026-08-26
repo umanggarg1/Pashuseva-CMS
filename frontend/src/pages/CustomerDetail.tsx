@@ -20,13 +20,6 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
   Form,
   FormControl,
   FormField,
@@ -37,6 +30,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import ErrorState from '@/components/ErrorState';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import EmployeeMultiSelect from '@/components/EmployeeMultiSelect';
 import { apiFetch, ApiError } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 
@@ -78,7 +72,9 @@ interface CustomerDetailData {
   phones: Phone[];
   addresses: Address[];
   orders: OrderRow[];
-  assignedEmployee: { id: number; name: string | null } | null;
+  // Phase 19: several employees can share a customer now (replaces the old single
+  // assignedEmployee).
+  assignedEmployees: { employeeId: number; employee: { id: number; name: string | null } }[];
   assignedManager: { id: number; name: string | null } | null;
   createdAt: string;
 }
@@ -110,7 +106,9 @@ export default function CustomerDetail() {
   const queryClient = useQueryClient();
   const { data: currentUser } = useCurrentUser();
   const canCreateOrder = hasPermission(currentUser, 'order:create');
-  const canManageAssignment = currentUser?.role === 'ADMIN' || currentUser?.role === 'MANAGER';
+  // Phase 19: split out of the old role-only check — manual (re)assignment is its
+  // own grant now, not implied by being a Manager/Admin.
+  const canManageAssignment = hasPermission(currentUser, 'customer:assign');
 
   const customerQuery = useQuery({
     queryKey: ['customer', id],
@@ -130,18 +128,9 @@ export default function CustomerDetail() {
     enabled: canManageAssignment,
   });
 
-  const toggleStatus = useMutation({
-    mutationFn: (status: 'ACTIVE' | 'INACTIVE') =>
-      apiFetch(`/customers/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['customer', id] });
-      queryClient.invalidateQueries({ queryKey: ['customer', id, 'activity'] });
-      queryClient.invalidateQueries({ queryKey: ['reports'] });
-      toast.success('Status updated');
-    },
-    onError: (err) =>
-      toast.error(err instanceof ApiError ? err.message : 'Failed to update status'),
-  });
+  // Phase 19: manual status control is gone — Customer status is fully derived from
+  // order history now (see the backend's recalculateCustomerState). No toggle here
+  // anymore; the "Active Customer"/"Inactive Customer" line below just reflects it.
 
   // Trash (Phase 3 addendum) — distinct from Deactivate above: this hides the
   // customer entirely (not just flags it), recoverable from Trash for 10 days.
@@ -204,26 +193,12 @@ export default function CustomerDetail() {
           </p>
         </div>
         <div className="flex gap-2">
-          {canCreateOrder && customer.status === 'ACTIVE' && (
+          {canCreateOrder && (
             <Button onClick={() => navigate(`/orders/new?customerId=${customer.id}`)}>
               + Create Order
             </Button>
           )}
           <EditCustomerDialog customer={customer} />
-          {customer.status === 'ACTIVE' ? (
-            <ConfirmDialog
-              trigger={<Button variant="outline">Deactivate</Button>}
-              title="Deactivate this customer?"
-              description="Deactivated customers can't be used for new orders until reactivated. Their existing order history is unaffected."
-              confirmLabel="Deactivate"
-              isPending={toggleStatus.isPending}
-              onConfirm={() => toggleStatus.mutate('INACTIVE')}
-            />
-          ) : (
-            <Button variant="outline" onClick={() => toggleStatus.mutate('ACTIVE')}>
-              Reactivate
-            </Button>
-          )}
           {hasPermission(currentUser, 'customer:delete') && (
             <ConfirmDialog
               trigger={<Button variant="destructive">Delete</Button>}
@@ -294,9 +269,9 @@ export default function CustomerDetail() {
           </CardHeader>
           <CardContent className="space-y-1 text-sm">
             <p>Manager: {customer.assignedManager?.name ?? 'Unassigned'}</p>
-            <AssignedEmployeeRow
+            <AssignedEmployeesRow
               customerId={customer.id}
-              currentEmployee={customer.assignedEmployee}
+              currentEmployees={customer.assignedEmployees}
               employees={employeesQuery.data}
               canEdit={canManageAssignment}
             />
@@ -332,29 +307,45 @@ function StatCard({ title, value }: { title: string; value: string }) {
 }
 
 // Phase 11 §14 — assignment used to be read-only here ("manage from the Employees
-// page"); this lets a Manager/Admin change it inline instead, reusing the same
-// assign/reassign endpoints the Employees page already uses.
-function AssignedEmployeeRow({
+// page"); this lets a Manager/Admin change it inline instead. Phase 19: a customer
+// can have several assigned Employees now — this edits the whole set via checkboxes,
+// diffing against the current set to call assign for newly-checked and unassign
+// (with that specific employeeId) for newly-unchecked ones.
+function AssignedEmployeesRow({
   customerId,
-  currentEmployee,
+  currentEmployees,
   employees,
   canEdit,
 }: {
   customerId: number;
-  currentEmployee: { id: number; name: string | null } | null;
+  currentEmployees: { employeeId: number; employee: { id: number; name: string | null } }[];
   employees: EmployeeOption[] | undefined;
   canEdit: boolean;
 }) {
   const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState(currentEmployee?.id.toString() ?? '');
+  const [selectedIds, setSelectedIds] = useState<number[]>(currentEmployees.map((a) => a.employeeId));
   const queryClient = useQueryClient();
 
-  const changeAssignment = useMutation({
-    mutationFn: (employeeId: number) =>
-      apiFetch(`/customers/${customerId}/${currentEmployee ? 'reassign' : 'assign'}`, {
-        method: 'POST',
-        body: JSON.stringify({ employeeId }),
-      }),
+  const save = useMutation({
+    mutationFn: async () => {
+      const currentIds = currentEmployees.map((a) => a.employeeId);
+      const toAdd = selectedIds.filter((id) => !currentIds.includes(id));
+      const toRemove = currentIds.filter((id) => !selectedIds.includes(id));
+      await Promise.all([
+        ...toAdd.map((employeeId) =>
+          apiFetch(`/customers/${customerId}/assign`, {
+            method: 'POST',
+            body: JSON.stringify({ employeeId }),
+          })
+        ),
+        ...toRemove.map((employeeId) =>
+          apiFetch(`/customers/${customerId}/unassign`, {
+            method: 'POST',
+            body: JSON.stringify({ employeeId }),
+          })
+        ),
+      ]);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['customer', String(customerId)] });
       queryClient.invalidateQueries({ queryKey: ['customer', String(customerId), 'activity'] });
@@ -365,52 +356,47 @@ function AssignedEmployeeRow({
       toast.error(err instanceof ApiError ? err.message : 'Failed to update assignment'),
   });
 
+  const names = currentEmployees.map((a) => a.employee.name ?? 'Unknown').join(', ');
+
   if (!editing) {
     return (
       <p className="flex items-center gap-2">
-        Employee: {currentEmployee?.name ?? 'Unassigned'}
+        Employee{currentEmployees.length === 1 ? '' : 's'}: {names || 'Unassigned'}
         {canEdit && (
           <button
             type="button"
             onClick={() => {
-              setValue(currentEmployee?.id.toString() ?? '');
+              setSelectedIds(currentEmployees.map((a) => a.employeeId));
               setEditing(true);
             }}
             className="text-primary hover:underline"
           >
-            [Change Employee]
+            [Change Employees]
           </button>
         )}
       </p>
     );
   }
 
-  const employeeOptions = employees?.filter((e) => e.role === 'EMPLOYEE' && e.status === 'ACTIVE');
+  const employeeOptions = (employees ?? []).filter(
+    (e) => e.role === 'EMPLOYEE' && e.status === 'ACTIVE'
+  );
 
   return (
-    <div className="flex items-center gap-2">
-      <Select value={value} onValueChange={setValue}>
-        <SelectTrigger className="h-8 w-40">
-          <SelectValue placeholder="Select employee" />
-        </SelectTrigger>
-        <SelectContent>
-          {employeeOptions?.map((e) => (
-            <SelectItem key={e.id} value={String(e.id)}>
-              {e.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-        Cancel
-      </Button>
-      <Button
-        size="sm"
-        disabled={!value || changeAssignment.isPending}
-        onClick={() => changeAssignment.mutate(Number(value))}
-      >
-        Save
-      </Button>
+    <div className="space-y-2">
+      <EmployeeMultiSelect
+        employees={employeeOptions}
+        selectedIds={selectedIds}
+        onChange={setSelectedIds}
+      />
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+          Cancel
+        </Button>
+        <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()}>
+          Save
+        </Button>
+      </div>
     </div>
   );
 }

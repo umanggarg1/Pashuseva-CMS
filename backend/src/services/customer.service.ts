@@ -5,8 +5,9 @@ import { userRepository } from '../repositories/user.repository';
 import { auditLogRepository } from '../repositories/auditLog.repository';
 import { HttpError, NotFoundError } from '../utils/httpError';
 import { customerDataWhere, hasCustomerDataAccess } from '../utils/dataScope';
+import { hasPermission } from '../utils/permissions';
 import { computeDeletionExpiry } from '../utils/trash';
-import type { Role, CustomerStatus, DataScope } from '../generated/prisma/enums';
+import type { Role, DataScope } from '../generated/prisma/enums';
 import type {
   CreateCustomerInput,
   UpdateCustomerInput,
@@ -16,6 +17,7 @@ import type {
 type ActingUser = {
   id: number;
   role: Role | null;
+  permissions?: string[];
   customerDataScope?: DataScope | null;
 };
 
@@ -98,7 +100,7 @@ function buildCustomerWhere(
   const filters: Prisma.CustomerWhereInput[] = [scope];
   if (query.status) filters.push({ status: query.status });
   if (actingUser.role === 'ADMIN' && query.assignedEmployeeId) {
-    filters.push({ assignedEmployeeId: query.assignedEmployeeId });
+    filters.push({ assignedEmployees: { some: { employeeId: query.assignedEmployeeId } } });
   }
   if (actingUser.role === 'ADMIN' && query.assignedManagerId) {
     filters.push({ assignedManagerId: query.assignedManagerId });
@@ -133,6 +135,39 @@ function buildCustomerWhere(
 }
 
 export const customerService = {
+  // Phase 19: the order-creation-time customer search (PHASE19_TODO.md §A). With
+  // order:customerSearchAll, searches every non-trashed customer regardless of
+  // Data Scope; without it, falls back to the caller's normal customerDataWhere
+  // scope (identical to what they already see on the Customers page). Either way
+  // customerRepository.searchForOrder's fixed limited shape is all that's ever
+  // returned — never the full profile, and never filtered by customer.status (an
+  // Inactive customer must stay findable so a new order can reactivate them).
+  searchForOrder(actingUser: ActingUser, search: string) {
+    const scope = hasPermission(actingUser, 'order:customerSearchAll')
+      ? {}
+      : customerDataWhere(actingUser, actingUser.customerDataScope);
+    // scope can itself contain a top-level OR (the Manager join-table fallback —
+    // see utils/dataScope.ts) — combining it with search's own OR via AND, not
+    // spread, so the two can never silently collide (same bug class already caught
+    // twice in buildOrderWhere/buildCustomerWhere).
+    return customerRepository.searchForOrder(
+      {
+        AND: [
+          scope,
+          {
+            OR: [
+              { name: { contains: search, mode: 'insensitive' } },
+              { phones: { some: { phone: { contains: search } } } },
+              { addresses: { some: { city: { contains: search, mode: 'insensitive' } } } },
+              ...(Number.isInteger(Number(search)) ? [{ id: Number(search) }] : []),
+            ],
+          },
+        ],
+      },
+      8
+    );
+  },
+
   list(actingUser: ActingUser, query: CustomerListQuery) {
     const where = buildCustomerWhere(actingUser, query);
     const skip = (query.page - 1) * query.pageSize;
@@ -189,18 +224,10 @@ export const customerService = {
     return customer;
   },
 
-  async updateStatus(id: number, status: CustomerStatus, actingUser: ActingUser) {
-    const existing = await customerRepository.findById(id);
-    if (!existing) throw new NotFoundError('Customer not found');
-
-    const customer = await customerRepository.updateStatus(id, status);
-    await customerRepository.recordActivity(
-      id,
-      status === 'ACTIVE' ? 'Customer reactivated' : 'Customer deactivated',
-      actingUser.id
-    );
-    return customer;
-  },
+  // Phase 19: manual status control is gone — Customer.status is fully derived from
+  // order history now (see utils/customerAutomation.ts's recalculateCustomerState,
+  // called from order.service.ts whenever an order's active/done state can change).
+  // No service method left here to set it directly from a request body.
 
   getActivity(customerId: number) {
     return customerRepository.findActivity(customerId);
@@ -234,7 +261,9 @@ export const customerService = {
     return customer;
   },
 
-  async unassign(customerId: number, actingUser: ActingUser) {
+  // Phase 19: removes one specific Employee's assignment — a customer can have
+  // several now, so there's no longer a single slot to just clear.
+  async unassign(customerId: number, employeeId: number, actingUser: ActingUser) {
     const existing = await customerRepository.findAssignmentById(customerId);
     if (!existing) throw new NotFoundError('Customer not found');
 
@@ -249,9 +278,9 @@ export const customerService = {
       throw new HttpError(403, 'You can only unassign customers within your own team');
     }
 
-    const customer = await customerRepository.unassign(customerId);
+    await customerRepository.unassign(customerId, employeeId);
     await customerRepository.recordActivity(customerId, 'Unassigned', actingUser.id);
-    return customer;
+    return customerRepository.findById(customerId);
   },
 
   async bulkAssign(customerIds: number[], employeeId: number, actingUser: ActingUser) {

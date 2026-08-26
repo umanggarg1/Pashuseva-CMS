@@ -7,10 +7,18 @@ export const PERMISSIONS = [
   // Phase 15 addendum: split out from customer:update — deactivate/reactivate is
   // its own checkbox in the permission picker, distinct from editing a record.
   'customer:delete',
+  // Phase 19: split out of customer:update — manual assign/reassign/unassign/
+  // bulk-assign is its own grant now, not something every Employee with edit
+  // access already gets by default.
+  'customer:assign',
   'order:view',
   'order:create',
   'order:update',
   'order:cancel',
+  // Phase 19 §A: lets the Create Order customer search look across every active
+  // customer, not just the caller's own Data Scope — independent of
+  // customer:view/customerDataScope, and never granted just by having this.
+  'order:customerSearchAll',
   // Trash (Phase 3 addendum) — Order never had a deactivate-equivalent permission
   // to reuse the way Customer/Product did, so this is genuinely new.
   'order:delete',

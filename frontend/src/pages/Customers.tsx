@@ -47,7 +47,8 @@ interface CustomerListItem {
   email: string | null;
   status: 'ACTIVE' | 'INACTIVE';
   phones: CustomerPhone[];
-  assignedEmployee: { id: number; name: string | null } | null;
+  // Phase 19: several employees can share a customer now.
+  assignedEmployees: { employeeId: number; employee: { id: number; name: string | null } }[];
   assignedManager: { id: number; name: string | null } | null;
 }
 
@@ -284,7 +285,11 @@ export default function Customers() {
                     </Link>
                   </TableCell>
                   <TableCell>{primaryPhone(customer.phones)}</TableCell>
-                  <TableCell>{customer.assignedEmployee?.name ?? 'Unassigned'}</TableCell>
+                  <TableCell>
+                    {customer.assignedEmployees.length > 0
+                      ? customer.assignedEmployees.map((a) => a.employee.name ?? 'Unknown').join(', ')
+                      : 'Unassigned'}
+                  </TableCell>
                   <TableCell>{customer.status}</TableCell>
                 </TableRow>
               ))}
