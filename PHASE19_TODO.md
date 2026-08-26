@@ -314,3 +314,37 @@ established for order creation/cancellation in earlier phases, not new machinery
 - [x] Customer with only historical completed / only cancelled-and-returned orders →
       Inactive.
 - [x] Customer with one cancelled-return-pending order → Active.
+
+## Post-ship fix: `order:customerSearchAll` wasn't actually usable by default
+
+Real-world report right after shipping: Jitender Rajput (a real Employee) couldn't
+find an unassigned customer on Create Order at all. Root cause — two compounding
+issues, both fixed:
+
+1. **Wrong default.** `order:customerSearchAll` had deliberately been left out of
+   `DEFAULT_EMPLOYEE_PERMISSIONS` (design note 7) as an opt-in grant. In practice
+   that broke the feature's whole point — a standard Employee couldn't find any
+   customer outside their own Data Scope to place an order for, which is exactly
+   the case Create Order's search was built to solve. It's now a standard part of
+   `DEFAULT_EMPLOYEE_PERMISSIONS`/`DEFAULT_MANAGER_PERMISSIONS` (backend and
+   frontend), same footing as `order:create` itself — still a real, revocable
+   permission, just on by default now instead of opt-in.
+2. **No retroactive backfill.** Fixing the default only changes what *newly*
+   approved/created accounts get — every account provisioned before Phase 19
+   shipped had its permission rows already written to the database and would never
+   pick up a newly-added default permission on its own. Checking the live database
+   surfaced that both new Phase 19 permissions were missing from *every* existing
+   Manager too (`customer:assign` in particular, which is core to their normal
+   work) — same root cause, not just an Employee-side gap. Backfilled directly
+   against the shared database: `order:customerSearchAll` added to both existing
+   Employees, `order:customerSearchAll` **and** `customer:assign` added to both
+   existing Managers (matching `DEFAULT_MANAGER_PERMISSIONS` = every business
+   permission) — additive only, nothing else in anyone's existing permission set
+   touched. Verified live afterward: Jitender's search now finds an unassigned
+   customer; a Manager's `customer:assign`-gated endpoint now reaches its business
+   logic instead of 403ing at the permission layer.
+
+**Lesson for next time a permission is added to this system**: updating
+`DEFAULT_*_PERMISSIONS` only affects accounts provisioned *after* the change —
+existing accounts need an explicit one-time backfill in the same pass, not as an
+afterthought once someone reports being unexpectedly locked out.

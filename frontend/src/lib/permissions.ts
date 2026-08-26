@@ -97,6 +97,8 @@ const DEFAULT_EMPLOYEE_PERMISSIONS = [
   'customer:update',
   'order:view',
   'order:create',
+  // Phase 19 §A: standard now, not opt-in — see the backend's comment.
+  'order:customerSearchAll',
   'product:view',
 ];
 

@@ -70,6 +70,14 @@ export const DEFAULT_EMPLOYEE_PERMISSIONS: Permission[] = [
   'customer:update',
   'order:view',
   'order:create',
+  // Phase 19 §A: originally left out of the default set (an explicit opt-in),
+  // but that broke the feature's actual purpose in practice — an Employee with
+  // the standard default couldn't find a customer outside their own Data Scope to
+  // place an order for at all, which is exactly the case Create Order's customer
+  // search was built to solve. Now standard for every Employee, same as
+  // order:create itself; still a real, revocable permission for an Admin/Manager
+  // who wants to restrict a specific Employee's search to their own scope.
+  'order:customerSearchAll',
   'product:view',
 ];
 
