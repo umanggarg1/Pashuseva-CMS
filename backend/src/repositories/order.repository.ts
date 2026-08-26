@@ -232,10 +232,10 @@ export const orderRepository = {
     return client.order.update({ where: { id }, data: { paymentStatus } });
   },
 
-  // Writes the new status onto Order *and* appends a DeliveryTracking history row in
-  // one transaction — this is the "don't just overwrite currentLocation, keep the
-  // whole journey" requirement (ORDER_DETAILS_UPGRADE_TODO.md §2).
-  updateDeliveryStatus(
+  // Writes the new status onto Order *and* appends a DeliveryTracking history row.
+  // Takes an optional client so the Order Status auto-sync (Phase 17) can run in the
+  // same outer transaction — see orderService.updateDeliveryStatus.
+  async updateDeliveryStatus(
     id: number,
     data: {
       deliveryStatus: DeliveryStatus;
@@ -243,31 +243,30 @@ export const orderRepository = {
       note?: string;
       receivedBy?: string;
       updatedById: number;
-    }
+    },
+    client: PrismaClientOrTx = prisma
   ) {
-    return prisma.$transaction(async (tx) => {
-      const order = await tx.order.update({
-        where: { id },
-        data: {
-          deliveryStatus: data.deliveryStatus,
-          // Status is manually revertible, so keep deliveredDate in sync in both
-          // directions — set it when (re-)marking DELIVERED, clear it if reverted
-          // away from DELIVERED so it doesn't show a stale delivery timestamp.
-          deliveredDate: data.deliveryStatus === 'DELIVERED' ? new Date() : null,
-        },
-      });
-      await tx.deliveryTracking.create({
-        data: {
-          orderId: id,
-          status: data.deliveryStatus,
-          location: data.location,
-          note: data.note,
-          receivedBy: data.receivedBy,
-          updatedById: data.updatedById,
-        },
-      });
-      return order;
+    const order = await client.order.update({
+      where: { id },
+      data: {
+        deliveryStatus: data.deliveryStatus,
+        // Status is manually revertible, so keep deliveredDate in sync in both
+        // directions — set it when (re-)marking DELIVERED, clear it if reverted
+        // away from DELIVERED so it doesn't show a stale delivery timestamp.
+        deliveredDate: data.deliveryStatus === 'DELIVERED' ? new Date() : null,
+      },
     });
+    await client.deliveryTracking.create({
+      data: {
+        orderId: id,
+        status: data.deliveryStatus,
+        location: data.location,
+        note: data.note,
+        receivedBy: data.receivedBy,
+        updatedById: data.updatedById,
+      },
+    });
+    return order;
   },
 
   findTracking(orderId: number) {

@@ -44,13 +44,37 @@ interface DashboardSummary {
   topProducts: { productId: number; name: string; unit: string | null; quantitySold: number }[];
 }
 
-const ORDER_STATUS_ORDER = ['PENDING', 'CONFIRMED', 'PROCESSING', 'COMPLETED', 'CANCELLED'];
-const DELIVERY_STATUS_ORDER = ['NOT_DISPATCHED', 'DISPATCHED', 'IN_TRANSIT', 'DELIVERED'];
+const ORDER_STATUS_ORDER = [
+  'PENDING',
+  'CONFIRMED',
+  'PROCESSING',
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
+  'CANCELLED',
+];
+const DELIVERY_STATUS_ORDER = [
+  'NOT_DISPATCHED',
+  'DISPATCHED',
+  'IN_TRANSIT',
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
+  'RETURN_PENDING',
+  'RETURN_IN_TRANSIT',
+  'RETURNED',
+  'LOST',
+  'DAMAGED',
+];
 const DELIVERY_ICON: Record<string, string> = {
   NOT_DISPATCHED: '📦',
   DISPATCHED: '🚚',
   IN_TRANSIT: '🟠',
+  OUT_FOR_DELIVERY: '🛵',
   DELIVERED: '🟢',
+  RETURN_PENDING: '↩️',
+  RETURN_IN_TRANSIT: '🔄',
+  RETURNED: '📪',
+  LOST: '❓',
+  DAMAGED: '⚠️',
 };
 
 function greeting() {

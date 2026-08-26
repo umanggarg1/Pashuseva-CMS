@@ -13,7 +13,8 @@ export const orderStatusSchema = z.enum([
   'PENDING',
   'CONFIRMED',
   'PROCESSING',
-  'COMPLETED',
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
   'CANCELLED',
 ]);
 export const paymentStatusSchema = z.enum(['PENDING', 'PARTIAL', 'PAID', 'REFUNDED']);
@@ -21,7 +22,13 @@ export const deliveryStatusSchema = z.enum([
   'NOT_DISPATCHED',
   'DISPATCHED',
   'IN_TRANSIT',
+  'OUT_FOR_DELIVERY',
   'DELIVERED',
+  'RETURN_PENDING',
+  'RETURN_IN_TRANSIT',
+  'RETURNED',
+  'LOST',
+  'DAMAGED',
 ]);
 export const paymentMethodSchema = z.enum([
   'CASH',
@@ -105,13 +112,14 @@ export const cancelOrderSchema = z.object({
   reason: z.string().min(1),
 });
 
-// Not in phases.md §29's endpoint list, but the PENDING→CONFIRMED→PROCESSING→COMPLETED
-// lifecycle (§13) needs some way to be advanced, and every other module in this codebase
-// (Customer, Product, Category) already uses a dedicated PATCH /:id/status route — this
-// follows that established convention. CANCELLED is deliberately excluded here; that's
-// only reachable via POST /:id/cancel, which also restores stock and records a reason.
+// Phase 17: manual PATCH is only for the pre-dispatch workflow (Pending → Confirmed
+// → Processing) — every other module in this codebase (Customer, Product, Category)
+// already uses a dedicated PATCH /:id/status route, so this follows that convention.
+// Out for Delivery/Delivered are reachable only via the Delivery Status sync (see
+// orderService.updateDeliveryStatus's DELIVERY_TO_ORDER_STATUS), and Cancelled only
+// via POST /:id/cancel — neither is settable directly here.
 export const updateOrderStatusSchema = z.object({
-  orderStatus: z.enum(['PENDING', 'CONFIRMED', 'PROCESSING', 'COMPLETED']),
+  orderStatus: z.enum(['PENDING', 'CONFIRMED', 'PROCESSING']),
 });
 
 export const updateDeliveryStatusSchema = z.object({

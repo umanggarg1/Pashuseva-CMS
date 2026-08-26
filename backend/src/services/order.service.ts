@@ -10,7 +10,7 @@ import { HttpError, NotFoundError } from '../utils/httpError';
 import { hasPermission } from '../utils/permissions';
 import { orderDataWhere, hasCustomerDataAccess, hasOrderDataAccess } from '../utils/dataScope';
 import { computeDeletionExpiry } from '../utils/trash';
-import type { Role, DeliveryStatus, PaymentStatus, DataScope } from '../generated/prisma/enums';
+import type { Role, OrderStatus, DeliveryStatus, PaymentStatus, DataScope } from '../generated/prisma/enums';
 import type { CreateOrderInput, UpdateOrderInput, OrderListQuery } from '../schemas/order.schema';
 import type { CreatePaymentInput } from '../schemas/payment.schema';
 
@@ -21,13 +21,48 @@ import type { CreatePaymentInput } from '../schemas/payment.schema';
 // behavior — re-logging IN_TRANSIT multiple times with a new location while staying in
 // the same stage — still works for every role, since staying at the same index isn't a
 // backward move.
-const ORDER_STATUS_SEQUENCE = ['PENDING', 'CONFIRMED', 'PROCESSING', 'COMPLETED'] as const;
-const DELIVERY_STATUS_SEQUENCE = [
+//
+// Phase 17: manual orderStatus PATCH only ever sends Pending/Confirmed/Processing
+// (see updateOrderStatusSchema) — Out for Delivery/Delivered are reachable only via
+// the deliveryStatus sync below, so they're listed here only for relative ordering.
+const ORDER_STATUS_SEQUENCE = [
+  'PENDING',
+  'CONFIRMED',
+  'PROCESSING',
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
+] as const;
+
+// Phase 17: delivery progression branches after dispatch — the normal forward path,
+// or (once an already-dispatched order is cancelled) the return path. Lost/Damaged
+// are exceptions reachable from any in-transit point in either branch, not a step in
+// either sequence. A "backward" move only means within the *same* branch — crossing
+// from forward to return (or either into Lost/Damaged) is always allowed, since
+// that's a real, valid transition, not a correction.
+const DELIVERY_FORWARD_SEQUENCE = [
   'NOT_DISPATCHED',
   'DISPATCHED',
   'IN_TRANSIT',
+  'OUT_FOR_DELIVERY',
   'DELIVERED',
 ] as const;
+const DELIVERY_RETURN_SEQUENCE = ['RETURN_PENDING', 'RETURN_IN_TRANSIT', 'RETURNED'] as const;
+const DELIVERY_TERMINAL_STATUSES = ['DELIVERED', 'RETURNED', 'LOST', 'DAMAGED'] as const;
+
+// Maps a normal delivery-progression status to the Order Status the system sets
+// automatically — Delivery Status is the source of truth here, the app keeps Order
+// Status in sync rather than either being set independently by staff. Not_Dispatched,
+// Lost, and Damaged are deliberately absent: no order-status change is implied by
+// any of them (Lost/Damaged need human judgment — see PHASE17_TODO.md).
+const DELIVERY_TO_ORDER_STATUS: Partial<Record<DeliveryStatus, OrderStatus>> = {
+  DISPATCHED: 'CONFIRMED',
+  IN_TRANSIT: 'PROCESSING',
+  OUT_FOR_DELIVERY: 'OUT_FOR_DELIVERY',
+  DELIVERED: 'DELIVERED',
+  RETURN_PENDING: 'CANCELLED',
+  RETURN_IN_TRANSIT: 'CANCELLED',
+  RETURNED: 'CANCELLED',
+};
 
 function assertNotBackward(
   sequence: readonly string[],
@@ -44,6 +79,29 @@ function assertNotBackward(
       400,
       `Cannot move ${fieldLabel} backward from ${current} to ${next} — ask a Manager or Admin to make this correction.`
     );
+  }
+}
+
+// Delivery-status equivalent of assertNotBackward, aware of the forward/return
+// branch split above — see DELIVERY_FORWARD_SEQUENCE's comment.
+function assertNotBackwardDelivery(current: string, next: string, actingUser: ActingUser) {
+  if (actingUser.role === 'ADMIN' || actingUser.role === 'MANAGER') return;
+  if ((DELIVERY_TERMINAL_STATUSES as readonly string[]).includes(current) && next !== current) {
+    throw new HttpError(
+      400,
+      `Cannot move delivery status away from ${current} — ask a Manager or Admin to make this correction.`
+    );
+  }
+  if (next === 'LOST' || next === 'DAMAGED') return;
+  for (const sequence of [DELIVERY_FORWARD_SEQUENCE, DELIVERY_RETURN_SEQUENCE] as const) {
+    const currentIndex = (sequence as readonly string[]).indexOf(current);
+    const nextIndex = (sequence as readonly string[]).indexOf(next);
+    if (currentIndex !== -1 && nextIndex !== -1 && nextIndex < currentIndex) {
+      throw new HttpError(
+        400,
+        `Cannot move delivery status backward from ${current} to ${next} — ask a Manager or Admin to make this correction.`
+      );
+    }
   }
 }
 
@@ -72,15 +130,17 @@ interface OrderWithItemsAndStatus {
   items: { productId: number | null; quantity: number }[];
 }
 
-// §15/§17 of phases.md describe the cancel/edit cutoff as "before delivery", but the
+// §15/§17 of phases.md describe the edit cutoff as "before delivery", but the
 // example tables mix Order Status values (PENDING/CONFIRMED/PROCESSING) with Delivery
 // Status values (DISPATCHED/IN_TRANSIT/DELIVERED) as if they were one sequence — even
 // though §11/§12 are explicit that the two fields are independent. The only field that
 // actually answers "has fulfillment physically started" is deliveryStatus, so that's
-// the real gate; orderStatus only additionally blocks the terminal COMPLETED/CANCELLED
-// states. See phases.md §44 for this resolution.
-function assertNotDispatched(order: OrderWithItemsAndStatus, action: 'edit' | 'cancel') {
-  if (order.orderStatus === 'CANCELLED' || order.orderStatus === 'COMPLETED') {
+// the real gate; orderStatus only additionally blocks the terminal DELIVERED/CANCELLED
+// states. See phases.md §44 for this resolution. (Phase 17: Cancel has its own,
+// looser eligibility check now — see assertCancellable — since cancelling an
+// already-dispatched order is now allowed, unlike editing its items/pricing.)
+function assertNotDispatched(order: OrderWithItemsAndStatus, action: 'edit') {
+  if (order.orderStatus === 'CANCELLED' || order.orderStatus === 'DELIVERED') {
     throw new HttpError(
       400,
       `Cannot ${action} an order that is already ${order.orderStatus.toLowerCase()}`
@@ -91,6 +151,21 @@ function assertNotDispatched(order: OrderWithItemsAndStatus, action: 'edit' | 'c
       400,
       `Cannot ${action} an order once it has been dispatched (current delivery status: ${order.deliveryStatus})`
     );
+  }
+}
+
+// Phase 17: cancel is now allowed after dispatch too (triggers the return flow via
+// deliveryStatus → RETURN_PENDING in orderService.cancel), so this is a much looser
+// check than assertNotDispatched — only genuinely terminal states block it.
+function assertCancellable(order: OrderWithItemsAndStatus) {
+  if (order.orderStatus === 'CANCELLED') {
+    throw new HttpError(400, 'This order is already cancelled');
+  }
+  if (order.deliveryStatus === 'DELIVERED') {
+    throw new HttpError(400, 'Cannot cancel an order that has already been delivered');
+  }
+  if (order.deliveryStatus === 'RETURNED') {
+    throw new HttpError(400, 'Cannot cancel an order that has already been returned');
   }
 }
 
@@ -579,13 +654,21 @@ export const orderService = {
 
   async updateStatus(
     id: number,
-    orderStatus: 'PENDING' | 'CONFIRMED' | 'PROCESSING' | 'COMPLETED',
+    orderStatus: 'PENDING' | 'CONFIRMED' | 'PROCESSING',
     actingUser: ActingUser
   ) {
     const existing = await orderRepository.findById(id);
     if (!existing) throw new NotFoundError('Order not found');
     if (existing.orderStatus === 'CANCELLED') {
       throw new HttpError(400, 'Cannot change the status of a cancelled order');
+    }
+    // Phase 17: once dispatched, Order Status follows Delivery Status automatically
+    // (see updateDeliveryStatus's sync) — manually setting it here would fight that.
+    if (existing.deliveryStatus !== 'NOT_DISPATCHED') {
+      throw new HttpError(
+        400,
+        'Order status now follows delivery status automatically once an order has been dispatched — update the delivery status instead.'
+      );
     }
     assertNotBackward(
       ORDER_STATUS_SEQUENCE,
@@ -728,29 +811,69 @@ export const orderService = {
   ) {
     const existing = await orderRepository.findById(id);
     if (!existing) throw new NotFoundError('Order not found');
-    assertNotBackward(
-      DELIVERY_STATUS_SEQUENCE,
-      existing.deliveryStatus,
-      data.deliveryStatus,
-      actingUser,
-      'delivery status'
-    );
+    assertNotBackwardDelivery(existing.deliveryStatus, data.deliveryStatus, actingUser);
 
-    const order = await orderRepository.updateDeliveryStatus(id, {
-      deliveryStatus: data.deliveryStatus,
-      location: data.location,
-      note: data.note,
-      receivedBy: data.receivedBy,
-      updatedById: actingUser.id,
+    return prisma.$transaction(async (tx) => {
+      let order = await orderRepository.updateDeliveryStatus(
+        id,
+        {
+          deliveryStatus: data.deliveryStatus,
+          location: data.location,
+          note: data.note,
+          receivedBy: data.receivedBy,
+          updatedById: actingUser.id,
+        },
+        tx
+      );
+      await orderRepository.recordActivity(
+        id,
+        'Delivery status changed',
+        actingUser.id,
+        existing.deliveryStatus,
+        data.deliveryStatus,
+        tx
+      );
+
+      // Phase 17: Delivery Status drives Order Status for normal progression —
+      // see DELIVERY_TO_ORDER_STATUS. A cancelled order stays Cancelled regardless
+      // (Return Pending/In Transit/Returned all map back to Cancelled anyway, so
+      // this never fights the cancellation), it's simply never anything else.
+      const mappedOrderStatus = DELIVERY_TO_ORDER_STATUS[data.deliveryStatus];
+      if (mappedOrderStatus && mappedOrderStatus !== existing.orderStatus) {
+        order = await orderRepository.updateStatus(id, mappedOrderStatus, tx);
+        await orderRepository.recordActivity(
+          id,
+          'Order status auto-updated (delivery sync)',
+          actingUser.id,
+          existing.orderStatus,
+          mappedOrderStatus,
+          tx
+        );
+      }
+
+      // Stock is restored only once the return is actually confirmed back, not at
+      // the moment the order was cancelled (see orderService.cancel) — the physical
+      // item isn't back in the warehouse just because the customer cancelled.
+      if (data.deliveryStatus === 'RETURNED') {
+        for (const item of existing.items) {
+          if (item.productId) {
+            await productRepository.incrementStock(item.productId, item.quantity, tx);
+            await productRepository.recordStockHistory(
+              {
+                productId: item.productId,
+                change: item.quantity,
+                reason: 'Order Returned',
+                orderId: id,
+                createdById: actingUser.id,
+              },
+              tx
+            );
+          }
+        }
+      }
+
+      return order;
     });
-    await orderRepository.recordActivity(
-      id,
-      'Delivery status changed',
-      actingUser.id,
-      existing.deliveryStatus,
-      data.deliveryStatus
-    );
-    return order;
   },
 
   getTracking(orderId: number) {
@@ -760,26 +883,38 @@ export const orderService = {
   async cancel(id: number, reason: string, actingUser: ActingUser) {
     const existing = await orderRepository.findById(id);
     if (!existing) throw new NotFoundError('Order not found');
-    assertNotDispatched(existing, 'cancel');
+    assertCancellable(existing);
+
+    // Phase 17: an order still sitting at NOT_DISPATCHED never physically left, so
+    // stock comes back immediately, same as before. Once dispatched (in any of the
+    // forward in-transit states), nothing is physically back yet — start the return
+    // flow instead, and only restore stock once Delivery Status reaches RETURNED
+    // (see updateDeliveryStatus's sync). Lost/Damaged are left as-is: there's
+    // nothing to "return," and the stock is already correctly gone either way.
+    const wasInTransit = ['DISPATCHED', 'IN_TRANSIT', 'OUT_FOR_DELIVERY'].includes(
+      existing.deliveryStatus
+    );
 
     return prisma.$transaction(async (tx) => {
-      for (const item of existing.items) {
-        if (item.productId) {
-          await productRepository.incrementStock(item.productId, item.quantity, tx);
-          await productRepository.recordStockHistory(
-            {
-              productId: item.productId,
-              change: item.quantity,
-              reason: 'Order Cancelled',
-              orderId: id,
-              createdById: actingUser.id,
-            },
-            tx
-          );
+      if (!wasInTransit && existing.deliveryStatus === 'NOT_DISPATCHED') {
+        for (const item of existing.items) {
+          if (item.productId) {
+            await productRepository.incrementStock(item.productId, item.quantity, tx);
+            await productRepository.recordStockHistory(
+              {
+                productId: item.productId,
+                change: item.quantity,
+                reason: 'Order Cancelled',
+                orderId: id,
+                createdById: actingUser.id,
+              },
+              tx
+            );
+          }
         }
       }
 
-      const order = await orderRepository.cancel(
+      let order = await orderRepository.cancel(
         id,
         { cancelledById: actingUser.id, cancellationReason: reason },
         tx
@@ -793,6 +928,22 @@ export const orderService = {
         'CANCELLED',
         tx
       );
+
+      if (wasInTransit) {
+        order = await orderRepository.updateDeliveryStatus(
+          id,
+          { deliveryStatus: 'RETURN_PENDING', updatedById: actingUser.id },
+          tx
+        );
+        await orderRepository.recordActivity(
+          id,
+          'Delivery status changed',
+          actingUser.id,
+          existing.deliveryStatus,
+          'RETURN_PENDING',
+          tx
+        );
+      }
 
       return order;
     }, { timeout: 15000 });

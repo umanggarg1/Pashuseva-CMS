@@ -19,7 +19,7 @@ export const salesReportQuerySchema = baseReportQuerySchema;
 
 export const ordersReportQuerySchema = baseReportQuerySchema.extend({
   status: z
-    .enum(['PENDING', 'CONFIRMED', 'PROCESSING', 'COMPLETED', 'CANCELLED'])
+    .enum(['PENDING', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED'])
     .optional(),
   employeeId: z.coerce.number().int().positive().optional(),
   customerId: z.coerce.number().int().positive().optional(),

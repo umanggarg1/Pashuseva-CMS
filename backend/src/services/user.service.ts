@@ -269,7 +269,7 @@ export const userService = {
           where: {
             assignedEmployeeId: id,
             deletedAt: null,
-            orderStatus: { notIn: ['CANCELLED', 'COMPLETED'] },
+            orderStatus: { notIn: ['CANCELLED', 'DELIVERED'] },
           },
         }),
       ]);

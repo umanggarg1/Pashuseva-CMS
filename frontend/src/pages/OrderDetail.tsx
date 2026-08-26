@@ -40,8 +40,51 @@ import { apiFetch, apiUrl, ApiError } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { packagingUnitLabel } from '@/lib/productUnits';
 
-const ORDER_STEPS = ['PENDING', 'CONFIRMED', 'PROCESSING', 'COMPLETED'];
-const DELIVERY_STEPS = ['NOT_DISPATCHED', 'DISPATCHED', 'IN_TRANSIT', 'DELIVERED'] as const;
+// Full lifecycle, for the visual status strip — Out for Delivery/Delivered are
+// reached automatically via the delivery-status sync, not manually, but they're
+// still real steps in the order's life and shown here.
+const ORDER_STEPS = ['PENDING', 'CONFIRMED', 'PROCESSING', 'OUT_FOR_DELIVERY', 'DELIVERED'];
+// What the manual Order Status dropdown can actually set — see
+// updateOrderStatusSchema on the backend; Out for Delivery/Delivered/Cancelled
+// aren't settable this way.
+const ORDER_STATUS_MANUAL_OPTIONS = ['PENDING', 'CONFIRMED', 'PROCESSING'];
+const DELIVERY_STEPS = [
+  'NOT_DISPATCHED',
+  'DISPATCHED',
+  'IN_TRANSIT',
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
+] as const;
+// Every value the Change Status dialog can offer — forward path, then the
+// return/exception branch. Mirrors the backend's DELIVERY_RETURN_SEQUENCE/
+// DELIVERY_TERMINAL_STATUSES (order.service.ts) so the dropdown never offers
+// something the server will then reject.
+const DELIVERY_STATUS_OPTIONS = [
+  ...DELIVERY_STEPS,
+  'RETURN_PENDING',
+  'RETURN_IN_TRANSIT',
+  'RETURNED',
+  'LOST',
+  'DAMAGED',
+] as const;
+const DELIVERY_RETURN_SEQUENCE = ['RETURN_PENDING', 'RETURN_IN_TRANSIT', 'RETURNED'] as const;
+const DELIVERY_TERMINAL_STATUSES = ['DELIVERED', 'RETURNED', 'LOST', 'DAMAGED'];
+
+function isDeliveryOptionAllowed(current: string, next: string): boolean {
+  if (DELIVERY_TERMINAL_STATUSES.includes(current)) return next === current;
+  if (next === 'LOST' || next === 'DAMAGED' || next === current) return true;
+  const forwardCurrent = DELIVERY_STEPS.indexOf(current as (typeof DELIVERY_STEPS)[number]);
+  const forwardNext = DELIVERY_STEPS.indexOf(next as (typeof DELIVERY_STEPS)[number]);
+  if (forwardCurrent !== -1 && forwardNext !== -1) return forwardNext >= forwardCurrent;
+  const returnCurrent = DELIVERY_RETURN_SEQUENCE.indexOf(
+    current as (typeof DELIVERY_RETURN_SEQUENCE)[number]
+  );
+  const returnNext = DELIVERY_RETURN_SEQUENCE.indexOf(
+    next as (typeof DELIVERY_RETURN_SEQUENCE)[number]
+  );
+  if (returnCurrent !== -1 && returnNext !== -1) return returnNext >= returnCurrent;
+  return true; // crossing branches (e.g. forward -> return-pending) is always allowed
+}
 
 interface OrderItemRow {
   id: number;
@@ -314,16 +357,20 @@ export default function OrderDetail() {
     return <ErrorState message="Could not load order." onRetry={() => orderQuery.refetch()} />;
   }
 
-  const canEditOrCancel =
-    order.deliveryStatus === 'NOT_DISPATCHED' &&
+  // Editing items/pricing still cuts off at dispatch — that protects order
+  // integrity once fulfillment has physically started, unrelated to cancellation.
+  const canEditOrCancel = order.deliveryStatus === 'NOT_DISPATCHED';
+  // Cancel is allowed later than Edit now (Phase 17) — up until Delivered/Returned,
+  // cancelling an already-dispatched order starts the return flow instead of being
+  // blocked outright. Matches orderService.assertCancellable on the backend.
+  const canCancelOrder =
     order.orderStatus !== 'CANCELLED' &&
-    order.orderStatus !== 'COMPLETED';
-  // Order status (workflow stage) is manually selectable and independent of dispatch
-  // status, by explicit request — e.g. marking an order COMPLETED naturally happens
-  // after delivery, which is well after NOT_DISPATCHED. Edit/Cancel Order stay gated
-  // by canEditOrCancel above, since those protect item/pricing integrity once
-  // fulfillment has started, a different concern from the status label itself.
-  const canChangeOrderStatus = canEditOrder && order.orderStatus !== 'CANCELLED';
+    order.deliveryStatus !== 'DELIVERED' &&
+    order.deliveryStatus !== 'RETURNED';
+  // The manual Order Status dropdown only works pre-dispatch (Phase 17) — after
+  // that, Order Status follows Delivery Status automatically.
+  const canChangeOrderStatus =
+    canEditOrder && order.orderStatus !== 'CANCELLED' && order.deliveryStatus === 'NOT_DISPATCHED';
 
   return (
     <div className="space-y-6">
@@ -354,8 +401,11 @@ export default function OrderDetail() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {ORDER_STEPS.filter(
-                    (s) => canOverrideStatus || ORDER_STEPS.indexOf(s) >= ORDER_STEPS.indexOf(order.orderStatus)
+                  {ORDER_STATUS_MANUAL_OPTIONS.filter(
+                    (s) =>
+                      canOverrideStatus ||
+                      ORDER_STATUS_MANUAL_OPTIONS.indexOf(s) >=
+                        ORDER_STATUS_MANUAL_OPTIONS.indexOf(order.orderStatus)
                   ).map((s) => (
                     <SelectItem key={s} value={s}>
                       {s}
@@ -403,7 +453,7 @@ export default function OrderDetail() {
           >
             <Printer className="mr-1.5 h-4 w-4" /> Print Parcel Summary
           </Button>
-          {canEditOrder && canEditOrCancel && (
+          {canEditOrder && canCancelOrder && (
             <CancelOrderDialog orderId={id} onCancelled={invalidateOrder} />
           )}
           {canDeleteOrder && (
@@ -783,7 +833,10 @@ function DeliveryCard({
   const currentIndex = DELIVERY_STEPS.indexOf(
     order.deliveryStatus as (typeof DELIVERY_STEPS)[number]
   );
-  const nextStatus = DELIVERY_STEPS[currentIndex + 1];
+  // Only meaningful on the normal forward path — currentIndex is -1 for the
+  // return/exception statuses (Return Pending, Lost, etc.), so there's no "next step"
+  // preview to show for those.
+  const nextStatus = currentIndex === -1 ? undefined : DELIVERY_STEPS[currentIndex + 1];
   const latestTracking = tracking && tracking.length > 0 ? tracking[tracking.length - 1] : null;
   // Delivery status is manually selectable — any stage, any direction — so this is no
   // longer gated on "is there a next stage." Only a cancelled order blocks it.
@@ -812,8 +865,13 @@ function DeliveryCard({
           </div>
           {canChangeStatus && (
             <div className="flex items-center gap-2">
-              {order.deliveryStatus === 'IN_TRANSIT' && (
-                <AddLocationUpdateDialog orderId={order.id} onSuccess={onStatusChanged} />
+              {(order.deliveryStatus === 'IN_TRANSIT' ||
+                order.deliveryStatus === 'RETURN_IN_TRANSIT') && (
+                <AddLocationUpdateDialog
+                  orderId={order.id}
+                  currentStatus={order.deliveryStatus}
+                  onSuccess={onStatusChanged}
+                />
               )}
               <ChangeDeliveryStatusDialog
                 orderId={order.id}
@@ -1354,7 +1412,13 @@ function ReversePaymentDialog({
 const STATUS_FIELD_CONFIG: Record<string, { locationLabel: string; locationRequired: boolean }> = {
   DISPATCHED: { locationLabel: 'Dispatch Location', locationRequired: true },
   IN_TRANSIT: { locationLabel: 'Current Location', locationRequired: true },
+  OUT_FOR_DELIVERY: { locationLabel: 'Out for Delivery From', locationRequired: false },
   DELIVERED: { locationLabel: 'Delivered At', locationRequired: false },
+  RETURN_PENDING: { locationLabel: 'Location', locationRequired: false },
+  RETURN_IN_TRANSIT: { locationLabel: 'Current Location', locationRequired: true },
+  RETURNED: { locationLabel: 'Received Back At', locationRequired: false },
+  LOST: { locationLabel: 'Last Known Location', locationRequired: false },
+  DAMAGED: { locationLabel: 'Location', locationRequired: false },
 };
 
 // A separate, lighter dialog from ChangeDeliveryStatusDialog — only used while already
@@ -1362,9 +1426,11 @@ const STATUS_FIELD_CONFIG: Record<string, { locationLabel: string; locationRequi
 // itself. Posts to the same endpoint with deliveryStatus held equal to the current one.
 function AddLocationUpdateDialog({
   orderId,
+  currentStatus,
   onSuccess,
 }: {
   orderId: number;
+  currentStatus: string;
   onSuccess: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1376,7 +1442,7 @@ function AddLocationUpdateDialog({
       apiFetch(`/orders/${orderId}/delivery-status`, {
         method: 'PATCH',
         body: JSON.stringify({
-          deliveryStatus: 'IN_TRANSIT',
+          deliveryStatus: currentStatus,
           location,
           note: note || undefined,
         }),
@@ -1458,7 +1524,8 @@ function ChangeDeliveryStatusDialog({
           deliveryStatus: status,
           location: location || undefined,
           note: note || undefined,
-          receivedBy: status === 'DELIVERED' ? receivedBy || undefined : undefined,
+          receivedBy:
+            status === 'DELIVERED' || status === 'RETURNED' ? receivedBy || undefined : undefined,
         }),
       }),
     onSuccess: () => {
@@ -1499,9 +1566,8 @@ function ChangeDeliveryStatusDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {DELIVERY_STEPS.filter(
-                  (s) =>
-                    canOverrideStatus || DELIVERY_STEPS.indexOf(s) >= DELIVERY_STEPS.indexOf(currentStatus as (typeof DELIVERY_STEPS)[number])
+                {DELIVERY_STATUS_OPTIONS.filter(
+                  (s) => canOverrideStatus || isDeliveryOptionAllowed(currentStatus, s)
                 ).map((s) => (
                   <SelectItem key={s} value={s}>
                     {s.replace(/_/g, ' ')}
@@ -1511,8 +1577,8 @@ function ChangeDeliveryStatusDialog({
             </Select>
             <p className="mt-1 text-xs text-muted-foreground">
               {canOverrideStatus
-                ? 'You can pick any stage, including going back, or re-selecting "In Transit" again to log a new location.'
-                : 'You can move forward, or re-select "In Transit" again to log a new location — a Manager/Admin can move a status backward if needed.'}
+                ? 'You can pick any stage, including going back, or re-selecting the current one again to log a new location.'
+                : 'You can move forward (including starting a return, or marking Lost/Damaged), or re-select the current status again to log a new location — a Manager/Admin can move a status backward if needed.'}
             </p>
           </div>
           <div>
@@ -1522,7 +1588,7 @@ function ChangeDeliveryStatusDialog({
             </label>
             <Input value={location} onChange={(e) => setLocation(e.target.value)} />
           </div>
-          {status === 'DELIVERED' && (
+          {(status === 'DELIVERED' || status === 'RETURNED') && (
             <div>
               <label className="text-sm font-medium">Received By</label>
               <Input

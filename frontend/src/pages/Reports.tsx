@@ -263,7 +263,8 @@ function OrdersReportTab() {
             <SelectItem value="PENDING">Pending</SelectItem>
             <SelectItem value="CONFIRMED">Confirmed</SelectItem>
             <SelectItem value="PROCESSING">Processing</SelectItem>
-            <SelectItem value="COMPLETED">Completed</SelectItem>
+            <SelectItem value="OUT_FOR_DELIVERY">Out for Delivery</SelectItem>
+            <SelectItem value="DELIVERED">Delivered</SelectItem>
             <SelectItem value="CANCELLED">Cancelled</SelectItem>
           </SelectContent>
         </Select>

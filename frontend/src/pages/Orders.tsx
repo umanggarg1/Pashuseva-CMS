@@ -75,8 +75,9 @@ function StatusBadge({
 }
 
 function orderStatusTone(status: string) {
-  if (status === 'COMPLETED') return 'success' as const;
+  if (status === 'DELIVERED') return 'success' as const;
   if (status === 'CANCELLED') return 'destructive' as const;
+  if (status === 'OUT_FOR_DELIVERY') return 'warning' as const;
   return 'default' as const;
 }
 
@@ -99,6 +100,9 @@ function paymentStatusTone(status: string) {
 function deliveryStatusTone(status: string) {
   if (status === 'DELIVERED') return 'success' as const;
   if (status === 'NOT_DISPATCHED') return 'default' as const;
+  if (status === 'RETURNED' || status === 'LOST' || status === 'DAMAGED') {
+    return 'destructive' as const;
+  }
   return 'warning' as const;
 }
 
@@ -195,7 +199,8 @@ export default function Orders() {
             <SelectItem value="PENDING">Pending</SelectItem>
             <SelectItem value="CONFIRMED">Confirmed</SelectItem>
             <SelectItem value="PROCESSING">Processing</SelectItem>
-            <SelectItem value="COMPLETED">Completed</SelectItem>
+            <SelectItem value="OUT_FOR_DELIVERY">Out for Delivery</SelectItem>
+            <SelectItem value="DELIVERED">Delivered</SelectItem>
             <SelectItem value="CANCELLED">Cancelled</SelectItem>
           </SelectContent>
         </Select>
@@ -220,7 +225,13 @@ export default function Orders() {
             <SelectItem value="NOT_DISPATCHED">Not Dispatched</SelectItem>
             <SelectItem value="DISPATCHED">Dispatched</SelectItem>
             <SelectItem value="IN_TRANSIT">In Transit</SelectItem>
+            <SelectItem value="OUT_FOR_DELIVERY">Out for Delivery</SelectItem>
             <SelectItem value="DELIVERED">Delivered</SelectItem>
+            <SelectItem value="RETURN_PENDING">Return Pending</SelectItem>
+            <SelectItem value="RETURN_IN_TRANSIT">Return In Transit</SelectItem>
+            <SelectItem value="RETURNED">Returned</SelectItem>
+            <SelectItem value="LOST">Lost</SelectItem>
+            <SelectItem value="DAMAGED">Damaged</SelectItem>
           </SelectContent>
         </Select>
         <div className="flex items-center gap-1.5">

@@ -35,11 +35,18 @@ enum CustomerStatus {
   INACTIVE
 }
 
+// Phase 17: Order Status now mostly follows Delivery Status automatically
+// (orderService.updateDeliveryStatus's sync) — Completed was replaced by
+// Out for Delivery/Delivered so the two lists mirror each other for the normal
+// progression. Manual PATCH /orders/:id/status only allows Pending/Confirmed/
+// Processing (pre-dispatch workflow); Out for Delivery/Delivered/Cancelled are
+// reachable only via delivery-status sync or the dedicated cancel endpoint.
 enum OrderStatus {
   PENDING
   CONFIRMED
   PROCESSING
-  COMPLETED
+  OUT_FOR_DELIVERY
+  DELIVERED
   CANCELLED
 }
 
@@ -50,11 +57,23 @@ enum PaymentStatus {
   REFUNDED
 }
 
+// Phase 17: two branches after dispatch — the normal forward path (through
+// Delivered), and the return/exception path once an already-dispatched order is
+// cancelled (Return Pending → Return In Transit → Returned). Lost/Damaged are
+// exception states reachable from any in-transit point, not part of either
+// sequence. See orderService's DELIVERY_TO_ORDER_STATUS for how these drive
+// Order Status automatically.
 enum DeliveryStatus {
   NOT_DISPATCHED
   DISPATCHED
   IN_TRANSIT
+  OUT_FOR_DELIVERY
   DELIVERED
+  RETURN_PENDING
+  RETURN_IN_TRANSIT
+  RETURNED
+  LOST
+  DAMAGED
 }
 
 enum PaymentMethod {
