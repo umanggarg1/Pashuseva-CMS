@@ -510,6 +510,10 @@ export default function CreateOrder() {
                   max={total}
                   value={partialAmount}
                   onChange={(e) => setPartialAmount(e.target.value)}
+                  // Blur on wheel so scrolling the page over this field can't
+                  // silently bump the amount up/down — the browser's default
+                  // number-input scroll behavior, not something anyone wants here.
+                  onWheel={(e) => e.currentTarget.blur()}
                 />
                 {!partialAmountValid && (
                   <p className="mt-1 text-xs text-destructive">
