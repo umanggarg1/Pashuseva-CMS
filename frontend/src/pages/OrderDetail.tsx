@@ -36,6 +36,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton';
 import ErrorState from '@/components/ErrorState';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import EmployeeMultiSelect from '@/components/EmployeeMultiSelect';
 import { apiFetch, apiUrl, ApiError } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { packagingUnitLabel } from '@/lib/productUnits';
@@ -134,7 +135,7 @@ interface OrderDetailData {
     phones: { phone: string; isPrimary: boolean }[];
     notes: string | null;
   };
-  assignedEmployee: { id: number; name: string | null } | null;
+  assignedEmployees: { employeeId: number; employee: { id: number; name: string | null } }[];
   createdBy: { id: number; name: string | null } | null;
 }
 
@@ -303,7 +304,7 @@ export default function OrderDetail() {
 
   const updateOrderFields = useMutation({
     mutationFn: (body: {
-      assignedEmployeeId?: number;
+      assignedEmployeeIds?: number[];
       expectedDelivery?: string;
       articleNumber?: string;
       estimatedDeliveryCharges?: string;
@@ -550,11 +551,11 @@ export default function OrderDetail() {
             <p className="text-base font-semibold">Total: ₹{order.total.toLocaleString()}</p>
 
             <div className="border-t pt-2 text-muted-foreground">
-              <AssignedEmployeeRow
+              <AssignedEmployeesRow
                 order={order}
                 employees={employeesQuery.data}
                 canEdit={canManageAssignment}
-                onSave={(assignedEmployeeId) => updateOrderFields.mutate({ assignedEmployeeId })}
+                onSave={(assignedEmployeeIds) => updateOrderFields.mutate({ assignedEmployeeIds })}
                 isSaving={updateOrderFields.isPending}
               />
               <p>Created By: {order.createdBy?.name ?? '—'}</p>
@@ -729,7 +730,10 @@ function PrintableOrder({
   );
 }
 
-function AssignedEmployeeRow({
+// Phase 18: several employees can share an order — this shows all of them as a
+// simple list, and (Admin/Manager only) edits the set via the same checkbox
+// multi-select used on Create Order.
+function AssignedEmployeesRow({
   order,
   employees,
   canEdit,
@@ -739,21 +743,25 @@ function AssignedEmployeeRow({
   order: OrderDetailData;
   employees: EmployeeOption[] | undefined;
   canEdit: boolean;
-  onSave: (employeeId: number) => void;
+  onSave: (employeeIds: number[]) => void;
   isSaving: boolean;
 }) {
   const [editing, setEditing] = useState(false);
-  const [value, setValue] = useState<string>(order.assignedEmployee?.id.toString() ?? '');
+  const [selectedIds, setSelectedIds] = useState<number[]>(
+    order.assignedEmployees.map((a) => a.employeeId)
+  );
+
+  const names = order.assignedEmployees.map((a) => a.employee.name ?? 'Unknown').join(', ');
 
   if (!editing) {
     return (
       <p className="flex items-center gap-2">
-        Assigned Employee: {order.assignedEmployee?.name ?? 'Unassigned'}
+        Assigned Employee{order.assignedEmployees.length === 1 ? '' : 's'}: {names || 'Unassigned'}
         {canEdit && (
           <button
             type="button"
             onClick={() => {
-              setValue(order.assignedEmployee?.id.toString() ?? '');
+              setSelectedIds(order.assignedEmployees.map((a) => a.employeeId));
               setEditing(true);
             }}
             className="text-primary hover:underline"
@@ -765,35 +773,32 @@ function AssignedEmployeeRow({
     );
   }
 
-  const employeeOptions = employees?.filter((e) => e.role === 'EMPLOYEE' && e.status === 'ACTIVE');
+  const employeeOptions = (employees ?? []).filter(
+    (e) => e.role === 'EMPLOYEE' && e.status === 'ACTIVE'
+  );
 
   return (
-    <div className="flex items-center gap-2">
-      <Select value={value} onValueChange={setValue}>
-        <SelectTrigger className="h-8 w-48">
-          <SelectValue placeholder="Select employee" />
-        </SelectTrigger>
-        <SelectContent>
-          {employeeOptions?.map((e) => (
-            <SelectItem key={e.id} value={String(e.id)}>
-              {e.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
-        Cancel
-      </Button>
-      <Button
-        size="sm"
-        disabled={!value || isSaving}
-        onClick={() => {
-          onSave(Number(value));
-          setEditing(false);
-        }}
-      >
-        Save
-      </Button>
+    <div className="space-y-2">
+      <EmployeeMultiSelect
+        employees={employeeOptions}
+        selectedIds={selectedIds}
+        onChange={setSelectedIds}
+      />
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="ghost" onClick={() => setEditing(false)}>
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          disabled={isSaving}
+          onClick={() => {
+            onSave(selectedIds);
+            setEditing(false);
+          }}
+        >
+          Save
+        </Button>
+      </div>
     </div>
   );
 }

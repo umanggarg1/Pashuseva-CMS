@@ -267,7 +267,7 @@ export const userService = {
         prisma.customer.count({ where: { assignedEmployeeId: id, deletedAt: null } }),
         prisma.order.count({
           where: {
-            assignedEmployeeId: id,
+            assignedEmployees: { some: { employeeId: id } },
             deletedAt: null,
             orderStatus: { notIn: ['CANCELLED', 'DELIVERED'] },
           },
@@ -307,10 +307,23 @@ export const userService = {
         where: { assignedEmployeeId: id },
         data: { assignedEmployeeId: reassignToUserId },
       });
-      await prisma.order.updateMany({
-        where: { assignedEmployeeId: id },
-        data: { assignedEmployeeId: reassignToUserId },
-      });
+      // Phase 18: Order.assignedEmployeeId is now a join table, not a scalar — carry
+      // the departing Employee's share of each shared order over to the new one.
+      // skipDuplicates covers the (rare) case where reassignToUserId was already one
+      // of the order's other assigned employees.
+      const affectedOrderIds = (
+        await prisma.orderAssignedEmployee.findMany({
+          where: { employeeId: id },
+          select: { orderId: true },
+        })
+      ).map((r) => r.orderId);
+      await prisma.orderAssignedEmployee.deleteMany({ where: { employeeId: id } });
+      if (affectedOrderIds.length > 0) {
+        await prisma.orderAssignedEmployee.createMany({
+          data: affectedOrderIds.map((orderId) => ({ orderId, employeeId: reassignToUserId })),
+          skipDuplicates: true,
+        });
+      }
     } else if (impact.role === 'MANAGER' && impact.reportingEmployeeCount > 0) {
       if (!reassignToUserId) {
         throw new HttpError(

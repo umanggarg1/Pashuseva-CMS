@@ -45,7 +45,7 @@ export const orderRepository = {
           customer: {
             select: { id: true, name: true, phones: { where: { isPrimary: true }, take: 1 } },
           },
-          assignedEmployee: { select: { id: true, name: true } },
+          assignedEmployees: { include: { employee: { select: { id: true, name: true } } } },
         },
         skip: options.skip,
         take: options.take,
@@ -69,7 +69,7 @@ export const orderRepository = {
         },
         address: true,
         customer: { include: { phones: true, addresses: true } },
-        assignedEmployee: { select: { id: true, name: true } },
+        assignedEmployees: { include: { employee: { select: { id: true, name: true } } } },
         createdBy: { select: { id: true, name: true } },
         cancelledBy: { select: { id: true, name: true } },
       },
@@ -91,7 +91,7 @@ export const orderRepository = {
         },
         address: true,
         customer: { include: { phones: true, addresses: true } },
-        assignedEmployee: { select: { id: true, name: true } },
+        assignedEmployees: { include: { employee: { select: { id: true, name: true } } } },
         createdBy: { select: { id: true, name: true } },
         cancelledBy: { select: { id: true, name: true } },
       },
@@ -99,7 +99,8 @@ export const orderRepository = {
   },
 
   // Light select for checkOrderAccess — scopes by the order's customer's *live*
-  // assignment, not Order.assignedEmployeeId (see phases.md §44).
+  // assignment (phases.md §44) OR the order's own assigned-employees join table
+  // (Phase 18 — shared visibility, see utils/dataScope.ts's hasOrderDataAccess).
   findAssignmentById(id: number) {
     return prisma.order.findFirst({
       where: { id, deletedAt: null },
@@ -108,6 +109,7 @@ export const orderRepository = {
         customerId: true,
         orderStatus: true,
         customer: { select: { assignedEmployeeId: true, assignedManagerId: true } },
+        assignedEmployees: { select: { employeeId: true } },
       },
     });
   },
@@ -141,7 +143,7 @@ export const orderRepository = {
       total: number;
       paymentMethod: PaymentMethod;
       createdById?: number;
-      assignedEmployeeId?: number;
+      assignedEmployeeIds?: number[];
       notes?: string;
       items: OrderItemInput[];
       address?: OrderAddressInput;
@@ -161,12 +163,17 @@ export const orderRepository = {
         total: data.total,
         paymentMethod: data.paymentMethod,
         createdById: data.createdById,
-        assignedEmployeeId: data.assignedEmployeeId,
         notes: data.notes,
         articleNumber: data.articleNumber,
         estimatedDeliveryCharges: data.estimatedDeliveryCharges,
         items: { create: data.items },
         ...(data.address && { address: { create: data.address } }),
+        ...(data.assignedEmployeeIds &&
+          data.assignedEmployeeIds.length > 0 && {
+            assignedEmployees: {
+              create: data.assignedEmployeeIds.map((employeeId) => ({ employeeId })),
+            },
+          }),
       },
       include: { items: true, address: true },
     });
@@ -182,7 +189,7 @@ export const orderRepository = {
       total?: number;
       address?: OrderAddressInput;
       notes?: string;
-      assignedEmployeeId?: number;
+      assignedEmployeeIds?: number[];
       expectedDelivery?: Date;
       articleNumber?: string | null;
       estimatedDeliveryCharges?: number | null;
@@ -201,6 +208,17 @@ export const orderRepository = {
       await client.orderAddress.create({ data: { ...data.address, orderId: id } });
     }
 
+    // Phase 18: assignedEmployeeIds, when present, is the full replacement set (not
+    // a diff) — same convention as the schema comment. undefined means "don't touch".
+    if (data.assignedEmployeeIds !== undefined) {
+      await client.orderAssignedEmployee.deleteMany({ where: { orderId: id } });
+      if (data.assignedEmployeeIds.length > 0) {
+        await client.orderAssignedEmployee.createMany({
+          data: data.assignedEmployeeIds.map((employeeId) => ({ orderId: id, employeeId })),
+        });
+      }
+    }
+
     return client.order.update({
       where: { id },
       data: {
@@ -209,7 +227,6 @@ export const orderRepository = {
         shipping: data.shipping,
         total: data.total,
         notes: data.notes,
-        assignedEmployeeId: data.assignedEmployeeId,
         expectedDelivery: data.expectedDelivery,
         articleNumber: data.articleNumber,
         estimatedDeliveryCharges: data.estimatedDeliveryCharges,

@@ -27,7 +27,15 @@ export function orderDataWhere(
 ): Prisma.OrderWhereInput {
   if (actingUser.role === 'ADMIN' || dataScope === 'ALL') return {};
   if (actingUser.role === 'MANAGER') return { customer: { assignedManagerId: actingUser.id } };
-  return { customer: { assignedEmployeeId: actingUser.id } };
+  // Phase 18: an Employee sees an order if they're assigned to the customer (the
+  // pre-existing rule) OR they're one of the order's own assigned employees (new —
+  // several employees can now share/work an order without owning the customer).
+  return {
+    OR: [
+      { customer: { assignedEmployeeId: actingUser.id } },
+      { assignedEmployees: { some: { employeeId: actingUser.id } } },
+    ],
+  };
 }
 
 export function hasCustomerDataAccess(
@@ -43,11 +51,19 @@ export function hasCustomerDataAccess(
 export function hasOrderDataAccess(
   actingUser: ScopedUser,
   dataScope: DataScope | null | undefined,
-  order: { customer: { assignedManagerId: number | null; assignedEmployeeId: number | null } }
+  order: {
+    customer: { assignedManagerId: number | null; assignedEmployeeId: number | null };
+    // Phase 18: optional so existing call sites that don't fetch it still type-check;
+    // absent is treated the same as empty (no shared-assignment access).
+    assignedEmployees?: { employeeId: number }[];
+  }
 ): boolean {
   if (actingUser.role === 'ADMIN' || dataScope === 'ALL') return true;
   if (actingUser.role === 'MANAGER') return order.customer.assignedManagerId === actingUser.id;
-  return order.customer.assignedEmployeeId === actingUser.id;
+  return (
+    order.customer.assignedEmployeeId === actingUser.id ||
+    (order.assignedEmployees?.some((a) => a.employeeId === actingUser.id) ?? false)
+  );
 }
 
 // A Manager whose Customer AND Order data scope are both "All" (the "Full Access"

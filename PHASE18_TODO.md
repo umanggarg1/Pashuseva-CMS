@@ -24,7 +24,7 @@ until there's something concrete to fix.
 
 ## 2. Multi-employee order assignment (shared visibility)
 
-**Status: Not started.**
+**Status: Done.**
 
 Confirmed requirements:
 - `Order.assignedEmployeeId` (single FK) becomes many-to-many — several employees
@@ -63,7 +63,39 @@ Confirmed requirements:
   - `CreateOrder.tsx`: new multi-select employee field (Admin/Manager only),
     pre-selecting Jitender Rajput by matching his name in the fetched employee list.
   - `OrderDetail.tsx`/`Orders.tsx`/`Home.tsx`: "Assigned Employee" (singular) display
-    and edit UI become multi-value (badge list + multi-select editor).
+    and edit UI become multi-value (badge list + multi-select editor). (Orders.tsx and
+    Home.tsx turned out not to reference assignedEmployee at all — nothing to change
+    there; only CreateOrder.tsx and OrderDetail.tsx needed edits.)
+
+### Built as planned, plus one bug found and fixed along the way
+
+Implemented exactly per the plan above: `OrderAssignedEmployee` join table (migration
+backfills the old scalar column, then drops it), `order.schema.ts`/`order.repository.ts`/
+`order.service.ts` reworked for the array, `dataScope.ts`'s `orderDataWhere`/
+`hasOrderDataAccess` extended for shared visibility, `user.service.ts`'s delete-impact/
+reassignment and `dashboard.service.ts`'s employeeId filter updated for the join table,
+`CreateOrder.tsx` gets the new Admin/Manager-only multi-select (via a new shared
+`EmployeeMultiSelect` component, reused by `OrderDetail.tsx`'s edit UI too) defaulting to
+Jitender Rajput by name match.
+
+Live-tested end-to-end against the local dev server with disposable test data (a test
+customer, two disposable test employees, one order assigned to both) before writing this:
+multi-employee assignment on create, shared visibility for an assigned-but-not-customer-
+owning Employee (200/list-visible), correct 403/empty-list for an uninvolved Employee,
+full-replacement semantics + activity log on update, and the employee-delete
+reassignment path carrying the join-table row over to the replacement employee. All
+test data fully purged via Trash afterward.
+
+**Bug found and fixed during this verification** (not present before this feature):
+`buildOrderWhere` in `order.service.ts` spreads `orderDataWhere`'s result and, separately,
+a search-term filter — both of which can now produce a top-level `OR` key (an Employee's
+scope is itself `OR`-shaped after this change). Spreading two objects that each have an
+`OR` key means the second one silently *replaces* the first, so any Employee search
+request was dropping their own data-scope filter entirely and searching company-wide.
+Fixed by combining every filter piece into a single `AND: [...]` array instead of one
+spread object, so scope's `OR` and search's `OR` can never collide. Confirmed live: an
+uninvolved Employee's search for the test order now correctly returns empty (was
+returning the order before the fix).
 
 ## 3. One employee can work under multiple managers
 

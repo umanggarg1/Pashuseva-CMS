@@ -183,7 +183,10 @@ async function assertCustomerAccessible(customerId: number, actingUser: ActingUs
 // the order-number lookup path so the numeric-id middleware doesn't need to learn a
 // second identifier type (ORDER_DETAILS_UPGRADE_TODO.md §1).
 function assertOrderAccessible(
-  order: { customer: { assignedEmployeeId: number | null; assignedManagerId: number | null } },
+  order: {
+    customer: { assignedEmployeeId: number | null; assignedManagerId: number | null };
+    assignedEmployees?: { employeeId: number }[];
+  },
   actingUser: ActingUser
 ) {
   if (!hasOrderDataAccess(actingUser, actingUser.orderDataScope, order)) {
@@ -217,17 +220,25 @@ function buildOrderWhere(actingUser: ActingUser, query: OrderListQuery): Prisma.
         }
       : {};
 
-  return {
-    ...scope,
-    ...(query.customerId && { customerId: query.customerId }),
-    ...(actingUser.role === 'ADMIN' &&
-      query.assignedEmployeeId && { assignedEmployeeId: query.assignedEmployeeId }),
-    ...(query.orderStatus && { orderStatus: query.orderStatus }),
-    ...(query.paymentStatus && { paymentStatus: query.paymentStatus }),
-    ...(query.deliveryStatus && { deliveryStatus: query.deliveryStatus }),
-    ...dateFilter,
-    ...amountFilter,
-    ...(query.search && {
+  // Phase 18: scope (orderDataWhere) can now itself contain a top-level OR for an
+  // Employee (customer-assignment OR order-assignment — see utils/dataScope.ts). A
+  // second top-level `OR` for search, merged via spread into the same object, would
+  // silently *replace* that key rather than combine with it — dropping the data-scope
+  // filter entirely whenever a search term is present. Everything goes into an AND
+  // array instead so scope's OR and search's OR never collide.
+  const filters: Prisma.OrderWhereInput[] = [scope];
+  if (query.customerId) filters.push({ customerId: query.customerId });
+  // Filters by membership in the join table now, not a scalar equality.
+  if (actingUser.role === 'ADMIN' && query.assignedEmployeeId) {
+    filters.push({ assignedEmployees: { some: { employeeId: query.assignedEmployeeId } } });
+  }
+  if (query.orderStatus) filters.push({ orderStatus: query.orderStatus });
+  if (query.paymentStatus) filters.push({ paymentStatus: query.paymentStatus });
+  if (query.deliveryStatus) filters.push({ deliveryStatus: query.deliveryStatus });
+  if (Object.keys(dateFilter).length > 0) filters.push(dateFilter);
+  if (Object.keys(amountFilter).length > 0) filters.push(amountFilter);
+  if (query.search) {
+    filters.push({
       OR: [
         { orderNumber: { contains: query.search, mode: 'insensitive' as const } },
         { customer: { name: { contains: query.search, mode: 'insensitive' as const } } },
@@ -241,8 +252,10 @@ function buildOrderWhere(actingUser: ActingUser, query: OrderListQuery): Prisma.
           },
         },
       ],
-    }),
-  };
+    });
+  }
+
+  return { AND: filters };
 }
 
 interface ResolvedItem {
@@ -341,9 +354,27 @@ export const orderService = {
       }
     }
 
+    // Phase 18: who to assign is an Admin/Manager decision made on the Create Order
+    // form (frontend defaults to Jitender Rajput, removable/extendable) — an Employee
+    // creating their own order never sends this, so it stays empty and the order
+    // simply surfaces to Admin/Manager via the customer's assignment chain instead,
+    // same as before this feature existed. Ignored (not honored) if an Employee's
+    // request somehow includes it, rather than trusting the client.
+    const assignedEmployeeIds =
+      actingUser.role === 'ADMIN' || actingUser.role === 'MANAGER'
+        ? (input.assignedEmployeeIds ?? [])
+        : [];
+    if (assignedEmployeeIds.length > 0) {
+      for (const employeeId of assignedEmployeeIds) {
+        const employee = await userRepository.findById(employeeId);
+        if (!employee || employee.role !== 'EMPLOYEE') {
+          throw new HttpError(400, `assignedEmployeeIds contains ${employeeId}, which is not an existing Employee`);
+        }
+      }
+    }
+
     const order = await prisma.$transaction(async (tx) => {
       let customerId: number;
-      let assignedEmployeeId: number | null;
       let addresses: {
         line1: string;
         landmark: string | null;
@@ -382,11 +413,9 @@ export const orderService = {
           tx
         );
         customerId = createdCustomer.id;
-        assignedEmployeeId = createdCustomer.assignedEmployeeId;
         addresses = createdCustomer.addresses;
       } else {
         customerId = existingCustomer!.id;
-        assignedEmployeeId = existingCustomer!.assignedEmployeeId;
         addresses = existingCustomer!.addresses;
       }
 
@@ -420,7 +449,7 @@ export const orderService = {
           total,
           paymentMethod: input.paymentMethod,
           createdById: actingUser.id,
-          assignedEmployeeId: assignedEmployeeId ?? undefined,
+          assignedEmployeeIds,
           notes: input.notes,
           articleNumber: input.articleNumber,
           estimatedDeliveryCharges: input.estimatedDeliveryCharges,
@@ -515,13 +544,21 @@ export const orderService = {
       assertNotDispatched(existing, 'edit');
     }
 
-    let assignedEmployeeName: string | undefined;
-    if (input.assignedEmployeeId !== undefined) {
-      const employee = await userRepository.findById(input.assignedEmployeeId);
-      if (!employee || employee.role !== 'EMPLOYEE') {
-        throw new HttpError(400, 'assignedEmployeeId does not refer to an existing Employee');
+    // Phase 18: assignedEmployeeIds, when present, is the full replacement set — see
+    // order.repository.ts's update() and order.schema.ts's comment on this field.
+    let assignedEmployeeNames: string[] | undefined;
+    if (input.assignedEmployeeIds !== undefined) {
+      assignedEmployeeNames = [];
+      for (const employeeId of input.assignedEmployeeIds) {
+        const employee = await userRepository.findById(employeeId);
+        if (!employee || employee.role !== 'EMPLOYEE') {
+          throw new HttpError(
+            400,
+            `assignedEmployeeIds contains ${employeeId}, which is not an existing Employee`
+          );
+        }
+        assignedEmployeeNames.push(employee.name ?? employee.email);
       }
-      assignedEmployeeName = employee.name ?? employee.email;
     }
 
     return prisma.$transaction(async (tx) => {
@@ -588,14 +625,23 @@ export const orderService = {
       if (input.notes !== undefined && input.notes !== existing.notes) {
         activities.push({ action: 'Notes updated' });
       }
-      if (
-        input.assignedEmployeeId !== undefined &&
-        input.assignedEmployeeId !== existing.assignedEmployeeId
-      ) {
-        activities.push({
-          action: 'Assigned employee changed',
-          newValue: assignedEmployeeName,
-        });
+      if (input.assignedEmployeeIds !== undefined) {
+        const existingIds = existing.assignedEmployees
+          .map((a) => a.employeeId)
+          .sort((a, b) => a - b);
+        const newIds = [...input.assignedEmployeeIds].sort((a, b) => a - b);
+        const changed =
+          existingIds.length !== newIds.length ||
+          existingIds.some((v, i) => v !== newIds[i]);
+        if (changed) {
+          activities.push({
+            action: 'Assigned employees changed',
+            oldValue:
+              existing.assignedEmployees.map((a) => a.employee.name ?? 'Unknown').join(', ') ||
+              'None',
+            newValue: assignedEmployeeNames!.join(', ') || 'None',
+          });
+        }
       }
       if (
         input.expectedDelivery !== undefined &&
@@ -634,7 +680,7 @@ export const orderService = {
           total,
           address: input.address,
           notes: input.notes,
-          assignedEmployeeId: input.assignedEmployeeId,
+          assignedEmployeeIds: input.assignedEmployeeIds,
           expectedDelivery: input.expectedDelivery,
           articleNumber: input.articleNumber,
           estimatedDeliveryCharges: input.estimatedDeliveryCharges,

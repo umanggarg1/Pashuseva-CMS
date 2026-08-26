@@ -333,7 +333,8 @@ export const dashboardService = {
       ...scope,
       orderDate: { gte: start, lte: end },
       ...(query.status && { orderStatus: query.status }),
-      ...(actingUser.role === 'ADMIN' && query.employeeId && { assignedEmployeeId: query.employeeId }),
+      ...(actingUser.role === 'ADMIN' &&
+        query.employeeId && { assignedEmployees: { some: { employeeId: query.employeeId } } }),
       ...(query.customerId && { customerId: query.customerId }),
     };
 
@@ -425,7 +426,7 @@ export const dashboardService = {
         is: {
           ...orderScope(actingUser),
           ...(actingUser.role === 'ADMIN' &&
-            query.employeeId && { assignedEmployeeId: query.employeeId }),
+            query.employeeId && { assignedEmployees: { some: { employeeId: query.employeeId } } }),
         },
       },
       createdAt: { gte: start, lte: end },

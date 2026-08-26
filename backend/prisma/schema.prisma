@@ -164,7 +164,7 @@ model User {
   createdProducts               Product[]           @relation("ProductCreatedBy")
   productActivities             ProductActivity[]
   createdOrders                 Order[]             @relation("OrderCreatedBy")
-  assignedOrders                Order[]             @relation("OrderAssignedEmployee")
+  assignedOrders                OrderAssignedEmployee[] @relation("OrderAssignedEmployees")
   cancelledOrders                Order[]            @relation("OrderCancelledBy")
   orderActivities                OrderActivity[]
   orderNotes                     OrderNote[]
@@ -414,8 +414,10 @@ model Order {
   notes               String?
   createdBy           User?    @relation("OrderCreatedBy", fields: [createdById], references: [id])
   createdById         Int?
-  assignedEmployee    User?    @relation("OrderAssignedEmployee", fields: [assignedEmployeeId], references: [id])
-  assignedEmployeeId  Int?
+  // Phase 18: replaced the single assignedEmployeeId FK — several employees can now
+  // share visibility/work on one order, not just be informed about it. See
+  // OrderAssignedEmployee below and utils/dataScope.ts's hasOrderDataAccess.
+  assignedEmployees   OrderAssignedEmployee[]
   cancelledBy         User?    @relation("OrderCancelledBy", fields: [cancelledById], references: [id])
   cancelledById       Int?
   cancelledAt         DateTime?
@@ -441,7 +443,6 @@ model Order {
 
   @@index([customerId])
   @@index([createdById])
-  @@index([assignedEmployeeId])
   @@index([cancelledById])
   @@index([deletedAt])
   // Phase 14 §15: every Orders-list filter, every Dashboard groupBy, and every
@@ -451,6 +452,22 @@ model Order {
   @@index([deliveryStatus])
   @@index([paymentStatus])
   @@index([orderDate])
+}
+
+// Phase 18: several employees can share an order (all see it, all can work it),
+// replacing the old single Order.assignedEmployeeId. No extra metadata beyond who/
+// when — same pattern as UserPermission.
+model OrderAssignedEmployee {
+  id         Int      @id @default(autoincrement())
+  order      Order    @relation(fields: [orderId], references: [id])
+  orderId    Int
+  employee   User     @relation("OrderAssignedEmployees", fields: [employeeId], references: [id])
+  employeeId Int
+  assignedAt DateTime @default(now())
+
+  @@unique([orderId, employeeId])
+  @@index([orderId])
+  @@index([employeeId])
 }
 
 model OrderItem {

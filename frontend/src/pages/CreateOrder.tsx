@@ -25,9 +25,18 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import ErrorState from '@/components/ErrorState';
 import CustomerPicker, { type CustomerOption } from '@/components/CustomerPicker';
+import EmployeeMultiSelect from '@/components/EmployeeMultiSelect';
 import { apiFetch, ApiError } from '@/lib/api';
+import { useCurrentUser } from '@/lib/auth';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
 import { packagingUnitLabel } from '@/lib/productUnits';
+
+interface EmployeeOption {
+  id: number;
+  name: string | null;
+  role: 'ADMIN' | 'MANAGER' | 'EMPLOYEE';
+  status: string;
+}
 
 interface ProductOption {
   id: number;
@@ -65,6 +74,11 @@ export default function CreateOrder() {
   const location = useLocation();
   const [searchParams] = useSearchParams();
   const queryClient = useQueryClient();
+  const { data: currentUser } = useCurrentUser();
+  // Phase 18: only Admin/Manager decide who's assigned at creation time — an
+  // Employee's own order simply has no employees assigned yet (surfaces to
+  // Admin/Manager via the customer's assignment chain instead, same as before).
+  const canAssignEmployees = currentUser?.role === 'ADMIN' || currentUser?.role === 'MANAGER';
 
   // Two independent prefill sources (Phase 11): a customerId in the URL (Customer
   // Detail's "+ Create Order", §3) and/or router state from "Duplicate Order" (§18,
@@ -100,6 +114,28 @@ export default function CreateOrder() {
   // informational-only shipping estimate that never affects the order total below.
   const [articleNumber, setArticleNumber] = useState('');
   const [estimatedDeliveryCharges, setEstimatedDeliveryCharges] = useState('');
+  const [assignedEmployeeIds, setAssignedEmployeeIds] = useState<number[]>([]);
+  const defaultAssigneeApplied = useRef(false);
+
+  const employeesQuery = useQuery({
+    queryKey: ['users'],
+    queryFn: () => apiFetch<EmployeeOption[]>('/users'),
+    enabled: canAssignEmployees,
+  });
+  const employeeOptions = (employeesQuery.data ?? []).filter(
+    (e) => e.role === 'EMPLOYEE' && e.status === 'ACTIVE'
+  );
+
+  // Default selection is a one-time UI convenience (see PHASE18_TODO.md §2) — applied
+  // once the employee list loads, never re-applied after that, so unselecting Jitender
+  // Rajput or picking others sticks.
+  useEffect(() => {
+    if (defaultAssigneeApplied.current || !canAssignEmployees || !employeesQuery.data) return;
+    defaultAssigneeApplied.current = true;
+    const jitender = employeeOptions.find((e) => e.name?.trim().toLowerCase() === 'jitender rajput');
+    if (jitender) setAssignedEmployeeIds([jitender.id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employeesQuery.data, canAssignEmployees]);
 
   const productsQuery = useQuery({
     queryKey: ['order-product-search', debouncedProductSearch],
@@ -197,6 +233,7 @@ export default function CreateOrder() {
           notes: notes || undefined,
           articleNumber: articleNumber || undefined,
           estimatedDeliveryCharges: estimatedDeliveryCharges || undefined,
+          ...(canAssignEmployees && { assignedEmployeeIds }),
         }),
       }),
     onSuccess: (order) => {
@@ -358,6 +395,25 @@ export default function CreateOrder() {
           </div>
         </CardContent>
       </Card>
+
+      {canAssignEmployees && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Assign to Employee(s)</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              Multiple employees can share this order. Defaults to Jitender Rajput — remove
+              or add others as needed.
+            </p>
+            <EmployeeMultiSelect
+              employees={employeeOptions}
+              selectedIds={assignedEmployeeIds}
+              onChange={setAssignedEmployeeIds}
+            />
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardContent className="space-y-4 pt-6">

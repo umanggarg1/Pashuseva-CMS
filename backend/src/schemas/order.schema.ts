@@ -90,6 +90,12 @@ export const createOrderSchema = z
     notes: z.string().optional(),
     articleNumber: articleNumberSchema,
     estimatedDeliveryCharges: estimatedDeliveryChargesSchema,
+    // Phase 18: several employees can share one order. Admin/Manager decide this at
+    // creation time (frontend defaults to Jitender Rajput, removable/extendable);
+    // absent entirely (e.g. an Employee creating their own order) means no employee
+    // is assigned yet — it surfaces to Admin/Manager via the customer's assignment
+    // chain instead, same as before this feature existed.
+    assignedEmployeeIds: z.array(z.coerce.number().int().positive()).optional(),
   })
   .refine((data) => Boolean(data.customerId) !== Boolean(data.newCustomer), {
     message: 'Provide exactly one of customerId or newCustomer',
@@ -102,7 +108,10 @@ export const updateOrderSchema = z.object({
   deliveryCharge: z.coerce.number().min(0).optional(),
   address: orderAddressInputSchema.optional(),
   notes: z.string().optional(),
-  assignedEmployeeId: z.coerce.number().int().positive().optional(),
+  // Phase 18: replaces the old scalar assignedEmployeeId — the full set of employees
+  // assigned to the order, sent as a complete replacement list on every edit (not a
+  // diff), same convention as UserPermission-style join arrays elsewhere.
+  assignedEmployeeIds: z.array(z.coerce.number().int().positive()).optional(),
   expectedDelivery: z.coerce.date().optional(),
   articleNumber: articleNumberSchema,
   estimatedDeliveryCharges: estimatedDeliveryChargesSchema,
