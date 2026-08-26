@@ -120,9 +120,12 @@ model User {
   // since products aren't per-employee. Null = pre-addendum default, see DataScope.
   customerDataScope DataScope?
   orderDataScope    DataScope?
-  manager      User?         @relation("ManagerEmployees", fields: [managerId], references: [id])
-  managerId    Int?
-  employees    User[]        @relation("ManagerEmployees")
+  // Phase 18: replaced the single managerId FK — an Employee can now report to
+  // several Managers at once. A customer/order auto-created by such an Employee
+  // (with no manager explicitly chosen) becomes visible to all of them, not just
+  // one — see utils/dataScope.ts and EmployeeManager below.
+  managedBy    EmployeeManager[] @relation("EmployeeManagerEmployee")
+  managing     EmployeeManager[] @relation("EmployeeManagerManager")
   // Who approved/rejected this account, and when — set once, at that decision.
   reviewedBy   User?         @relation("UserReviewedBy", fields: [reviewedById], references: [id])
   reviewedById Int?
@@ -171,6 +174,21 @@ model User {
   stockHistoryEntries             StockHistory[]     @relation("StockHistoryCreatedBy")
   paymentsCreated                 Payment[]          @relation("PaymentCreatedBy")
 
+}
+
+// Phase 18: several managers can share an Employee (all see/manage that team
+// member), replacing the old single User.managerId. No extra metadata beyond
+// who/when — same pattern as OrderAssignedEmployee/UserPermission.
+model EmployeeManager {
+  id         Int      @id @default(autoincrement())
+  employee   User     @relation("EmployeeManagerEmployee", fields: [employeeId], references: [id])
+  employeeId Int
+  manager    User     @relation("EmployeeManagerManager", fields: [managerId], references: [id])
+  managerId  Int
+  createdAt  DateTime @default(now())
+
+  @@unique([employeeId, managerId])
+  @@index([employeeId])
   @@index([managerId])
 }
 

@@ -99,7 +99,7 @@ returning the order before the fix).
 
 ## 3. One employee can work under multiple managers
 
-**Status: Not started — biggest, highest-risk item.**
+**Status: Done.**
 
 Confirmed scenario: an employee's customers/orders can be split across more than
 one manager's team simultaneously.
@@ -131,14 +131,61 @@ query.
     Employee to an *additional* Manager's team becomes a new, separate action.
   - `user.service.ts`'s `getDeleteImpact`/`delete` (deleting a Manager, reassigning
     their reports) — updated for the join table.
-  - **Open design question, not yet resolved**: when an Employee with multiple
-    managers creates a customer/order themselves, today it auto-assigns to
-    `actingUser.managerId` — with multiple managers that's ambiguous. Needs a
-    decision (ask the employee which team it belongs to at creation time? default to
-    whichever manager they were added to first?) before this part can be built.
+  - **Open design question — resolved**: asked the user; answer was "assign to all
+    of them" — a customer/order auto-created by a multi-manager Employee with no
+    manager explicitly picked becomes visible to *every* Manager that Employee
+    reports to, not just one.
 - **Frontend**: Employees page — "Manager: X" (singular) becomes a list; needs an
   Admin-facing way to add/remove an Employee from a Manager's team as a distinct
   action from creating the Employee in the first place.
+
+### Built as planned, plus a design refinement and two more bugs found along the way
+
+Implemented per the plan: `EmployeeManager` join table (migration backfills the old
+`managerId` column, then drops it), `resolveEmployeeAssignment` (customer.service.ts)
+and its `order.service.ts` duplicate now check join-table membership,
+`user.service.ts`'s `list()`/`assertManagesUser`/`create()`/`getDeleteImpact`/`delete()`
+all reworked for the join table, new `POST/DELETE /users/:id/managers` routes for the
+Employees page's add/remove-from-team action (a new `ManageTeamsDialog` + a
+"Manager(s)" column, since the page turned out not to have any manager display before
+this — the plan's "becomes a list" assumed one already existed).
+
+**Refinement beyond the plan**: "assign to all of them" only works cleanly if
+`Customer.assignedManagerId` stays a scalar (an explicit single choice, unchanged) and
+the *visibility check* grows a fallback instead — `customerDataWhere`/
+`hasCustomerDataAccess` (and the Order equivalents, which nest through the customer) now
+read: a Manager sees a customer either explicitly assigned to them, **or** — only while
+`assignedManagerId` is still null — via the assigned Employee's `EmployeeManager` rows.
+Once anyone explicitly (re)assigns a customer to one Manager, that's authoritative and
+the fallback stops applying to that customer. `resolveEmployeeAssignment` collapses to a
+single explicit manager only when the target Employee has exactly one; with several, it
+leaves `assignedManagerId` null so the fallback covers all of them. No new join table
+needed for Customer/Order manager-visibility itself — only for "who manages whom."
+
+**Two more bugs found and fixed during live verification** (same root cause as item
+2's, and same fix shape each time):
+1. `buildCustomerWhere` in `customer.service.ts` had the identical scope-then-search
+   `OR`-collision bug as item 2's `buildOrderWhere` — a Manager's own join-table-fallback
+   `OR` would get silently dropped by a search term's `OR`. Fixed with the same
+   `AND: [...]` array approach, pre-emptively, before it ever shipped.
+2. `order.repository.ts`'s `findById`/`findByOrderNumber` fetch a full `Order` (used by
+   `GET /orders/number/:orderNumber`, which resolves access via `assertOrderAccessible`
+   directly rather than through the `checkOrderAccess` middleware's `findAssignmentById`)
+   — only `findAssignmentById` had been given the new `assignedEmployee.managedBy`
+   include, so a legitimately-visible Manager got a 403 fetching an order by number even
+   though the numeric-id route worked fine. Both queries now carry the same include.
+
+Live-tested end-to-end with disposable test managers/employees/customers/orders:
+multi-manager assignment (`POST`/`DELETE /users/:id/managers`), an Employee-created
+customer/order visible to *both* of their Managers via search, direct fetch, and the
+plain list, an unrelated third Manager correctly denied on all three, a Manager
+explicitly assigning collapsing to that Manager alone, an Admin assigning to a
+2-manager Employee leaving it null (fallback), and Manager-deletion reassignment
+carrying `EmployeeManager` rows to the replacement Manager (with a third bug — a stale
+`EmployeeManager` row surviving a purged Employee and permanently blocking their former
+Manager's deletion — found and fixed by adding an `employee: { deletedAt: null }` guard,
+mirroring a filter the original scalar-`managerId` query already had). All test data
+fully purged via Trash afterward.
 
 ## Sequencing
 

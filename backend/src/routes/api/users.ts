@@ -30,6 +30,15 @@ router.post('/:id/reactivate', asyncHandler(userController.reactivate));
 router.get('/:id/permissions', asyncHandler(userController.getPermissions));
 router.put('/:id/permissions', asyncHandler(userController.updatePermissions));
 
+// Phase 18 item 3: add/remove an Employee from an additional Manager's team,
+// separate from create() (which only sets the initial Manager). Admin-only.
+router.post('/:id/managers', requireRole('ADMIN'), asyncHandler(userController.addManagerTeam));
+router.delete(
+  '/:id/managers/:managerId',
+  requireRole('ADMIN'),
+  asyncHandler(userController.removeManagerTeam)
+);
+
 // Move to Trash (Phase 3 addendum) — Admin-only, no permission grant involved, same
 // as approve/reject. An Admin account can never be deleted (enforced in the service).
 router.get(

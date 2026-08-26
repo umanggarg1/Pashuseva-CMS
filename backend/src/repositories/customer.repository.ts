@@ -63,10 +63,19 @@ export const customerRepository = {
     });
   },
 
+  // Phase 18: also selects the assigned Employee's own set of Managers (via the
+  // EmployeeManager join) — needed so a Manager can see/manage a customer that an
+  // Employee reporting to them created without anyone explicitly picking a single
+  // manager (see utils/dataScope.ts's hasCustomerDataAccess).
   findAssignmentById(id: number) {
     return prisma.customer.findFirst({
       where: { id, deletedAt: null },
-      select: { id: true, assignedEmployeeId: true, assignedManagerId: true },
+      select: {
+        id: true,
+        assignedEmployeeId: true,
+        assignedManagerId: true,
+        assignedEmployee: { select: { managedBy: { select: { managerId: true } } } },
+      },
     });
   },
 

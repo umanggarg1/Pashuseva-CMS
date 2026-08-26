@@ -61,7 +61,9 @@ interface EmployeeUser {
   role: 'ADMIN' | 'MANAGER' | 'EMPLOYEE' | null;
   requestedRole: 'MANAGER' | 'EMPLOYEE' | null;
   status: 'PENDING' | 'ACTIVE' | 'INACTIVE' | 'SUSPENDED' | 'REJECTED';
-  managerId: number | null;
+  // Phase 18: an Employee can report to several Managers at once (replaces the old
+  // single managerId).
+  managerIds: number[];
   customerDataScope: DataScope | null;
   orderDataScope: DataScope | null;
   lastLoginAt: string | null;
@@ -81,7 +83,7 @@ interface CustomerRow {
 function canManageAccount(currentUser: { id: number; role: string | null } | undefined, target: EmployeeUser) {
   if (!currentUser) return false;
   if (currentUser.role === 'ADMIN') return true;
-  return currentUser.role === 'MANAGER' && target.managerId === currentUser.id;
+  return currentUser.role === 'MANAGER' && target.managerIds.includes(currentUser.id);
 }
 
 export default function Employees() {
@@ -204,6 +206,7 @@ export default function Employees() {
             <TableHead>Employee</TableHead>
             <TableHead>Email</TableHead>
             <TableHead>Role</TableHead>
+            <TableHead>Manager(s)</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Last Login</TableHead>
             <TableHead className="text-right">Actions</TableHead>
@@ -220,12 +223,24 @@ export default function Employees() {
                 <TableCell className="font-medium">{user.name}</TableCell>
                 <TableCell>{user.email}</TableCell>
                 <TableCell>{user.role}</TableCell>
+                <TableCell>
+                  {user.role === 'EMPLOYEE'
+                    ? user.managerIds.length > 0
+                      ? user.managerIds
+                          .map((id) => managers.find((m) => m.id === id)?.name ?? `#${id}`)
+                          .join(', ')
+                      : '—'
+                    : ''}
+                </TableCell>
                 <TableCell>{user.status}</TableCell>
                 <TableCell>
                   {user.lastLoginAt ? new Date(user.lastLoginAt).toLocaleString() : '—'}
                 </TableCell>
                 <TableCell className="flex flex-wrap justify-end gap-2">
                   <EditEmployeeDialog user={user} isAdmin={currentUser?.role === 'ADMIN'} />
+                  {currentUser?.role === 'ADMIN' && user.role === 'EMPLOYEE' && (
+                    <ManageTeamsDialog employee={user} managers={managers} />
+                  )}
                   {canEditPermissions && (
                     <Button variant="outline" size="sm" onClick={() => setPermissionsUser(user)}>
                       Permissions
@@ -267,7 +282,7 @@ export default function Employees() {
           })}
           {managers.length + employees.length === 0 && (
             <TableRow>
-              <TableCell colSpan={6}>
+              <TableCell colSpan={7}>
                 <EmptyState message="No employees yet." />
               </TableCell>
             </TableRow>
@@ -577,6 +592,96 @@ function EditEmployeeDialog({ user, isAdmin }: { user: EmployeeUser; isAdmin: bo
             </DialogFooter>
           </form>
         </Form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Phase 18 item 3: Admin-only add/remove of an Employee from a Manager's team — a
+// separate action from CreateEmployeeDialog's initial single-manager pick, since an
+// Employee can belong to more than one team now.
+function ManageTeamsDialog({
+  employee,
+  managers,
+}: {
+  employee: EmployeeUser;
+  managers: EmployeeUser[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<number[]>(employee.managerIds);
+  const queryClient = useQueryClient();
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const toAdd = selectedIds.filter((id) => !employee.managerIds.includes(id));
+      const toRemove = employee.managerIds.filter((id) => !selectedIds.includes(id));
+      await Promise.all([
+        ...toAdd.map((managerId) =>
+          apiFetch(`/users/${employee.id}/managers`, {
+            method: 'POST',
+            body: JSON.stringify({ managerId }),
+          })
+        ),
+        ...toRemove.map((managerId) =>
+          apiFetch(`/users/${employee.id}/managers/${managerId}`, { method: 'DELETE' })
+        ),
+      ]);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+      toast.success('Teams updated');
+      setOpen(false);
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to update teams'),
+  });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) setSelectedIds(employee.managerIds);
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm">
+          Teams
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{employee.name}'s Teams</DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          An Employee can report to more than one Manager — check every team this Employee
+          belongs to.
+        </p>
+        <div className="max-h-64 space-y-1 overflow-y-auto rounded-md border p-2">
+          {managers.map((m) => (
+            <label key={m.id} className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={selectedIds.includes(m.id)}
+                onCheckedChange={(checked) =>
+                  setSelectedIds((prev) =>
+                    checked === true ? [...prev, m.id] : prev.filter((id) => id !== m.id)
+                  )
+                }
+              />
+              {m.name}
+            </label>
+          ))}
+          {managers.length === 0 && (
+            <p className="text-sm text-muted-foreground">No managers yet.</p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button onClick={() => save.mutate()} disabled={save.isPending}>
+            {save.isPending ? 'Saving…' : 'Save'}
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

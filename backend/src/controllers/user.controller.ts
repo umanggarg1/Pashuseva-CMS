@@ -10,6 +10,8 @@ import {
   approveUserSchema,
   deleteUserSchema,
   userIdParamSchema,
+  userManagerParamSchema,
+  addManagerSchema,
 } from '../schemas/user.schema';
 import { updatePermissionsSchema } from '../schemas/permission.schema';
 import { HttpError } from '../utils/httpError';
@@ -89,6 +91,20 @@ export const userController = {
     const input = updatePermissionsSchema.parse(req.body);
     const updated = await permissionService.replaceForUser(id, input, requireActingUser(req));
     res.json({ permissions: updated });
+  },
+
+  // Phase 18 item 3: add/remove an Employee from an additional Manager's team.
+  async addManagerTeam(req: Request, res: Response) {
+    const { id } = userIdParamSchema.parse(req.params);
+    const { managerId } = addManagerSchema.parse(req.body);
+    await userService.addManagerTeam(id, managerId, requireActingUser(req));
+    res.status(204).send();
+  },
+
+  async removeManagerTeam(req: Request, res: Response) {
+    const { id, managerId } = userManagerParamSchema.parse(req.params);
+    await userService.removeManagerTeam(id, managerId, requireActingUser(req));
+    res.status(204).send();
   },
 
   async getDeleteImpact(req: Request, res: Response) {

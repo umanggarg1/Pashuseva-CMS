@@ -11,7 +11,6 @@ import type { Role } from '../generated/prisma/enums';
 type ActingUser = {
   id: number;
   role: Role | null;
-  managerId?: number | null;
   permissions?: string[];
 };
 

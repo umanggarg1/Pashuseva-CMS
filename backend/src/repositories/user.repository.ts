@@ -17,12 +17,15 @@ export const userRepository = {
     return prisma.user.findFirst({ where: { id, deletedAt: null } });
   },
 
+  // Phase 18: managerId, when present, filters by EmployeeManager membership (was a
+  // scalar equality before an Employee could report to several Managers at once).
   list(where?: { managerId?: number; search?: string; status?: AccountStatus }, take?: number) {
-    const { search, ...rest } = where ?? {};
+    const { search, managerId, ...rest } = where ?? {};
     return prisma.user.findMany({
       where: {
         ...rest,
         deletedAt: null,
+        ...(managerId !== undefined && { managedBy: { some: { managerId } } }),
         ...(search
           ? {
               OR: [
@@ -32,11 +35,15 @@ export const userRepository = {
             }
           : {}),
       },
+      include: { managedBy: { select: { managerId: true } } },
       orderBy: { createdAt: 'desc' },
       take,
     });
   },
 
+  // managerId is the Employee's initial (single) Manager at creation time — an
+  // Employee can be added to additional Managers' teams afterward via
+  // addToManagerTeam below, same as any other reassignment action.
   create(data: {
     name: string;
     email: string;
@@ -44,7 +51,34 @@ export const userRepository = {
     role: Role;
     managerId?: number;
   }) {
-    return prisma.user.create({ data });
+    const { managerId, ...rest } = data;
+    return prisma.user.create({
+      data: {
+        ...rest,
+        ...(managerId !== undefined && { managedBy: { create: [{ managerId }] } }),
+      },
+    });
+  },
+
+  // Phase 18: the Employees page's "add/remove from a Manager's team" action —
+  // deliberately separate from create() above, since an Employee can now belong to
+  // more than one team at once.
+  getManagerIds(employeeId: number) {
+    return prisma.employeeManager
+      .findMany({ where: { employeeId }, select: { managerId: true } })
+      .then((rows) => rows.map((r) => r.managerId));
+  },
+
+  async addToManagerTeam(employeeId: number, managerId: number) {
+    await prisma.employeeManager.upsert({
+      where: { employeeId_managerId: { employeeId, managerId } },
+      create: { employeeId, managerId },
+      update: {},
+    });
+  },
+
+  async removeFromManagerTeam(employeeId: number, managerId: number) {
+    await prisma.employeeManager.deleteMany({ where: { employeeId, managerId } });
   },
 
   // Public signup (Phase 15) — role/managerId stay null until an Admin approves;

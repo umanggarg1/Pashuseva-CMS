@@ -23,7 +23,6 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
     req.user = {
       id: user.id,
       role: user.role,
-      managerId: user.managerId,
       permissions,
       customerDataScope: user.customerDataScope,
       orderDataScope: user.orderDataScope,

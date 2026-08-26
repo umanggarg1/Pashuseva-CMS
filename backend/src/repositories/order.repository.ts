@@ -68,7 +68,19 @@ export const orderRepository = {
           },
         },
         address: true,
-        customer: { include: { phones: true, addresses: true } },
+        // assignedEmployee.managedBy (Phase 18 item 3) is fetched here too, not just
+        // in findAssignmentById — assertOrderAccessible (order.service.ts) runs
+        // against this full object for the /number/:orderNumber lookup path, which
+        // doesn't go through the checkOrderAccess middleware/findAssignmentById at
+        // all. Without it here, a Manager's join-table fallback silently evaluates
+        // to false and a legitimately-visible order 403s.
+        customer: {
+          include: {
+            phones: true,
+            addresses: true,
+            assignedEmployee: { select: { managedBy: { select: { managerId: true } } } },
+          },
+        },
         assignedEmployees: { include: { employee: { select: { id: true, name: true } } } },
         createdBy: { select: { id: true, name: true } },
         cancelledBy: { select: { id: true, name: true } },
@@ -90,7 +102,19 @@ export const orderRepository = {
           },
         },
         address: true,
-        customer: { include: { phones: true, addresses: true } },
+        // assignedEmployee.managedBy (Phase 18 item 3) is fetched here too, not just
+        // in findAssignmentById — assertOrderAccessible (order.service.ts) runs
+        // against this full object for the /number/:orderNumber lookup path, which
+        // doesn't go through the checkOrderAccess middleware/findAssignmentById at
+        // all. Without it here, a Manager's join-table fallback silently evaluates
+        // to false and a legitimately-visible order 403s.
+        customer: {
+          include: {
+            phones: true,
+            addresses: true,
+            assignedEmployee: { select: { managedBy: { select: { managerId: true } } } },
+          },
+        },
         assignedEmployees: { include: { employee: { select: { id: true, name: true } } } },
         createdBy: { select: { id: true, name: true } },
         cancelledBy: { select: { id: true, name: true } },
@@ -100,7 +124,9 @@ export const orderRepository = {
 
   // Light select for checkOrderAccess — scopes by the order's customer's *live*
   // assignment (phases.md §44) OR the order's own assigned-employees join table
-  // (Phase 18 — shared visibility, see utils/dataScope.ts's hasOrderDataAccess).
+  // (Phase 18 — shared visibility, see utils/dataScope.ts's hasOrderDataAccess). Also
+  // selects the customer's assigned Employee's own set of Managers (Phase 18 item 3)
+  // for the same "no explicit manager chosen" fallback used on the Customer side.
   findAssignmentById(id: number) {
     return prisma.order.findFirst({
       where: { id, deletedAt: null },
@@ -108,7 +134,13 @@ export const orderRepository = {
         id: true,
         customerId: true,
         orderStatus: true,
-        customer: { select: { assignedEmployeeId: true, assignedManagerId: true } },
+        customer: {
+          select: {
+            assignedEmployeeId: true,
+            assignedManagerId: true,
+            assignedEmployee: { select: { managedBy: { select: { managerId: true } } } },
+          },
+        },
         assignedEmployees: { select: { employeeId: true } },
       },
     });

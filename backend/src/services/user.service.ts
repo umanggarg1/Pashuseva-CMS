@@ -21,6 +21,10 @@ type ActingUser = {
   orderDataScope?: DataScope | null;
 };
 
+// managedBy is optional and only populated by userRepository.list() (the only path
+// whose result is actually rendered with manager info — see Employees.tsx). Every
+// other call site's return value goes straight to invalidate-and-refetch, so an
+// empty [] there is never actually shown to anyone.
 function sanitizeUser(user: {
   id: number;
   name: string | null;
@@ -29,11 +33,11 @@ function sanitizeUser(user: {
   role: Role | null;
   requestedRole: Role | null;
   status: AccountStatus;
-  managerId: number | null;
   customerDataScope: DataScope | null;
   orderDataScope: DataScope | null;
   lastLoginAt: Date | null;
   createdAt: Date;
+  managedBy?: { managerId: number }[];
 }) {
   return {
     id: user.id,
@@ -43,7 +47,9 @@ function sanitizeUser(user: {
     role: user.role,
     requestedRole: user.requestedRole,
     status: user.status,
-    managerId: user.managerId,
+    // Phase 18: an Employee can report to several Managers now (EmployeeManager join
+    // table, replacing the old single managerId column).
+    managerIds: (user.managedBy ?? []).map((m) => m.managerId),
     customerDataScope: user.customerDataScope,
     orderDataScope: user.orderDataScope,
     lastLoginAt: user.lastLoginAt,
@@ -52,15 +58,19 @@ function sanitizeUser(user: {
 }
 
 // Admin manages everyone; a Manager manages only their own directly-reporting Employees.
-// A Manager can never manage another Manager or an Admin (managerId is only ever set to
-// a Manager's own id for their own Employees, never for a peer Manager) — this is how
-// Phase 15's "only Admin has authority over Managers" rule already holds structurally.
+// A Manager can never manage another Manager or an Admin (EmployeeManager rows are only
+// ever created pointing at a Manager's own id for their own Employees, never a peer
+// Manager) — this is how Phase 15's "only Admin has authority over Managers" rule
+// already holds structurally.
 export async function assertManagesUser(actingUser: ActingUser, targetUserId: number) {
   const target = await userRepository.findById(targetUserId);
   if (!target) throw new NotFoundError('User not found');
 
   if (actingUser.role === 'ADMIN') return target;
-  if (actingUser.role === 'MANAGER' && target.managerId === actingUser.id) return target;
+  if (actingUser.role === 'MANAGER') {
+    const managerIds = await userRepository.getManagerIds(targetUserId);
+    if (managerIds.includes(actingUser.id)) return target;
+  }
   if (hasFullBusinessAccess(actingUser, actingUser.customerDataScope, actingUser.orderDataScope)) {
     return target;
   }
@@ -277,8 +287,15 @@ export const userService = {
     }
 
     if (target.role === 'MANAGER') {
-      const reportingEmployeeCount = await prisma.user.count({
-        where: { managerId: id, deletedAt: null },
+      // Phase 18: counts EmployeeManager rows, not a scalar managerId equality — an
+      // Employee reporting to several Managers still counts once per Manager here,
+      // same as before for the single-manager case. employee.deletedAt: null matters
+      // here — permanentDelete anonymizes a User row in place rather than a real
+      // DELETE FROM (see its comment), so a purged Employee's EmployeeManager rows
+      // would otherwise linger and keep counting against their former Manager(s)
+      // forever. The original scalar-managerId query had this same guard.
+      const reportingEmployeeCount = await prisma.employeeManager.count({
+        where: { managerId: id, employee: { deletedAt: null } },
       });
       return { role: target.role, assignedCustomerCount: 0, activeOrderCount: 0, reportingEmployeeCount };
     }
@@ -335,10 +352,25 @@ export const userService = {
       if (!newManager || newManager.role !== 'MANAGER') {
         throw new HttpError(400, 'reassignToUserId does not refer to an existing Manager');
       }
-      await prisma.user.updateMany({
-        where: { managerId: id },
-        data: { managerId: reassignToUserId },
-      });
+      // Phase 18: EmployeeManager join table, not a scalar managerId — carry every
+      // departing Manager's team members over to the new one. skipDuplicates covers
+      // an Employee who already reports to reassignToUserId as one of their other
+      // Managers too. employee.deletedAt: null excludes already-purged Employees
+      // (see getDeleteImpact's reportingEmployeeCount comment) — no need to carry a
+      // stale row for someone who no longer exists over to the new Manager too.
+      const affectedEmployeeIds = (
+        await prisma.employeeManager.findMany({
+          where: { managerId: id, employee: { deletedAt: null } },
+          select: { employeeId: true },
+        })
+      ).map((r) => r.employeeId);
+      await prisma.employeeManager.deleteMany({ where: { managerId: id } });
+      if (affectedEmployeeIds.length > 0) {
+        await prisma.employeeManager.createMany({
+          data: affectedEmployeeIds.map((employeeId) => ({ employeeId, managerId: reassignToUserId })),
+          skipDuplicates: true,
+        });
+      }
     }
 
     const expiresAt = computeDeletionExpiry();
@@ -349,6 +381,32 @@ export const userService = {
       meta: { userId: id, name: target.name, expiresAt: expiresAt.toISOString() },
     });
     return sanitizeUser(user);
+  },
+
+  // Phase 18 item 3: adding/removing an Employee from an *additional* Manager's team,
+  // as its own action distinct from create() above (which only sets the initial
+  // Manager). Admin-only, same authority level as create()'s ADMIN-assigns-managerId
+  // branch — a Manager doesn't get to enroll Employees into their own team unasked.
+  async addManagerTeam(employeeId: number, managerId: number, actingUser: ActingUser) {
+    if (actingUser.role !== 'ADMIN') {
+      throw new HttpError(403, 'Only an Admin can add an Employee to a Manager’s team');
+    }
+    const employee = await userRepository.findById(employeeId);
+    if (!employee || employee.role !== 'EMPLOYEE') {
+      throw new HttpError(400, 'employeeId does not refer to an existing Employee');
+    }
+    const manager = await userRepository.findById(managerId);
+    if (!manager || manager.role !== 'MANAGER') {
+      throw new HttpError(400, 'managerId does not refer to an existing Manager');
+    }
+    await userRepository.addToManagerTeam(employeeId, managerId);
+  },
+
+  async removeManagerTeam(employeeId: number, managerId: number, actingUser: ActingUser) {
+    if (actingUser.role !== 'ADMIN') {
+      throw new HttpError(403, 'Only an Admin can remove an Employee from a Manager’s team');
+    }
+    await userRepository.removeFromManagerTeam(employeeId, managerId);
   },
 
   async restore(id: number, actingUser: ActingUser) {

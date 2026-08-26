@@ -108,7 +108,6 @@ function assertNotBackwardDelivery(current: string, next: string, actingUser: Ac
 type ActingUser = {
   id: number;
   role: Role | null;
-  managerId?: number | null;
   permissions?: string[];
   customerDataScope?: DataScope | null;
   orderDataScope?: DataScope | null;
@@ -393,13 +392,12 @@ export const orderService = {
             notes: input.newCustomer.notes,
             createdById: actingUser.id,
             // Same auto-assignment rule as customerService.create — see the
-            // prerequisite fix in PHASE1-6_TODO.md §1.
-            assignedManagerId:
-              actingUser.role === 'MANAGER'
-                ? actingUser.id
-                : actingUser.role === 'EMPLOYEE'
-                  ? (actingUser.managerId ?? undefined)
-                  : undefined,
+            // prerequisite fix in PHASE1-6_TODO.md §1. assignedManagerId is
+            // deliberately left unset for an Employee (Phase 18) — they can report
+            // to several Managers now, and every one of them gets visibility via
+            // the join-table fallback in utils/dataScope.ts rather than this
+            // picking just one.
+            assignedManagerId: actingUser.role === 'MANAGER' ? actingUser.id : undefined,
             assignedEmployeeId: actingUser.role === 'EMPLOYEE' ? actingUser.id : undefined,
             phones: input.newCustomer.phones,
             address: input.newCustomer.address,

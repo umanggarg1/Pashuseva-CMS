@@ -1,9 +1,10 @@
+import prisma from '../lib/prisma';
 import { Prisma } from '../generated/prisma/client';
 import { customerRepository } from '../repositories/customer.repository';
 import { userRepository } from '../repositories/user.repository';
 import { auditLogRepository } from '../repositories/auditLog.repository';
 import { HttpError, NotFoundError } from '../utils/httpError';
-import { customerDataWhere } from '../utils/dataScope';
+import { customerDataWhere, hasCustomerDataAccess } from '../utils/dataScope';
 import { computeDeletionExpiry } from '../utils/trash';
 import type { Role, CustomerStatus, DataScope } from '../generated/prisma/enums';
 import type {
@@ -15,21 +16,40 @@ import type {
 type ActingUser = {
   id: number;
   role: Role | null;
-  managerId?: number | null;
   customerDataScope?: DataScope | null;
 };
 
+// Phase 18: a Manager may assign a customer to any Employee who reports to them —
+// "reports to" now means EmployeeManager membership, not a single managerId
+// equality, since an Employee can report to several Managers at once.
 async function resolveEmployeeAssignment(employeeId: number, actingUser: ActingUser) {
   const employee = await userRepository.findById(employeeId);
   if (!employee || employee.role !== 'EMPLOYEE') {
     throw new HttpError(400, 'employeeId does not refer to an existing Employee');
   }
 
-  if (actingUser.role === 'MANAGER' && employee.managerId !== actingUser.id) {
+  const managerIds = (
+    await prisma.employeeManager.findMany({
+      where: { employeeId },
+      select: { managerId: true },
+    })
+  ).map((m) => m.managerId);
+
+  if (actingUser.role === 'MANAGER' && !managerIds.includes(actingUser.id)) {
     throw new HttpError(403, 'You can only assign customers to your own team');
   }
 
-  const managerId = actingUser.role === 'MANAGER' ? actingUser.id : employee.managerId;
+  // A Manager assigning to their own team is always the authoritative single
+  // manager. Otherwise (Admin assigning), only collapse to a single manager when
+  // the Employee has exactly one — with several, leave it null so every one of
+  // their Managers gets visibility via the join-table fallback (see
+  // utils/dataScope.ts) rather than picking one arbitrarily.
+  const managerId =
+    actingUser.role === 'MANAGER'
+      ? actingUser.id
+      : managerIds.length === 1
+        ? managerIds[0]
+        : null;
   return { employee, managerId };
 }
 
@@ -70,16 +90,23 @@ function buildCustomerWhere(
         }
       : {};
 
-  return {
-    ...scope,
-    ...(query.status && { status: query.status }),
-    ...(actingUser.role === 'ADMIN' &&
-      query.assignedEmployeeId && { assignedEmployeeId: query.assignedEmployeeId }),
-    ...(actingUser.role === 'ADMIN' &&
-      query.assignedManagerId && { assignedManagerId: query.assignedManagerId }),
-    ...addressFilter,
-    ...createdAtFilter,
-    ...(query.search && {
+  // Phase 18: scope (customerDataWhere) can now itself contain a top-level OR for a
+  // Manager (explicit assignment OR the join-table fallback — see utils/dataScope.ts).
+  // A second top-level OR for search, merged via spread, would silently *replace*
+  // that key instead of combining with it — same bug class caught in
+  // order.service.ts's buildOrderWhere. Everything goes into an AND array instead.
+  const filters: Prisma.CustomerWhereInput[] = [scope];
+  if (query.status) filters.push({ status: query.status });
+  if (actingUser.role === 'ADMIN' && query.assignedEmployeeId) {
+    filters.push({ assignedEmployeeId: query.assignedEmployeeId });
+  }
+  if (actingUser.role === 'ADMIN' && query.assignedManagerId) {
+    filters.push({ assignedManagerId: query.assignedManagerId });
+  }
+  if (Object.keys(addressFilter).length > 0) filters.push(addressFilter);
+  if (Object.keys(createdAtFilter).length > 0) filters.push(createdAtFilter);
+  if (query.search) {
+    filters.push({
       OR: [
         { name: { contains: query.search, mode: 'insensitive' as const } },
         { email: { contains: query.search, mode: 'insensitive' as const } },
@@ -99,8 +126,10 @@ function buildCustomerWhere(
         },
         { addresses: { some: { pincode: { contains: query.search } } } },
       ],
-    }),
-  };
+    });
+  }
+
+  return { AND: filters };
 }
 
 export const customerService = {
@@ -122,20 +151,19 @@ export const customerService = {
 
   async create(input: CreateCustomerInput, actingUser: ActingUser) {
     // A Manager-created customer is scoped to that Manager immediately, and an
-    // Employee-created customer to that Employee (+ their Manager) — otherwise the
-    // creator would be locked out of their own customer (visibility requires
-    // assignedManagerId/assignedEmployeeId === self) until someone else assigns it.
+    // Employee-created customer to that Employee — otherwise the creator would be
+    // locked out of their own customer (visibility requires assignedManagerId/
+    // assignedEmployeeId === self) until someone else assigns it. assignedManagerId
+    // is deliberately left unset for an Employee-created customer (Phase 18) — an
+    // Employee can report to several Managers now, and every one of them gets
+    // visibility via the join-table fallback in utils/dataScope.ts rather than this
+    // picking just one.
     const customer = await customerRepository.create({
       name: input.name,
       email: input.email,
       notes: input.notes,
       createdById: actingUser.id,
-      assignedManagerId:
-        actingUser.role === 'MANAGER'
-          ? actingUser.id
-          : actingUser.role === 'EMPLOYEE'
-            ? (actingUser.managerId ?? undefined)
-            : undefined,
+      assignedManagerId: actingUser.role === 'MANAGER' ? actingUser.id : undefined,
       assignedEmployeeId: actingUser.role === 'EMPLOYEE' ? actingUser.id : undefined,
       phones: input.phones,
       address: input.address,
@@ -210,7 +238,14 @@ export const customerService = {
     const existing = await customerRepository.findAssignmentById(customerId);
     if (!existing) throw new NotFoundError('Customer not found');
 
-    if (actingUser.role === 'MANAGER' && existing.assignedManagerId !== actingUser.id) {
+    // Reuses the same access check as viewing — a Manager who can see this customer
+    // (whether explicitly assigned or via the Phase 18 join-table fallback) can also
+    // unassign it, rather than a narrower hand-rolled equality check that would miss
+    // the fallback case.
+    if (
+      actingUser.role === 'MANAGER' &&
+      !hasCustomerDataAccess(actingUser, actingUser.customerDataScope, existing)
+    ) {
       throw new HttpError(403, 'You can only unassign customers within your own team');
     }
 

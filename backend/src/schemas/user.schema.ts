@@ -9,6 +9,16 @@ export const userIdParamSchema = z.object({
   id: z.coerce.number().int().positive(),
 });
 
+// Phase 18 item 3: the Employees page's "add/remove from a Manager's team" action.
+export const userManagerParamSchema = z.object({
+  id: z.coerce.number().int().positive(),
+  managerId: z.coerce.number().int().positive(),
+});
+
+export const addManagerSchema = z.object({
+  managerId: z.coerce.number().int().positive(),
+});
+
 // Admin creates Managers; Admin or Manager creates Employees — the existing
 // role-only, no-approval-needed flow. Separate from public signup (auth.schema.ts's
 // signupSchema), which always starts PENDING/role-less regardless of who fills it in.
