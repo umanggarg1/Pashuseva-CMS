@@ -839,8 +839,12 @@ function DeliveryCard({
   const nextStatus = currentIndex === -1 ? undefined : DELIVERY_STEPS[currentIndex + 1];
   const latestTracking = tracking && tracking.length > 0 ? tracking[tracking.length - 1] : null;
   // Delivery status is manually selectable — any stage, any direction — so this is no
-  // longer gated on "is there a next stage." Only a cancelled order blocks it.
-  const canChangeStatus = canEdit && order.orderStatus !== 'CANCELLED';
+  // longer gated on "is there a next stage." Not gated on order status either (Phase
+  // 17): a cancelled order still needs its return journey tracked (Return Pending ->
+  // Return In Transit -> Returned) via this same control, even though Order Status
+  // itself correctly stays Cancelled throughout. What's actually selectable for a
+  // given current status is handled by the dialog's own option filtering below.
+  const canChangeStatus = canEdit;
 
   return (
     <Card>
