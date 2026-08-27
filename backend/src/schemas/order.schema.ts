@@ -131,12 +131,24 @@ export const updateOrderStatusSchema = z.object({
   orderStatus: z.enum(['PENDING', 'CONFIRMED', 'PROCESSING']),
 });
 
-export const updateDeliveryStatusSchema = z.object({
-  deliveryStatus: deliveryStatusSchema,
-  location: z.string().min(1).optional(),
-  note: z.string().optional(),
-  receivedBy: z.string().min(1).optional(),
-});
+// Only meaningful when deliveryStatus is DELIVERED — lets staff record a payment
+// collected at the point of delivery (COD, or confirming an online payment already
+// made) in the same action as marking the order Delivered, instead of a separate
+// trip to the Payments section. paymentMethod is required only when
+// paymentCollected is true — recording "Unpaid" needs no method at all.
+export const updateDeliveryStatusSchema = z
+  .object({
+    deliveryStatus: deliveryStatusSchema,
+    location: z.string().min(1).optional(),
+    note: z.string().optional(),
+    receivedBy: z.string().min(1).optional(),
+    paymentCollected: z.boolean().optional(),
+    paymentMethod: z.enum(['CASH', 'ONLINE']).optional(),
+  })
+  .refine((data) => !data.paymentCollected || data.paymentMethod !== undefined, {
+    message: 'paymentMethod is required when paymentCollected is true',
+    path: ['paymentMethod'],
+  });
 
 export const orderListQuerySchema = z.object({
   search: z.string().optional(),

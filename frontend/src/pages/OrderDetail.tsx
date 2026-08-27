@@ -628,6 +628,8 @@ export default function OrderDetail() {
         isTrackingPending={trackingQuery.isPending}
         canEdit={canEditDelivery}
         canOverrideStatus={canOverrideStatus}
+        canAddPayment={canAddPayment}
+        remaining={paymentsQuery.data?.remaining}
         onSaveExpectedDelivery={(expectedDelivery) =>
           updateOrderFields.mutate({ expectedDelivery })
         }
@@ -809,6 +811,8 @@ function DeliveryCard({
   isTrackingPending,
   canEdit,
   canOverrideStatus,
+  canAddPayment,
+  remaining,
   onSaveExpectedDelivery,
   onSaveArticleNumber,
   onSaveEstimatedDeliveryCharges,
@@ -820,6 +824,8 @@ function DeliveryCard({
   isTrackingPending: boolean;
   canEdit: boolean;
   canOverrideStatus: boolean;
+  canAddPayment: boolean;
+  remaining: number | undefined;
   onSaveExpectedDelivery: (date: string) => void;
   onSaveArticleNumber: (value: string) => void;
   onSaveEstimatedDeliveryCharges: (value: string) => void;
@@ -883,9 +889,10 @@ function DeliveryCard({
                 />
               )}
               <ChangeDeliveryStatusDialog
-                orderId={order.id}
-                currentStatus={order.deliveryStatus}
+                order={order}
                 canOverrideStatus={canOverrideStatus}
+                canAddPayment={canAddPayment}
+                remaining={remaining}
                 onSuccess={onStatusChanged}
               />
             </div>
@@ -1506,28 +1513,69 @@ function AddLocationUpdateDialog({
   );
 }
 
+function formatOrderAddress(address: OrderAddressRow | null): string {
+  if (!address) return '';
+  return [address.addressLine, address.landmark, address.city, address.district, address.state, address.pincode]
+    .filter(Boolean)
+    .join(', ');
+}
+
 function ChangeDeliveryStatusDialog({
-  orderId,
-  currentStatus,
+  order,
   canOverrideStatus,
+  canAddPayment,
+  remaining,
   onSuccess,
 }: {
-  orderId: number;
-  currentStatus: string;
+  order: OrderDetailData;
   canOverrideStatus: boolean;
+  canAddPayment: boolean;
+  remaining: number | undefined;
   onSuccess: () => void;
 }) {
+  const currentStatus = order.deliveryStatus;
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState(currentStatus);
   const [location, setLocation] = useState('');
   const [note, setNote] = useState('');
-  const [receivedBy, setReceivedBy] = useState('');
+  const [receivedByOption, setReceivedByOption] = useState<'customer' | 'other'>('customer');
+  const [receivedByOther, setReceivedByOther] = useState('');
+  // Bundling a payment collected at the point of delivery into this same action
+  // (COD, or confirming an online payment already made) — only relevant once
+  // there's something left to pay. Defaults to Unpaid: recording a payment is an
+  // explicit choice, never assumed just because the parcel was delivered.
+  const [paymentStatusChoice, setPaymentStatusChoice] = useState<'UNPAID' | 'PAID'>('UNPAID');
+  const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'ONLINE'>('CASH');
+
+  const isDelivered = status === 'DELIVERED';
+  const showPaymentSection = isDelivered && canAddPayment && order.paymentStatus !== 'PAID';
+  const receivedBy = receivedByOption === 'customer' ? order.customer.name : receivedByOther;
 
   const config = STATUS_FIELD_CONFIG[status] ?? { locationLabel: 'Location', locationRequired: false };
 
+  function resetFields(nextCurrentStatus: string) {
+    setStatus(nextCurrentStatus);
+    setLocation('');
+    setNote('');
+    setReceivedByOption('customer');
+    setReceivedByOther('');
+    setPaymentStatusChoice('UNPAID');
+    setPaymentMethod('CASH');
+  }
+
+  // Pre-fill Delivered At with the order's own delivery address the moment
+  // Delivered is selected — staff just confirms it rather than typing from
+  // scratch, but can still edit or clear it.
+  function handleStatusChange(next: string) {
+    setStatus(next);
+    if (next === 'DELIVERED' && !location) {
+      setLocation(formatOrderAddress(order.address));
+    }
+  }
+
   const updateStatus = useMutation({
     mutationFn: () =>
-      apiFetch(`/orders/${orderId}/delivery-status`, {
+      apiFetch(`/orders/${order.id}/delivery-status`, {
         method: 'PATCH',
         body: JSON.stringify({
           deliveryStatus: status,
@@ -1535,15 +1583,17 @@ function ChangeDeliveryStatusDialog({
           note: note || undefined,
           receivedBy:
             status === 'DELIVERED' || status === 'RETURNED' ? receivedBy || undefined : undefined,
+          ...(showPaymentSection && {
+            paymentCollected: paymentStatusChoice === 'PAID',
+            ...(paymentStatusChoice === 'PAID' && { paymentMethod }),
+          }),
         }),
       }),
     onSuccess: () => {
       toast.success('Delivery status updated');
       onSuccess();
       setOpen(false);
-      setLocation('');
-      setNote('');
-      setReceivedBy('');
+      resetFields(status);
     },
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : 'Failed to update delivery status'),
@@ -1554,7 +1604,7 @@ function ChangeDeliveryStatusDialog({
       open={open}
       onOpenChange={(next) => {
         setOpen(next);
-        if (next) setStatus(currentStatus);
+        if (next) resetFields(currentStatus);
       }}
     >
       <DialogTrigger asChild>
@@ -1570,7 +1620,7 @@ function ChangeDeliveryStatusDialog({
           </p>
           <div>
             <label className="text-sm font-medium">New Status</label>
-            <Select value={status} onValueChange={setStatus}>
+            <Select value={status} onValueChange={handleStatusChange}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
@@ -1598,13 +1648,71 @@ function ChangeDeliveryStatusDialog({
             <Input value={location} onChange={(e) => setLocation(e.target.value)} />
           </div>
           {(status === 'DELIVERED' || status === 'RETURNED') && (
-            <div>
+            <div className="space-y-2">
               <label className="text-sm font-medium">Received By</label>
-              <Input
-                value={receivedBy}
-                onChange={(e) => setReceivedBy(e.target.value)}
-                placeholder="e.g. Rajesh Kumar"
-              />
+              <Select
+                value={receivedByOption}
+                onValueChange={(v) => setReceivedByOption(v as 'customer' | 'other')}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="customer">{order.customer.name}</SelectItem>
+                  <SelectItem value="other">Other…</SelectItem>
+                </SelectContent>
+              </Select>
+              {receivedByOption === 'other' && (
+                <Input
+                  value={receivedByOther}
+                  onChange={(e) => setReceivedByOther(e.target.value)}
+                  placeholder="e.g. Rajesh Kumar"
+                />
+              )}
+            </div>
+          )}
+          {showPaymentSection && (
+            <div className="space-y-3 rounded-md border p-3">
+              <p className="text-sm font-semibold">Payment Details</p>
+              {remaining !== undefined && (
+                <p className="text-xs text-muted-foreground">
+                  Remaining balance: ₹{remaining.toLocaleString()}
+                </p>
+              )}
+              <div>
+                <label className="text-xs font-medium text-muted-foreground">Payment Status</label>
+                <div className="mt-1 flex gap-2">
+                  {(['UNPAID', 'PAID'] as const).map((s) => (
+                    <Button
+                      key={s}
+                      type="button"
+                      size="sm"
+                      variant={paymentStatusChoice === s ? 'default' : 'outline'}
+                      onClick={() => setPaymentStatusChoice(s)}
+                    >
+                      {s === 'UNPAID' ? 'Unpaid' : 'Paid'}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+              {paymentStatusChoice === 'PAID' && (
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Payment Method</label>
+                  <div className="mt-1 flex gap-2">
+                    {(['CASH', 'ONLINE'] as const).map((m) => (
+                      <Button
+                        key={m}
+                        type="button"
+                        size="sm"
+                        variant={paymentMethod === m ? 'default' : 'outline'}
+                        onClick={() => setPaymentMethod(m)}
+                      >
+                        {m === 'CASH' ? 'COD' : 'Online'}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
           <div>

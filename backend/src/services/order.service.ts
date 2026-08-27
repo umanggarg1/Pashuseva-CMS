@@ -876,12 +876,25 @@ export const orderService = {
 
   async updateDeliveryStatus(
     id: number,
-    data: { deliveryStatus: DeliveryStatus; location?: string; note?: string; receivedBy?: string },
+    data: {
+      deliveryStatus: DeliveryStatus;
+      location?: string;
+      note?: string;
+      receivedBy?: string;
+      paymentCollected?: boolean;
+      paymentMethod?: 'CASH' | 'ONLINE';
+    },
     actingUser: ActingUser
   ) {
     const existing = await orderRepository.findById(id);
     if (!existing) throw new NotFoundError('Order not found');
     assertNotBackwardDelivery(existing.deliveryStatus, data.deliveryStatus, actingUser);
+    // Recording a payment here needs the same authority as the dedicated payments
+    // endpoint would — delivery:update alone (e.g. a rider confirming drop-off)
+    // doesn't imply the ability to also touch the payment ledger.
+    if (data.paymentCollected && !hasPermission(actingUser, 'payment:create')) {
+      throw new HttpError(403, 'You do not have permission to record a payment');
+    }
 
     return prisma.$transaction(async (tx) => {
       let order = await orderRepository.updateDeliveryStatus(
@@ -919,6 +932,37 @@ export const orderService = {
           mappedOrderStatus,
           tx
         );
+      }
+
+      // Payment collected at the point of delivery (COD, or confirming an online
+      // payment already made) — same ledger path as addPayment, just inline in this
+      // transaction instead of a separate follow-up request. Only fires for the
+      // DELIVERED transition itself, and only for whatever's still actually owed —
+      // never double-collects if the order was already fully paid by then.
+      if (data.deliveryStatus === 'DELIVERED' && data.paymentCollected) {
+        const paidSoFar = await paymentRepository.sumForOrder(id, tx);
+        const remaining = existing.total - paidSoFar;
+        if (remaining > 0) {
+          await paymentRepository.create(
+            {
+              orderId: id,
+              amount: remaining,
+              method: data.paymentMethod!,
+              createdById: actingUser.id,
+            },
+            tx
+          );
+          const newPaymentStatus = orderService.paidStatusFor(paidSoFar + remaining, existing.total);
+          order = await orderRepository.setPaymentStatus(id, newPaymentStatus, tx);
+          await orderRepository.recordActivity(
+            id,
+            'Payment added',
+            actingUser.id,
+            existing.paymentStatus,
+            `+₹${remaining} (${data.paymentMethod}) → ${newPaymentStatus}`,
+            tx
+          );
+        }
       }
 
       // Stock is restored only once the return is actually confirmed back, not at
