@@ -41,12 +41,18 @@ interface CustomerPhone {
   isPrimary: boolean;
 }
 
+interface CustomerAddress {
+  id: number;
+  state: string;
+}
+
 interface CustomerListItem {
   id: number;
   name: string;
   email: string | null;
   status: 'ACTIVE' | 'INACTIVE';
   phones: CustomerPhone[];
+  addresses: CustomerAddress[];
   // Phase 19: several employees can share a customer now.
   assignedEmployees: { employeeId: number; employee: { id: number; name: string | null } }[];
   assignedManager: { id: number; name: string | null } | null;
@@ -71,6 +77,10 @@ const SORT_OPTIONS = [
 export default function Customers() {
   const { data: currentUser } = useCurrentUser();
   const isAdmin = currentUser?.role === 'ADMIN';
+  // Phase 19-adjacent: an Employee sees Customer State in the table instead of
+  // Assigned To — assignment info is Manager/Admin-only (see CustomerDetail.tsx's
+  // same restriction).
+  const isEmployee = currentUser?.role === 'EMPLOYEE';
   const canCreateCustomer = hasPermission(currentUser, 'customer:create');
   const queryClient = useQueryClient();
 
@@ -272,7 +282,7 @@ export default function Customers() {
               <TableRow>
                 <TableHead>Customer</TableHead>
                 <TableHead>Phone</TableHead>
-                <TableHead>Assigned To</TableHead>
+                <TableHead>{isEmployee ? 'Customer State' : 'Assigned To'}</TableHead>
                 <TableHead>Status</TableHead>
               </TableRow>
             </TableHeader>
@@ -286,9 +296,11 @@ export default function Customers() {
                   </TableCell>
                   <TableCell>{primaryPhone(customer.phones)}</TableCell>
                   <TableCell>
-                    {customer.assignedEmployees.length > 0
-                      ? customer.assignedEmployees.map((a) => a.employee.name ?? 'Unknown').join(', ')
-                      : 'Unassigned'}
+                    {isEmployee
+                      ? customer.addresses[0]?.state ?? '—'
+                      : customer.assignedEmployees.length > 0
+                        ? customer.assignedEmployees.map((a) => a.employee.name ?? 'Unknown').join(', ')
+                        : 'Unassigned'}
                   </TableCell>
                   <TableCell>{customer.status}</TableCell>
                 </TableRow>

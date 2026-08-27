@@ -168,14 +168,27 @@ export const customerService = {
     );
   },
 
-  list(actingUser: ActingUser, query: CustomerListQuery) {
+  async list(actingUser: ActingUser, query: CustomerListQuery) {
     const where = buildCustomerWhere(actingUser, query);
     const skip = (query.page - 1) * query.pageSize;
-    return customerRepository.findMany(where, {
+    const result = await customerRepository.findMany(where, {
       skip,
       take: query.pageSize,
       orderBy: { [query.sortBy]: query.sortDir },
     });
+    // Same flat rule as getById — an Employee never sees who's assigned to a
+    // customer, in the list either, not just the detail page.
+    if (actingUser.role === 'EMPLOYEE') {
+      return {
+        ...result,
+        data: result.data.map((c) => ({
+          ...c,
+          assignedManager: undefined,
+          assignedEmployees: undefined,
+        })),
+      };
+    }
+    return result;
   },
 
   // An Employee never sees who's assigned to a customer (Manager/Admin only) — a
