@@ -1,7 +1,14 @@
 # Phase 20 — First-Load Performance: Kill the Auth Waterfall, Then the Rest
 
-**Status: Architecture finalized, nothing implemented yet — per explicit instruction,
-this document is the plan to review before any code changes start.**
+**Status: Steps 1–3 implemented and verified locally, not yet committed/pushed.
+Steps 5–6 not started — stopping here to check in before continuing, per
+instruction to ask before every big change.**
+
+Reviewed by the user after the architecture was finalized; the review approved the
+plan with a few concrete refinements, folded in below (a redirect-loop guard for
+the 401 handler, and confirming `getForUser`'s actual dependency rather than
+trusting the variable name before parallelizing it — both addressed during
+implementation, see Step 2/Step 3 below).
 
 This follows two prior investigative turns (not committed as code, just findings):
 1. Production timing measurements (Render + Neon), which found Render itself
@@ -151,74 +158,108 @@ request, exactly as today.
 
 ## Sequencing (matches the priority order already agreed)
 
-### Step 1 — Stop `RequireAuth` blocking `<Outlet/>` on `/auth/me`
+### Step 1 — Stop `RequireAuth` blocking `<Outlet/>` on `/auth/me` ✅ done
 
-- [ ] `RequireAuth.tsx`: render `<Outlet/>` immediately instead of an `isPending`
-      skeleton gate. Needs a decision on what "immediately" shows for the handful
-      of components that read `currentUser` synchronously before it's loaded
-      (`Navbar`, `Sidebar`, `Home`'s greeting) — they already handle
-      `currentUser === undefined` gracefully today (optional chaining throughout,
-      e.g. `currentUser?.name`), so this is expected to be a non-issue, but worth
-      confirming per-component during implementation, not assuming.
-- [ ] Decide what happens on the *first* paint before `/auth/me` resolves: render
-      the shell with empty/loading nav state (simplest, matches how these
-      components already degrade), vs. a full-shell skeleton. Recommend the
-      former — it's what "don't block" actually means, and every consumer of
-      `currentUser` already tolerates `undefined`.
-- [ ] `RequireAuth.tsx` keeps owning the PENDING-account screen
-      (`user.status === 'PENDING'` → `<PendingApproval/>`) and the redirect for a
-      *confirmed* 401 — it just stops being the thing that delays every other
-      query from starting.
+- [x] `RequireAuth.tsx`: renders `<Outlet/>` as soon as `/auth/me` is no longer
+      `isPending` **or** hasn't failed yet — i.e. it only ever blocks on the brief
+      "don't know the answer yet" window, never waits for a *successful* answer
+      specifically. `Navbar`/`Sidebar`/`Home`'s greeting already tolerate
+      `currentUser === undefined` via existing optional chaining — confirmed by
+      reading each, not assumed.
+- [x] First paint (before `/auth/me` resolves) shows the normal shell with
+      whatever each component's own `undefined`-tolerant fallback is (empty nav
+      filtering, blank greeting) — no separate full-shell skeleton added, per the
+      "don't block" goal.
+- [x] `RequireAuth.tsx` still owns the PENDING-account screen and the
+      confirmed-401 redirect — it just no longer delays anything else from
+      starting while `/auth/me` is in flight.
 
-### Step 2 — One shared 401 → redirect handler, not per-query duplication
+### Step 2 — One shared 401 → redirect handler, not per-query duplication ✅ done
 
-- [ ] Add a single place that reacts to any `ApiError` with `status === 401` by
-      redirecting to `/login` — candidates: a `QueryCache`-level `onError` in
-      `queryClient.ts` (React Query v5 supports this on `QueryCache`/`MutationCache`
-      construction), or a thin wrapper around `apiFetch` that checks the status
-      and redirects before rethrowing. Needs picking one during implementation;
-      leaning toward the `QueryCache` global handler since it covers every
-      `useQuery` call site automatically, matching "don't duplicate this per page."
-- [ ] `RequireAuth` still separately redirects when `/auth/me` itself comes back
-      401/errored (its own `isError` check stays) — the two mechanisms agree
-      (both send to `/login`), they just cover different triggers (auth query
-      itself vs. any other protected query hitting a stale/missing session).
-- [ ] Confirm this doesn't fire a redirect loop on the `/login` page itself (no
-      protected queries run there today — verify, don't assume).
+- [x] `queryClient.ts` gets a `QueryCache`/`MutationCache`-level `onError` that
+      redirects to `/login` on any `ApiError` with `status === 401` — covers
+      every `useQuery`/`useMutation` call site automatically, nothing per-page.
+- [x] **Review refinement, addressed**: added a module-level `redirectingToLogin`
+      guard. Once the waterfall is gone, several protected requests can be in
+      flight together (e.g. `/auth/me` and `/dashboard/summary` firing in
+      parallel) — an expired session could 401 more than one of them in the same
+      tick, and this guard makes sure only the first one triggers the actual
+      redirect.
+- [x] Retrying a 401 is now explicitly skipped (`retry` checks for
+      `error.status === 401`) — retrying it would just fail again and only delay
+      the redirect.
+- [x] `RequireAuth` still separately redirects when `/auth/me` itself errors —
+      intentionally redundant with the global handler (belt-and-suspenders, not
+      a conflict — both go to the same place).
+- [ ] Confirmed no protected queries run on `/login` itself by inspection (no
+      `useQuery` calls in `Login.tsx`) — not yet exercised by an actual expired
+      session hitting the page live.
 
-### Step 3 — Fix `/auth/me`'s duplicate queries and the middleware's own sequencing
+### Step 3 — Fix `/auth/me`'s duplicate queries and the middleware's own sequencing ✅ done
 
-- [ ] `authenticate` middleware: run `userRepository.findById(payload.sub)` and
-      `permissionRepository.getForUser(payload.sub)` in `Promise.all` instead of
-      sequentially — both only need `payload.sub`, which is known before either
-      query starts. Cuts the middleware's own DB time roughly in half, and this
-      runs on *every* authenticated request, not just `/auth/me`.
-- [ ] `authController.me` / `authService.me`: stop re-fetching what `authenticate`
-      already put on `req.user` (id, role, permissions, customerDataScope,
-      orderDataScope). Only the fields `req.user` doesn't carry (name, email,
-      phone, requestedRole, status, lastLoginAt, createdAt) need a fresh lookup —
-      one lean query instead of two redundant ones. Exact shape to work out during
-      implementation (either broaden what `authenticate` puts on `req.user` so
-      `/auth/me` needs zero extra queries, or keep one minimal supplemental query
-      — leaning toward the former, one round-trip total instead of four).
+- [x] `authenticate` middleware: `userRepository.findById(payload.sub)` and
+      `permissionRepository.getForUser(payload.sub)` now run in `Promise.all`.
+      **Review refinement, addressed**: verified `permission.repository.ts`'s
+      `getForUser(userId)` implementation directly before parallelizing — it's a
+      plain `userPermission.findMany({where:{userId}})` with no dependency on the
+      `user` row itself, so the parallelization is confirmed safe, not assumed
+      from the parameter name.
+- [x] `authService.me` no longer re-fetches permissions — it now takes them as a
+      parameter (`me(userId, permissions)`), reusing what `authenticate` already
+      put on `req.user`. Still does one `userRepository.findById` for the
+      display fields `req.user` doesn't carry (name/email/phone/status) — went
+      with "one minimal supplemental query" rather than widening `req.user`
+      itself, since nothing else in the codebase needs those fields on every
+      request, just this one endpoint.
+- [x] Net effect: `/auth/me` goes from 4 sequential queries (2 in middleware + 2
+      duplicated in the controller) to 2 queries in parallel (middleware) + 1
+      more (controller) — 3 total, and the first 2 overlap.
 
-### Step 4 — Verify Steps 1–3 before moving on
+### Step 4 — Verify Steps 1–3 before moving on (local — production not yet touched)
 
-- [ ] DevTools Network tab: confirm `/auth/me` and `/dashboard/summary` requests
-      now start within the same tick (overlapping, not sequential waterfall).
-- [ ] Confirm an expired/missing session redirects to `/login` correctly from a
-      *non-Home* protected page too (not just from `/auth/me` failing) — this is
-      the part that didn't exist before Step 2 and is the one genuinely new
-      failure mode this change introduces if done wrong.
-- [ ] Re-run the same production timing measurements as before/after comparison
-      (same endpoints, same method) to quantify the actual improvement rather
-      than assuming the theoretical one.
+- [x] `GET /auth/me` correctness: response shape unchanged
+      (`{id,name,email,phone,role,status,permissions}`), matches the frontend's
+      `CurrentUser` type.
+- [x] `GET /auth/me` with an invalid/missing session still 401s correctly.
+- [x] Timing, local dev backend (same shared Neon DB as production, just without
+      Render's own network hop): 5 back-to-back calls settled at a consistent
+      **~0.53s each** — before this change, the equivalent production
+      measurement (Steps 1-3 not yet deployed) was ~0.93–0.99s per call. Not an
+      apples-to-apples environment (local vs. Render), but confirms the dedup
+      removed real, measurable work rather than just reads cleaner.
+  - [ ] Same measurement against **production**, before vs. after, hasn't been
+        done yet — nothing's been pushed/deployed. Planned for after this
+        check-in.
+- [x] `GET /customers` (any authenticated route benefits from the middleware fix,
+      not just `/auth/me`) still returns correct data, ~1.05s settled.
+- [x] `tsc --noEmit` clean on both frontend and backend after every edit in this
+      step.
+- [ ] DevTools Network tab confirmation that `/auth/me` and `/dashboard/summary`
+      overlap in the browser specifically (verified the *mechanism* — Home's
+      query has no `enabled` gate and `RequireAuth` no longer blocks mounting —
+      but haven't driven an actual browser this session to see the waterfall
+      gone with my own eyes).
 - [ ] Regression-check the PENDING-account screen and role-based sidebar/nav
-      items still show correctly once `currentUser` arrives a beat after first
-      paint.
+      items in an actual browser — reasoned through by reading each component's
+      existing `undefined`-tolerance, not yet visually confirmed.
+- [ ] Re-run the *production* before/after timing comparison specifically
+      (local numbers above aren't a substitute for this).
 
 ### Step 5 — `dashboard.service.ts`'s `getSummary()`, informed by the table above
 
+**Not started — needs its own check-in before beginning, per instruction.**
+
+- [ ] **First step, before changing anything**: add temporary per-query timing
+      instrumentation around each of the ~22 round-trips (a `timed(label, fn)`
+      wrapper logging duration per query) and capture one real run's numbers.
+      The fix strategy genuinely differs depending on what's found — a flat
+      ~900ms-1s across all of them points at the connection/network floor (Step
+      3's territory, already addressed for the shared middleware but each
+      query still pays it individually); a few outliers at 2-3s+ (most likely
+      `lowStock`'s full-table scan, or `topProducts`'s two sequential queries)
+      point at query-shape fixes being the bigger lever. Remove the
+      instrumentation once the real culprits are identified — it's diagnostic,
+      not meant to ship.
 - [ ] Fold `trackingToday` into the main `Promise.all` — it doesn't depend on any
       of the other 19 results, there's no reason it runs after them.
 - [ ] Fix `lowStock`'s full-table fetch-then-filter-in-JS

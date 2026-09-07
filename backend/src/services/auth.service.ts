@@ -83,10 +83,14 @@ export const authService = {
     return { token, user: sanitizeUser(user), permissions };
   },
 
-  async me(userId: number) {
+  // Phase 20 Step 3: permissions are passed in rather than re-fetched — the
+  // authenticate middleware already looked them up for this exact request to
+  // populate req.user, so querying them again here was pure duplicate work on
+  // every single call to this endpoint. Only the display fields req.user doesn't
+  // carry (name/email/phone/status) need an actual query.
+  async me(userId: number, permissions: string[]) {
     const user = await userRepository.findById(userId);
     if (!user) throw new HttpError(401, 'Not authenticated');
-    const permissions = await permissionRepository.getForUser(user.id);
     return { ...sanitizeUser(user), permissions };
   },
 

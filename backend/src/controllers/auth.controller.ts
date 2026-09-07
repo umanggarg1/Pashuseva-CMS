@@ -37,7 +37,7 @@ export const authController = {
 
   async me(req: Request, res: Response) {
     if (!req.user) throw new HttpError(401, 'Not authenticated');
-    const user = await authService.me(req.user.id);
+    const user = await authService.me(req.user.id, req.user.permissions);
     res.json(user);
   },
 
