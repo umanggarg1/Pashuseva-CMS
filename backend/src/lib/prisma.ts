@@ -6,15 +6,16 @@ declare global {
   var prisma: PrismaClient | undefined;
 }
 
-// Phase 20 Step 5: default pg.Pool max is 10, which is smaller than
-// dashboard.service.ts's getSummary() firing ~19 concurrent queries in one
-// Promise.all — measured (see PHASE20_TODO.md Step 5A) as the dominant cause of
-// its slowness: a warm-pool run split into two queueing "waves" of ~10 and ~9
-// queries, and the same query type measured outside the batch was ~10x faster
-// than the ones queueing inside it. 20 is a deliberately modest experiment (not
-// tuned to eliminate all queueing for every future query fan-out), to be
-// benchmarked and revisited, not a final number.
-const adapter = new PrismaPg({ connectionString: config.databaseUrl, max: 20 });
+// Phase 20 Step 5B tried raising pg.Pool's default max (10) to 20 to relieve
+// dashboard.service.ts's ~19-query fan-out queueing (see PHASE20_TODO.md) — warm
+// performance improved ~33%, but the very first (cold) request got *worse*
+// (more simultaneous connections to establish up front), which is exactly the
+// case this investigation started from. Held back at the default here; Step 5C
+// reduces the query *count* per request instead (the essential/analytics split),
+// which is expected to make any pool size — including the default — perform
+// better, cold or warm. Pool size is revisited after that, against the smaller
+// fan-out, not before.
+const adapter = new PrismaPg({ connectionString: config.databaseUrl });
 
 const prisma = global.prisma || new PrismaClient({ adapter });
 

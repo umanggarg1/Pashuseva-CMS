@@ -11,7 +11,12 @@ import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { packagingUnitLabel } from '@/lib/productUnits';
 import { PARCEL_CONTRACT_ID, PARCEL_BILLER_ID } from '@/lib/parcelSettings';
 
-interface DashboardSummary {
+// Phase 20 Step 5C: split from one DashboardSummary into essential (first paint —
+// counts, status breakdowns, recent activity) and analytics (heavier, secondary —
+// sales aggregation, top products, low/out-of-stock), fetched as two separate
+// requests instead of one ~19-22-query one. See dashboard.service.ts and
+// PHASE19_TODO.md's... — PHASE20_TODO.md's Step 5C for why.
+interface DashboardEssential {
   customers: { total: number; newToday: number };
   orders: {
     total: number;
@@ -24,13 +29,7 @@ interface DashboardSummary {
     unpaidOrCodOrders: number;
     partiallyPaidOrders: number;
   };
-  sales: { allTime: number; today: number; thisWeek: number; thisMonth: number };
-  outstanding: number;
-  paymentsToday: number;
   totalProducts: number;
-  lowStockCount: number;
-  outOfStockCount: number;
-  lowStockProducts: { id: number; name: string; unit: string | null; availableQty: number }[];
   recentOrders: {
     id: number;
     orderNumber: string;
@@ -41,6 +40,15 @@ interface DashboardSummary {
     customerName: string;
   }[];
   recentCustomers: { id: number; name: string; createdAt: string }[];
+}
+
+interface DashboardAnalytics {
+  sales: { allTime: number; today: number; thisWeek: number; thisMonth: number };
+  outstanding: number;
+  paymentsToday: number;
+  lowStockCount: number;
+  outOfStockCount: number;
+  lowStockProducts: { id: number; name: string; unit: string | null; availableQty: number }[];
   topProducts: { productId: number; name: string; unit: string | null; quantitySold: number }[];
 }
 
@@ -235,28 +243,63 @@ function ParcelBookingCard() {
   );
 }
 
-function AdminManagerDashboard({ summary }: { summary: DashboardSummary }) {
-  const hasOrders = summary.orders.total > 0;
+function StatCardSkeleton({ title }: { title: string }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Skeleton className="h-7 w-20" />
+      </CardContent>
+    </Card>
+  );
+}
+
+// Phase 20 Step 5C: essential is always present by the time this renders (Home
+// only mounts it once summaryQuery has data); analytics is undefined until its
+// own, separately-fetched query resolves — every analytics-dependent section
+// below renders a skeleton in that gap rather than waiting to render anything.
+function AdminManagerDashboard({
+  essential,
+  analytics,
+}: {
+  essential: DashboardEssential;
+  analytics: DashboardAnalytics | undefined;
+}) {
+  const hasOrders = essential.orders.total > 0;
 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard title="Total Sales" value={`₹${summary.sales.allTime.toLocaleString()}`} />
+        {analytics ? (
+          <StatCard title="Total Sales" value={`₹${analytics.sales.allTime.toLocaleString()}`} />
+        ) : (
+          <StatCardSkeleton title="Total Sales" />
+        )}
         <StatCard
           title="Total Orders"
-          value={summary.orders.total.toLocaleString()}
-          hint={`+${summary.orders.today} today`}
+          value={essential.orders.total.toLocaleString()}
+          hint={`+${essential.orders.today} today`}
         />
-        <StatCard title="Paid Orders" value={String(summary.orders.paidOrders)} />
-        <StatCard title="Unpaid / COD Orders" value={String(summary.orders.unpaidOrCodOrders)} />
-        <StatCard title="Outstanding Amount" value={`₹${summary.outstanding.toLocaleString()}`} />
+        <StatCard title="Paid Orders" value={String(essential.orders.paidOrders)} />
+        <StatCard title="Unpaid / COD Orders" value={String(essential.orders.unpaidOrCodOrders)} />
+        {analytics ? (
+          <StatCard title="Outstanding Amount" value={`₹${analytics.outstanding.toLocaleString()}`} />
+        ) : (
+          <StatCardSkeleton title="Outstanding Amount" />
+        )}
         <StatCard
           title="Total Customers"
-          value={summary.customers.total.toLocaleString()}
-          hint={`+${summary.customers.newToday} today`}
+          value={essential.customers.total.toLocaleString()}
+          hint={`+${essential.customers.newToday} today`}
         />
-        <StatCard title="Total Products" value={summary.totalProducts.toLocaleString()} />
-        <StatCard title="Low Stock Products" value={String(summary.lowStockCount)} />
+        <StatCard title="Total Products" value={essential.totalProducts.toLocaleString()} />
+        {analytics ? (
+          <StatCard title="Low Stock Products" value={String(analytics.lowStockCount)} />
+        ) : (
+          <StatCardSkeleton title="Low Stock Products" />
+        )}
       </div>
 
       <ParcelBookingCard />
@@ -277,28 +320,28 @@ function AdminManagerDashboard({ summary }: { summary: DashboardSummary }) {
             <CardContent className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-5">
               <div>
                 <p className="text-muted-foreground">New Customers</p>
-                <p className="text-lg font-semibold">{summary.customers.newToday}</p>
+                <p className="text-lg font-semibold">{essential.customers.newToday}</p>
               </div>
               <div>
                 <p className="text-muted-foreground">New Orders</p>
-                <p className="text-lg font-semibold">{summary.orders.today}</p>
+                <p className="text-lg font-semibold">{essential.orders.today}</p>
               </div>
               <div>
                 <p className="text-muted-foreground">Dispatched</p>
                 <p className="text-lg font-semibold">
-                  {summary.orders.todayDeliveryStatusCounts.DISPATCHED ?? 0}
+                  {essential.orders.todayDeliveryStatusCounts.DISPATCHED ?? 0}
                 </p>
               </div>
               <div>
                 <p className="text-muted-foreground">In Transit</p>
                 <p className="text-lg font-semibold">
-                  {summary.orders.todayDeliveryStatusCounts.IN_TRANSIT ?? 0}
+                  {essential.orders.todayDeliveryStatusCounts.IN_TRANSIT ?? 0}
                 </p>
               </div>
               <div>
                 <p className="text-muted-foreground">Delivered</p>
                 <p className="text-lg font-semibold">
-                  {summary.orders.todayDeliveryStatusCounts.DELIVERED ?? 0}
+                  {essential.orders.todayDeliveryStatusCounts.DELIVERED ?? 0}
                 </p>
               </div>
             </CardContent>
@@ -308,40 +351,46 @@ function AdminManagerDashboard({ summary }: { summary: DashboardSummary }) {
             <CardHeader>
               <CardTitle className="text-base">Sales Summary</CardTitle>
             </CardHeader>
-            <CardContent className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-5">
-              <div>
-                <p className="text-muted-foreground">Today</p>
-                <p className="text-lg font-semibold">₹{summary.sales.today.toLocaleString()}</p>
-              </div>
-              <div>
-                <p className="text-muted-foreground">This Week</p>
-                <p className="text-lg font-semibold">₹{summary.sales.thisWeek.toLocaleString()}</p>
-              </div>
-              <div>
-                <p className="text-muted-foreground">This Month</p>
-                <p className="text-lg font-semibold">₹{summary.sales.thisMonth.toLocaleString()}</p>
-              </div>
-              <div>
-                <p className="text-muted-foreground">Outstanding</p>
-                <p className="text-lg font-semibold">₹{summary.outstanding.toLocaleString()}</p>
-              </div>
-              <div>
-                <p className="text-muted-foreground">Today's Payments</p>
-                <p className="text-lg font-semibold">₹{summary.paymentsToday.toLocaleString()}</p>
-              </div>
+            <CardContent>
+              {analytics ? (
+                <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-5">
+                  <div>
+                    <p className="text-muted-foreground">Today</p>
+                    <p className="text-lg font-semibold">₹{analytics.sales.today.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">This Week</p>
+                    <p className="text-lg font-semibold">₹{analytics.sales.thisWeek.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">This Month</p>
+                    <p className="text-lg font-semibold">₹{analytics.sales.thisMonth.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Outstanding</p>
+                    <p className="text-lg font-semibold">₹{analytics.outstanding.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="text-muted-foreground">Today's Payments</p>
+                    <p className="text-lg font-semibold">₹{analytics.paymentsToday.toLocaleString()}</p>
+                  </div>
+                </div>
+              ) : (
+                <Skeleton className="h-12 w-full" />
+              )}
             </CardContent>
           </Card>
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
             <StatusList
               title="Orders"
-              counts={summary.orders.byStatus}
+              counts={essential.orders.byStatus}
               order={ORDER_STATUS_ORDER}
               filterKey="orderStatus"
             />
             <StatusList
               title="Delivery"
-              counts={summary.orders.byDeliveryStatus}
+              counts={essential.orders.byDeliveryStatus}
               order={DELIVERY_STATUS_ORDER}
               filterKey="deliveryStatus"
               icons={DELIVERY_ICON}
@@ -351,19 +400,28 @@ function AdminManagerDashboard({ summary }: { summary: DashboardSummary }) {
       )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <LowStockCard
-          icon="⚠️"
-          title="Low Stock"
-          count={summary.lowStockCount}
-          filterValue="low"
-          products={summary.lowStockProducts}
-        />
-        <LowStockCard
-          icon="🔴"
-          title="Out of Stock"
-          count={summary.outOfStockCount}
-          filterValue="out"
-        />
+        {analytics ? (
+          <>
+            <LowStockCard
+              icon="⚠️"
+              title="Low Stock"
+              count={analytics.lowStockCount}
+              filterValue="low"
+              products={analytics.lowStockProducts}
+            />
+            <LowStockCard
+              icon="🔴"
+              title="Out of Stock"
+              count={analytics.outOfStockCount}
+              filterValue="out"
+            />
+          </>
+        ) : (
+          <>
+            <Skeleton className="h-40 w-full" />
+            <Skeleton className="h-40 w-full" />
+          </>
+        )}
       </div>
 
       <Card>
@@ -371,7 +429,7 @@ function AdminManagerDashboard({ summary }: { summary: DashboardSummary }) {
           <CardTitle className="text-base">Recent Orders</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {summary.recentOrders.map((o) => (
+          {essential.recentOrders.map((o) => (
             <Link
               key={o.id}
               to={`/orders/${o.orderNumber}`}
@@ -386,7 +444,7 @@ function AdminManagerDashboard({ summary }: { summary: DashboardSummary }) {
               </span>
             </Link>
           ))}
-          {summary.recentOrders.length === 0 && (
+          {essential.recentOrders.length === 0 && (
             <p className="text-sm text-muted-foreground">
               No orders yet. Orders will appear here when customers place them.
             </p>
@@ -403,7 +461,7 @@ function AdminManagerDashboard({ summary }: { summary: DashboardSummary }) {
             <CardTitle className="text-base">Recent Customers</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            {summary.recentCustomers.map((c) => (
+            {essential.recentCustomers.map((c) => (
               <Link
                 key={c.id}
                 to={`/customers/${c.id}`}
@@ -415,7 +473,7 @@ function AdminManagerDashboard({ summary }: { summary: DashboardSummary }) {
                 </span>
               </Link>
             ))}
-            {summary.recentCustomers.length === 0 && (
+            {essential.recentCustomers.length === 0 && (
               <p className="text-sm text-muted-foreground">
                 No customers yet. New customers will show up here as they're added.
               </p>
@@ -431,22 +489,28 @@ function AdminManagerDashboard({ summary }: { summary: DashboardSummary }) {
             <CardTitle className="text-base">Top Products</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            {summary.topProducts.map((p, i) => (
-              <Link
-                key={p.productId}
-                to={`/products/${p.productId}`}
-                className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-accent"
-              >
-                <span className="min-w-0 truncate">
-                  {i + 1}. {p.name}
-                </span>
-                <span className="shrink-0 text-muted-foreground">{p.quantitySold} sold</span>
-              </Link>
-            ))}
-            {summary.topProducts.length === 0 && (
-              <p className="text-sm text-muted-foreground">
-                No sales yet. Best sellers will show up here once orders come in.
-              </p>
+            {analytics ? (
+              <>
+                {analytics.topProducts.map((p, i) => (
+                  <Link
+                    key={p.productId}
+                    to={`/products/${p.productId}`}
+                    className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-accent"
+                  >
+                    <span className="min-w-0 truncate">
+                      {i + 1}. {p.name}
+                    </span>
+                    <span className="shrink-0 text-muted-foreground">{p.quantitySold} sold</span>
+                  </Link>
+                ))}
+                {analytics.topProducts.length === 0 && (
+                  <p className="text-sm text-muted-foreground">
+                    No sales yet. Best sellers will show up here once orders come in.
+                  </p>
+                )}
+              </>
+            ) : (
+              <Skeleton className="h-24 w-full" />
             )}
           </CardContent>
         </Card>
@@ -455,8 +519,8 @@ function AdminManagerDashboard({ summary }: { summary: DashboardSummary }) {
   );
 }
 
-function EmployeeDashboard({ summary }: { summary: DashboardSummary }) {
-  if (summary.customers.total === 0 && summary.orders.total === 0) {
+function EmployeeDashboard({ essential }: { essential: DashboardEssential }) {
+  if (essential.customers.total === 0 && essential.orders.total === 0) {
     return (
       <Card>
         <CardContent className="py-6 text-center text-sm text-muted-foreground">
@@ -470,15 +534,15 @@ function EmployeeDashboard({ summary }: { summary: DashboardSummary }) {
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard title="My Customers" value={String(summary.customers.total)} />
-        <StatCard title="My Orders" value={String(summary.orders.total)} />
+        <StatCard title="My Customers" value={String(essential.customers.total)} />
+        <StatCard title="My Orders" value={String(essential.orders.total)} />
         <StatCard
           title="Orders In Transit"
-          value={String(summary.orders.byDeliveryStatus.IN_TRANSIT ?? 0)}
+          value={String(essential.orders.byDeliveryStatus.IN_TRANSIT ?? 0)}
         />
         <StatCard
           title="Orders Delivered"
-          value={String(summary.orders.byDeliveryStatus.DELIVERED ?? 0)}
+          value={String(essential.orders.byDeliveryStatus.DELIVERED ?? 0)}
         />
       </div>
 
@@ -487,7 +551,7 @@ function EmployeeDashboard({ summary }: { summary: DashboardSummary }) {
           <CardTitle className="text-base">Recent Customers</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
-          {summary.recentCustomers.map((c) => (
+          {essential.recentCustomers.map((c) => (
             <Link
               key={c.id}
               to={`/customers/${c.id}`}
@@ -499,7 +563,7 @@ function EmployeeDashboard({ summary }: { summary: DashboardSummary }) {
               </span>
             </Link>
           ))}
-          {summary.recentCustomers.length === 0 && (
+          {essential.recentCustomers.length === 0 && (
             <p className="text-sm text-muted-foreground">No assigned customers yet.</p>
           )}
         </CardContent>
@@ -524,10 +588,18 @@ export default function Home() {
   const { data: currentUser } = useCurrentUser();
   const summaryQuery = useQuery({
     queryKey: ['dashboard', 'summary'],
-    queryFn: () => apiFetch<DashboardSummary>('/dashboard/summary'),
+    queryFn: () => apiFetch<DashboardEssential>('/dashboard/summary'),
   });
-
+  // Phase 20 Step 5C: deliberately gated on summaryQuery succeeding first rather
+  // than fired alongside it — firing both at once would still be ~19-22 concurrent
+  // DB queries split across 2 HTTP requests instead of 1, which doesn't reduce peak
+  // pool pressure. Employees never see analytics data, so skip the request entirely.
   const isEmployee = currentUser?.role === 'EMPLOYEE';
+  const analyticsQuery = useQuery({
+    queryKey: ['dashboard', 'analytics'],
+    queryFn: () => apiFetch<DashboardAnalytics>('/dashboard/analytics'),
+    enabled: summaryQuery.isSuccess && !isEmployee,
+  });
 
   return (
     <div className="space-y-6">
@@ -561,9 +633,9 @@ export default function Home() {
       )}
       {summaryQuery.data &&
         (isEmployee ? (
-          <EmployeeDashboard summary={summaryQuery.data} />
+          <EmployeeDashboard essential={summaryQuery.data} />
         ) : (
-          <AdminManagerDashboard summary={summaryQuery.data} />
+          <AdminManagerDashboard essential={summaryQuery.data} analytics={analyticsQuery.data} />
         ))}
     </div>
   );

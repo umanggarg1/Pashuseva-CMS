@@ -166,13 +166,20 @@ async function topProducts(scope: Prisma.OrderWhereInput, take: number) {
 }
 
 export const dashboardService = {
+  // Phase 20 Step 5C: split off getSummary's essential-for-first-paint fields
+  // (counts, status breakdowns, recent activity) from getAnalytics's heavier,
+  // secondary ones (sales aggregation, top products, low/out-of-stock) — see
+  // PHASE20_TODO.md. Measured (Step 5A/5B) as ~19-22 concurrent queries in one
+  // Promise.all, enough to queue against pg.Pool's default connection limit;
+  // splitting the query *count* per request is expected to help regardless of
+  // pool size, unlike just raising the pool (which helped warm loads but made
+  // the very first/cold one worse — Step 5B). Frontend fires this one first and
+  // renders immediately, then getAnalytics separately once this resolves.
   async getSummary(actingUser: ActingUser) {
     const oScope = orderScope(actingUser);
     const cScope = customerScope(actingUser);
     const now = new Date();
     const today = { start: startOfDay(now), end: endOfDay(now) };
-    const week = resolveRange('week');
-    const month = resolveRange('month');
 
     const summaryStart = performance.now();
     const [
@@ -183,18 +190,10 @@ export const dashboardService = {
       byOrderStatus,
       byDeliveryStatus,
       byPaymentStatus,
-      totalSalesAllTime,
-      salesToday,
-      salesThisWeek,
-      salesThisMonth,
-      outstanding,
-      paymentsToday,
       totalProducts,
       recentOrders,
       recentCustomers,
-      top,
-      lowStock,
-      outOfStock,
+      trackingToday,
     ] = await Promise.all([
       timed('totalCustomers', () => prisma.customer.count({ where: cScope })),
       timed('newCustomersToday', () =>
@@ -213,16 +212,6 @@ export const dashboardService = {
       timed('byPaymentStatus', () =>
         prisma.order.groupBy({ by: ['paymentStatus'], where: oScope, _count: true })
       ),
-      timed('totalSalesAllTime', () =>
-        prisma.order
-          .aggregate({ where: { ...oScope, ...salesEligibleFilter }, _sum: { total: true } })
-          .then((r) => r._sum.total ?? 0)
-      ),
-      salesTotal(oScope, today.start, today.end, 'salesToday'),
-      salesTotal(oScope, week.start, week.end, 'salesThisWeek'),
-      salesTotal(oScope, month.start, month.end, 'salesThisMonth'),
-      outstandingTotal(oScope),
-      paymentsCollected(oScope, today.start, today.end),
       timed('totalProducts', () => prisma.product.count({ where: { deletedAt: null } })),
       timed('recentOrders', () =>
         prisma.order.findMany({
@@ -248,28 +237,22 @@ export const dashboardService = {
           select: { id: true, name: true, createdAt: true },
         })
       ),
-      topProducts(oScope, 5),
-      timed('lowStock', () =>
-        productService.list({ stock: 'low', page: 1, pageSize: 5, sortBy: 'availableQty', sortDir: 'asc' })
-      ),
-      timed('outOfStock', () =>
-        productService.list({ stock: 'out', page: 1, pageSize: 5, sortBy: 'availableQty', sortDir: 'asc' })
+      // "Today's Overview" wants how many orders were *newly* dispatched / put in
+      // transit / delivered today, not the running totals — count distinct orders
+      // per status from today's tracking events, not raw event rows, since
+      // IN_TRANSIT can legitimately be logged more than once per order in a day.
+      // Folded into this Promise.all (Phase 20 Step 5C) — it doesn't depend on any
+      // of the other results, there was never a reason it ran after them.
+      timed('trackingToday', () =>
+        prisma.deliveryTracking.findMany({
+          where: { createdAt: { gte: today.start, lte: today.end }, order: { is: oScope } },
+          select: { orderId: true, status: true },
+        })
       ),
     ]);
     // eslint-disable-next-line no-console
-    console.log(`[dashboard timing] TOTAL Promise.all: ${(performance.now() - summaryStart).toFixed(0)}ms`);
+    console.log(`[dashboard timing] getSummary TOTAL Promise.all: ${(performance.now() - summaryStart).toFixed(0)}ms`);
 
-    // "Today's Overview" wants how many orders were *newly* dispatched / put in transit
-    // / delivered today, not the running totals (those are the Orders/Delivery Overview
-    // sections below) — count distinct orders per status from today's tracking events,
-    // not raw event rows, since IN_TRANSIT can legitimately be logged more than once
-    // per order in a day.
-    const trackingToday = await timed('trackingToday (sequential, after Promise.all)', () =>
-      prisma.deliveryTracking.findMany({
-        where: { createdAt: { gte: today.start, lte: today.end }, order: { is: oScope } },
-        select: { orderId: true, status: true },
-      })
-    );
     const todayDeliverySets: Record<string, Set<number>> = {};
     for (const t of trackingToday) {
       (todayDeliverySets[t.status] ??= new Set()).add(t.orderId);
@@ -304,23 +287,7 @@ export const dashboardService = {
         unpaidOrCodOrders: paymentStatusCounts.PENDING ?? 0,
         partiallyPaidOrders: paymentStatusCounts.PARTIAL ?? 0,
       },
-      sales: {
-        allTime: totalSalesAllTime,
-        today: salesToday,
-        thisWeek: salesThisWeek,
-        thisMonth: salesThisMonth,
-      },
-      outstanding,
-      paymentsToday,
       totalProducts,
-      lowStockCount: lowStock.total,
-      outOfStockCount: outOfStock.total,
-      lowStockProducts: lowStock.data.map((p) => ({
-        id: p.id,
-        name: p.name,
-        unit: p.unit,
-        availableQty: p.availableQty,
-      })),
       recentOrders: recentOrders.map((o) => ({
         id: o.id,
         orderNumber: o.orderNumber,
@@ -334,6 +301,60 @@ export const dashboardService = {
         id: c.id,
         name: c.name,
         createdAt: c.createdAt,
+      })),
+    };
+  },
+
+  // The heavier, secondary half of the old getSummary — sales aggregation,
+  // top products, low/out-of-stock. Fetched separately, after getSummary's data
+  // is already rendered (see Home.tsx) — never blocks first paint.
+  async getAnalytics(actingUser: ActingUser) {
+    const oScope = orderScope(actingUser);
+    const now = new Date();
+    const today = { start: startOfDay(now), end: endOfDay(now) };
+    const week = resolveRange('week');
+    const month = resolveRange('month');
+
+    const analyticsStart = performance.now();
+    const [totalSalesAllTime, salesToday, salesThisWeek, salesThisMonth, outstanding, paymentsToday, top, lowStock, outOfStock] =
+      await Promise.all([
+        timed('totalSalesAllTime', () =>
+          prisma.order
+            .aggregate({ where: { ...oScope, ...salesEligibleFilter }, _sum: { total: true } })
+            .then((r) => r._sum.total ?? 0)
+        ),
+        salesTotal(oScope, today.start, today.end, 'salesToday'),
+        salesTotal(oScope, week.start, week.end, 'salesThisWeek'),
+        salesTotal(oScope, month.start, month.end, 'salesThisMonth'),
+        outstandingTotal(oScope),
+        paymentsCollected(oScope, today.start, today.end),
+        topProducts(oScope, 5),
+        timed('lowStock', () =>
+          productService.list({ stock: 'low', page: 1, pageSize: 5, sortBy: 'availableQty', sortDir: 'asc' })
+        ),
+        timed('outOfStock', () =>
+          productService.list({ stock: 'out', page: 1, pageSize: 5, sortBy: 'availableQty', sortDir: 'asc' })
+        ),
+      ]);
+    // eslint-disable-next-line no-console
+    console.log(`[dashboard timing] getAnalytics TOTAL Promise.all: ${(performance.now() - analyticsStart).toFixed(0)}ms`);
+
+    return {
+      sales: {
+        allTime: totalSalesAllTime,
+        today: salesToday,
+        thisWeek: salesThisWeek,
+        thisMonth: salesThisMonth,
+      },
+      outstanding,
+      paymentsToday,
+      lowStockCount: lowStock.total,
+      outOfStockCount: outOfStock.total,
+      lowStockProducts: lowStock.data.map((p) => ({
+        id: p.id,
+        name: p.name,
+        unit: p.unit,
+        availableQty: p.availableQty,
       })),
       topProducts: top,
     };

@@ -19,6 +19,13 @@ export const dashboardController = {
     res.json(summary);
   },
 
+  // Phase 20 Step 5C: the heavier, secondary half of the old single /summary
+  // response — fetched separately so it never blocks the dashboard's first paint.
+  async getAnalytics(req: Request, res: Response) {
+    const analytics = await dashboardService.getAnalytics(requireActingUser(req));
+    res.json(analytics);
+  },
+
   async getSalesReport(req: Request, res: Response) {
     const query = salesReportQuerySchema.parse(req.query);
     const report = await dashboardService.getSalesReport(requireActingUser(req), query);

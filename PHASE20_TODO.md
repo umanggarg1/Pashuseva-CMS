@@ -404,6 +404,90 @@ reduces concurrent query count first (which would make *any* pool size look
 better, cold or warm, since there'd be far fewer connections to establish/queue
 for in the first place).
 
+#### Step 5C — essential/analytics split ✅ done
+
+Decision from the Step 5B review: hold `max: 20`, reduce query *count* per
+request first (fewer concurrent queries makes any pool size perform better,
+cold or warm), then re-benchmark pool size against the smaller fan-out.
+
+**Pool**: `backend/src/lib/prisma.ts` reverted to the default (`max: 10`, no
+override) — done before this step, see Step 5B's file.
+
+**Backend split** — `dashboard.service.ts`'s single `getSummary()` (11 queries
+across a combined `Promise.all`, `trackingToday` folded in rather than left as
+a separate sequential-after-Promise.all call) split into:
+- `getSummary()` — essential, first-paint-only: customer/order counts, today's
+  counts, order/delivery/payment status breakdowns, total products, recent
+  orders/customers, today's tracking counts. **11 queries.**
+- `getAnalytics()` — heavier, secondary: sales aggregation (all-time/today/
+  week/month), outstanding total, payments collected today, top products,
+  low-stock and out-of-stock product lists. **9 queries** (some, like
+  `outstanding`/`topProducts`, internally run 2 queries each).
+
+Both keep the Step 5A `timed()` per-query wrapper, and each now has its own
+`TOTAL Promise.all` wrapper (the original single combined-total line from
+Step 5A didn't carry over automatically when the one `Promise.all` became
+two — added back explicitly so the two halves stay comparable to each other
+and to the pre-split baseline before the pool re-benchmark).
+
+New route: `GET /dashboard/analytics` (`dashboard.controller.ts`,
+`routes/api/dashboard.ts`) — same `authenticate`-only gate as `/summary`, no
+extra permission required.
+
+**Frontend** — `frontend/src/pages/Home.tsx`:
+- `DashboardSummary` interface split into `DashboardEssential` and
+  `DashboardAnalytics`, matching the two response shapes.
+- `Home()` now runs two React Query queries: `summaryQuery` (unchanged
+  query key/endpoint, now typed as essential-only) and a new `analyticsQuery`
+  hitting `/dashboard/analytics`, gated with `enabled: summaryQuery.isSuccess
+  && !isEmployee` — deliberately *not* fired alongside `summaryQuery`, since
+  doing so would still be ~19–22 concurrent queries split across 2 HTTP
+  requests instead of 1, which wouldn't reduce peak pool pressure (the actual
+  goal here). Employees never see analytics data at all, so the query is
+  skipped entirely for them, not just hidden in the UI.
+- `AdminManagerDashboard` now takes `{ essential, analytics }` — every
+  analytics-dependent section (Total Sales / Outstanding Amount / Low Stock
+  Products stat cards in the top grid, the Sales Summary card, Low Stock/Out
+  of Stock cards, Top Products card) renders a skeleton until `analytics`
+  resolves; every other section reads `essential` directly with no loading
+  gate, since it's already available by the time this component renders at
+  all.
+- `EmployeeDashboard` now takes `{ essential }` only — confirmed by reading
+  its full body that it never referenced any analytics field, so this was a
+  pure prop rename, no loading-state logic needed.
+
+**Verified locally**: typecheck clean on both frontend and backend. Hit both
+new endpoints directly with an Admin JWT — correct, independent JSON shapes.
+Browser check (Playwright + system Chrome, logged in as Admin) confirmed:
+`/api/dashboard/summary` fires first, `/api/dashboard/analytics` fires only
+after it resolves (~800ms after, in the observed run), and the full dashboard
+renders correctly — every essential and analytics-dependent section populated
+with real data, no console errors, no redirect loop. Screenshot reviewed.
+
+**Query-count result, single warm request** (Admin, solo — not yet the
+multi-user/concurrent case Step 5B tested):
+- `getSummary` (11 queries): `TOTAL Promise.all` **2518ms** in one capture —
+  this was the first request after a file-triggered `ts-node-dev` restart, so
+  it's effectively a cold sample, not a clean warm baseline; needs a proper
+  re-run as part of Step 5D below before drawing conclusions from it.
+- `getAnalytics` (9 queries): `TOTAL Promise.all` **525ms**, immediately
+  after, on an already-warmed pool.
+
+These single-sample numbers aren't the real comparison — next is a proper
+repeat of the Step 5A/5B benchmark methodology (3 warm runs, 1 cold run,
+3-concurrent-request test) against the two new, smaller endpoints, at pool
+`max` 10 / 15 / 20, before deciding a final pool size.
+
+- [ ] **Step 5D (next)** — re-run the Step 5A/5B benchmark methodology against
+      the post-split endpoints: cold + warm + 3-concurrent, at `max` 10, 15,
+      and 20, for both `/summary` and `/analytics` independently. Decide a
+      final pool size from that evidence.
+- [ ] Remove the Step 5A/5C timing instrumentation only after Step 5D's
+      comparison is complete — explicitly not before.
+- [ ] Commit Step 5C locally (already typechecked, verified). Do not push —
+      the full Phase 20 commit chain goes to `origin/main` together, only
+      after Step 5D and Step 6 are also done.
+
 ### Step 6 — Hosting-level factors (last, since 1–5 apply regardless of outcome here)
 
 - [ ] Confirm Render's service region vs. Neon's (`...c-5.us-east-2.aws.neon.tech`)
