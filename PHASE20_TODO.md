@@ -1,8 +1,9 @@
 # Phase 20 — First-Load Performance: Kill the Auth Waterfall, Then the Rest
 
-**Status: Steps 1–3 implemented and verified locally, not yet committed/pushed.
-Steps 5–6 not started — stopping here to check in before continuing, per
-instruction to ask before every big change.**
+**Status: Steps 1–5D implemented, verified locally, and committed
+(`ab8d80a`, `359aaa9`, `49c64ae`, `f67c4ed`, plus Step 5D's commit) — none
+pushed yet. Step 6 (hosting/region factors) is the only remaining item before
+the full chain goes to `origin/main` together.**
 
 Reviewed by the user after the architecture was finalized; the review approved the
 plan with a few concrete refinements, folded in below (a redirect-loop guard for
@@ -478,15 +479,65 @@ repeat of the Step 5A/5B benchmark methodology (3 warm runs, 1 cold run,
 3-concurrent-request test) against the two new, smaller endpoints, at pool
 `max` 10 / 15 / 20, before deciding a final pool size.
 
-- [ ] **Step 5D (next)** — re-run the Step 5A/5B benchmark methodology against
-      the post-split endpoints: cold + warm + 3-concurrent, at `max` 10, 15,
-      and 20, for both `/summary` and `/analytics` independently. Decide a
-      final pool size from that evidence.
-- [ ] Remove the Step 5A/5C timing instrumentation only after Step 5D's
-      comparison is complete — explicitly not before.
-- [ ] Commit Step 5C locally (already typechecked, verified). Do not push —
-      the full Phase 20 commit chain goes to `origin/main` together, only
-      after Step 5D and Step 6 are also done.
+- [x] Commit Step 5C locally (already typechecked, verified) — `f67c4ed`.
+
+#### Step 5D — post-split pool re-benchmark (`max` 10 / 15 / 20) ✅ done — max: 10 wins outright
+
+Re-ran the Step 5A/5B methodology against the two new, smaller endpoints: cold
+(first request after a genuine process restart, so the pool starts empty),
+3 warm, then 3-concurrent — for both `/summary` (11 queries) and `/analytics`
+(9 queries), at each pool size. Local dev backend, same shared Neon DB.
+
+| | `max=10` | `max=15` | `max=20` |
+|---|---|---|---|
+| `/summary` cold — internal / curl | 2423ms / 2.70s | 2622ms / 2.89s | 2320ms / 2.59s |
+| `/summary` warm (3) — internal | 507 / 500 / 499ms | 509 / 493 / 496ms | 512 / 507 / 503ms |
+| `/analytics` first-after-summary — internal / curl | 520ms / 0.77s | 505ms / 0.77s | 512ms / 0.78s |
+| `/analytics` warm (3) — internal | 524 / 501 / 515ms | 500 / 757 / 520ms | 524 / 498 / 519ms |
+| `/summary` 3-concurrent — internal | 991 / 984 / 1201ms | 742 / 969 / **2264ms** | 762 / **3389 / 3395ms** |
+| `/summary` 3-concurrent — curl total | 1.24 / 1.23 / 1.47s | 1.02 / 1.24 / **2.52s** | 1.02 / **3.65 / 3.65s** |
+| `/analytics` 3-concurrent — internal | 1037 / 1084 / 1246ms | 746 / 756 / 983ms | 515 / 723 / 751ms |
+
+**Cold and solo-warm performance is statistically flat across all three pool
+sizes** (~2.3–2.9s cold, ~500ms warm, for both endpoints) — expected, since
+neither endpoint alone ever needs more than 11 concurrent connections, well
+under even `max: 10`. This confirms the Step 5C split, not pool size, is what
+fixed the "single request is slow" problem; raising the pool above the
+per-request query count buys nothing for a solo request.
+
+**Concurrency is where pool size actually mattered — and larger was worse, not
+better.** `max: 10`'s 3-concurrent `/summary` result was stable and reproducible
+(re-ran it twice more afterward: 990/1202/980ms, then 982/1207ms — consistently
+~1–1.2s, no outliers). `max: 15` produced one spike to 2264ms/2.52s out of three
+requests. `max: 20` was reproducibly bad — re-ran its 3-concurrent `/summary`
+test a second time and got *worse*: 740/2452/2540ms internal (4.3–4.8s curl
+total) — not a one-off blip. The apparent mechanism: with more of the pool's
+capacity available, a sudden burst of concurrent demand causes more *new*
+connections to be established simultaneously (each paying Neon's own TLS/auth
+handshake cost) rather than queuing behind a small number of already-warm
+connections and reusing them — so a bigger local pool can make a burst *more*
+expensive against a remote serverless Postgres endpoint, not less. This is the
+opposite of the intuition that motivated Step 5B in the first place, and only
+showed up once query count per request was already small enough for
+concurrency (not per-request fan-out) to become the dominant variable.
+
+**Decision: keep the pool at its default (`max: 10`, no override).** It matches
+or beats 15 and 20 on every measurement here, including the one dimension
+(concurrent multi-user load) that's actually representative of production
+traffic, and it's also the simplest code (no magic number to justify).
+`backend/src/lib/prisma.ts`'s comment updated to record this reasoning and the
+headline numbers.
+
+- [x] Removed the Step 5A/5C temporary `timed()` per-query instrumentation from
+      `dashboard.service.ts` (the wrapper function and every call site) and the
+      `lowStock` DB-fetch/JS-filter split-timing from `product.service.ts` — the
+      comparison it existed for is complete. Confirmed `tsc --noEmit` clean on
+      the backend afterward, and both endpoints re-verified with a fresh curl
+      smoke test (200, correct data, no timing-log noise) before removal was
+      considered done.
+- [ ] Commit Step 5D (pool comment update + instrumentation removal). Do not
+      push yet — the full Phase 20 commit chain goes to `origin/main` together,
+      only after Step 6 is also done.
 
 ### Step 6 — Hosting-level factors (last, since 1–5 apply regardless of outcome here)
 

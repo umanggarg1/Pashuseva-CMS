@@ -6,15 +6,19 @@ declare global {
   var prisma: PrismaClient | undefined;
 }
 
-// Phase 20 Step 5B tried raising pg.Pool's default max (10) to 20 to relieve
-// dashboard.service.ts's ~19-query fan-out queueing (see PHASE20_TODO.md) — warm
-// performance improved ~33%, but the very first (cold) request got *worse*
-// (more simultaneous connections to establish up front), which is exactly the
-// case this investigation started from. Held back at the default here; Step 5C
-// reduces the query *count* per request instead (the essential/analytics split),
-// which is expected to make any pool size — including the default — perform
-// better, cold or warm. Pool size is revisited after that, against the smaller
-// fan-out, not before.
+// Phase 20 Step 5: default pg.Pool max (10) kept deliberately, not raised.
+// Step 5B found raising it to 20 helped warm requests (~33%) but made the very
+// first (cold) request worse. Step 5C then split dashboard.service.ts's single
+// ~19-query getSummary() into an 11-query getSummary() + 9-query getAnalytics(),
+// which brought per-request concurrent query count under 10 anyway, so pool
+// size stopped being the binding constraint for a solo request either way. Step
+// 5D re-benchmarked max 10/15/20 against that smaller fan-out (see
+// PHASE20_TODO.md) and found max: 10 won outright: cold/warm solo performance
+// was statistically the same across all three sizes, but under 3-concurrent-
+// request load, 10 stayed stable (~1-1.2s) while 15 and 20 produced repeatable
+// multi-second spikes (up to 4.8s) — larger pools appear to make Neon establish
+// more simultaneous fresh connections under a burst, which costs more than it
+// saves. No override needed; the default is the evidenced-best choice here.
 const adapter = new PrismaPg({ connectionString: config.databaseUrl });
 
 const prisma = global.prisma || new PrismaClient({ adapter });

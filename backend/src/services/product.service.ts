@@ -90,18 +90,7 @@ export const productService = {
     const where = buildProductWhere(query);
 
     if (query.stock === 'low') {
-      // Phase 20 Step 5A: temporary split timing — findAllMatching has no `take`
-      // (see PHASE20_TODO.md Step 5A's flagged full-table-scan concern), so this
-      // tells apart "the DB fetch itself is slow" from "fetching is fine but
-      // filtering/sorting every matching row in JS is the expensive part." Remove
-      // once the real cost is identified.
-      const dbStart = performance.now();
       const all = await productRepository.findAllMatching(where);
-      // eslint-disable-next-line no-console
-      console.log(
-        `[dashboard timing] lowStock.findAllMatching (${all.length} rows): ${(performance.now() - dbStart).toFixed(0)}ms`
-      );
-      const jsStart = performance.now();
       const filtered = all
         .filter((p) => p.availableQty > 0 && p.availableQty < p.minimumStock)
         .sort((a, b) => {
@@ -112,10 +101,7 @@ export const productService = {
           return 0;
         });
       const skip = (query.page - 1) * query.pageSize;
-      const result = { data: filtered.slice(skip, skip + query.pageSize), total: filtered.length };
-      // eslint-disable-next-line no-console
-      console.log(`[dashboard timing] lowStock.filterSortInJS: ${(performance.now() - jsStart).toFixed(0)}ms`);
-      return result;
+      return { data: filtered.slice(skip, skip + query.pageSize), total: filtered.length };
     }
 
     const skip = (query.page - 1) * query.pageSize;

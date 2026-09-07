@@ -39,24 +39,6 @@ function customerScope(actingUser: ActingUser): Prisma.CustomerWhereInput {
   return { ...customerDataWhere(actingUser, actingUser.customerDataScope), deletedAt: null };
 }
 
-// Phase 20 Step 5A: temporary diagnostic instrumentation for getSummary()'s query
-// fan-out — logs each query's own duration plus the whole batch's total, to tell
-// apart a flat per-query floor (network/connection overhead), a couple of
-// disproportionately expensive queries (query-shape problem), or the batch total
-// being much worse than any individual query (pool contention). Not meant to ship
-// long-term — remove once the real bottleneck is identified (see PHASE20_TODO.md
-// Step 5A). No behavior change: every wrapped call still runs exactly as before,
-// this only observes and logs.
-async function timed<T>(label: string, fn: () => Promise<T>): Promise<T> {
-  const start = performance.now();
-  try {
-    return await fn();
-  } finally {
-    // eslint-disable-next-line no-console
-    console.log(`[dashboard timing] ${label}: ${(performance.now() - start).toFixed(0)}ms`);
-  }
-}
-
 function startOfDay(d: Date) {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
@@ -101,13 +83,11 @@ function resolveRange(range: ReportRange, from?: Date, to?: Date): { start: Date
   }
 }
 
-async function salesTotal(scope: Prisma.OrderWhereInput, start: Date, end: Date, label: string) {
-  const result = await timed(label, () =>
-    prisma.order.aggregate({
-      where: { ...scope, ...salesEligibleFilter, orderDate: { gte: start, lte: end } },
-      _sum: { total: true },
-    })
-  );
+async function salesTotal(scope: Prisma.OrderWhereInput, start: Date, end: Date) {
+  const result = await prisma.order.aggregate({
+    where: { ...scope, ...salesEligibleFilter, orderDate: { gte: start, lte: end } },
+    _sum: { total: true },
+  });
   return result._sum.total ?? 0;
 }
 
@@ -118,42 +98,34 @@ async function salesTotal(scope: Prisma.OrderWhereInput, start: Date, end: Date,
 async function outstandingTotal(scope: Prisma.OrderWhereInput) {
   const eligible = { ...scope, ...salesEligibleFilter };
   const [orderTotals, paid] = await Promise.all([
-    timed('outstanding.orderTotals', () => prisma.order.aggregate({ where: eligible, _sum: { total: true } })),
-    timed('outstanding.paid', () =>
-      prisma.payment.aggregate({ where: { order: { is: eligible } }, _sum: { amount: true } })
-    ),
+    prisma.order.aggregate({ where: eligible, _sum: { total: true } }),
+    prisma.payment.aggregate({ where: { order: { is: eligible } }, _sum: { amount: true } }),
   ]);
   return (orderTotals._sum.total ?? 0) - (paid._sum.amount ?? 0);
 }
 
 async function paymentsCollected(scope: Prisma.OrderWhereInput, start: Date, end: Date) {
-  const result = await timed('paymentsToday', () =>
-    prisma.payment.aggregate({
-      where: { order: { is: scope }, createdAt: { gte: start, lte: end } },
-      _sum: { amount: true },
-    })
-  );
+  const result = await prisma.payment.aggregate({
+    where: { order: { is: scope }, createdAt: { gte: start, lte: end } },
+    _sum: { amount: true },
+  });
   return result._sum.amount ?? 0;
 }
 
 // "Sold" follows the same rule as "sales" — a cancelled order's items were never
 // actually fulfilled, so they don't count toward quantity sold either.
 async function topProducts(scope: Prisma.OrderWhereInput, take: number) {
-  const grouped = await timed('topProducts.groupBy', () =>
-    prisma.orderItem.groupBy({
-      by: ['productId'],
-      where: { productId: { not: null }, order: { is: { ...scope, ...salesEligibleFilter } } },
-      _sum: { quantity: true },
-      orderBy: { _sum: { quantity: 'desc' } },
-      take,
-    })
-  );
-  const products = await timed('topProducts.findMany', () =>
-    prisma.product.findMany({
-      where: { id: { in: grouped.map((g) => g.productId!) }, deletedAt: null },
-      select: { id: true, name: true, unit: true },
-    })
-  );
+  const grouped = await prisma.orderItem.groupBy({
+    by: ['productId'],
+    where: { productId: { not: null }, order: { is: { ...scope, ...salesEligibleFilter } } },
+    _sum: { quantity: true },
+    orderBy: { _sum: { quantity: 'desc' } },
+    take,
+  });
+  const products = await prisma.product.findMany({
+    where: { id: { in: grouped.map((g) => g.productId!) }, deletedAt: null },
+    select: { id: true, name: true, unit: true },
+  });
   const byId = new Map(products.map((p) => [p.id, p]));
   return grouped
     .filter((g) => byId.has(g.productId!))
@@ -181,7 +153,6 @@ export const dashboardService = {
     const now = new Date();
     const today = { start: startOfDay(now), end: endOfDay(now) };
 
-    const summaryStart = performance.now();
     const [
       totalCustomers,
       newCustomersToday,
@@ -195,63 +166,45 @@ export const dashboardService = {
       recentCustomers,
       trackingToday,
     ] = await Promise.all([
-      timed('totalCustomers', () => prisma.customer.count({ where: cScope })),
-      timed('newCustomersToday', () =>
-        prisma.customer.count({ where: { ...cScope, createdAt: { gte: today.start, lte: today.end } } })
-      ),
-      timed('totalOrders', () => prisma.order.count({ where: oScope })),
-      timed('ordersToday', () =>
-        prisma.order.count({ where: { ...oScope, orderDate: { gte: today.start, lte: today.end } } })
-      ),
-      timed('byOrderStatus', () =>
-        prisma.order.groupBy({ by: ['orderStatus'], where: oScope, _count: true })
-      ),
-      timed('byDeliveryStatus', () =>
-        prisma.order.groupBy({ by: ['deliveryStatus'], where: oScope, _count: true })
-      ),
-      timed('byPaymentStatus', () =>
-        prisma.order.groupBy({ by: ['paymentStatus'], where: oScope, _count: true })
-      ),
-      timed('totalProducts', () => prisma.product.count({ where: { deletedAt: null } })),
-      timed('recentOrders', () =>
-        prisma.order.findMany({
-          where: oScope,
-          orderBy: { orderDate: 'desc' },
-          take: 5,
-          select: {
-            id: true,
-            orderNumber: true,
-            total: true,
-            orderStatus: true,
-            deliveryStatus: true,
-            orderDate: true,
-            customer: { select: { name: true } },
-          },
-        })
-      ),
-      timed('recentCustomers', () =>
-        prisma.customer.findMany({
-          where: cScope,
-          orderBy: { createdAt: 'desc' },
-          take: 5,
-          select: { id: true, name: true, createdAt: true },
-        })
-      ),
+      prisma.customer.count({ where: cScope }),
+      prisma.customer.count({ where: { ...cScope, createdAt: { gte: today.start, lte: today.end } } }),
+      prisma.order.count({ where: oScope }),
+      prisma.order.count({ where: { ...oScope, orderDate: { gte: today.start, lte: today.end } } }),
+      prisma.order.groupBy({ by: ['orderStatus'], where: oScope, _count: true }),
+      prisma.order.groupBy({ by: ['deliveryStatus'], where: oScope, _count: true }),
+      prisma.order.groupBy({ by: ['paymentStatus'], where: oScope, _count: true }),
+      prisma.product.count({ where: { deletedAt: null } }),
+      prisma.order.findMany({
+        where: oScope,
+        orderBy: { orderDate: 'desc' },
+        take: 5,
+        select: {
+          id: true,
+          orderNumber: true,
+          total: true,
+          orderStatus: true,
+          deliveryStatus: true,
+          orderDate: true,
+          customer: { select: { name: true } },
+        },
+      }),
+      prisma.customer.findMany({
+        where: cScope,
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+        select: { id: true, name: true, createdAt: true },
+      }),
       // "Today's Overview" wants how many orders were *newly* dispatched / put in
       // transit / delivered today, not the running totals — count distinct orders
       // per status from today's tracking events, not raw event rows, since
       // IN_TRANSIT can legitimately be logged more than once per order in a day.
       // Folded into this Promise.all (Phase 20 Step 5C) — it doesn't depend on any
       // of the other results, there was never a reason it ran after them.
-      timed('trackingToday', () =>
-        prisma.deliveryTracking.findMany({
-          where: { createdAt: { gte: today.start, lte: today.end }, order: { is: oScope } },
-          select: { orderId: true, status: true },
-        })
-      ),
+      prisma.deliveryTracking.findMany({
+        where: { createdAt: { gte: today.start, lte: today.end }, order: { is: oScope } },
+        select: { orderId: true, status: true },
+      }),
     ]);
-    // eslint-disable-next-line no-console
-    console.log(`[dashboard timing] getSummary TOTAL Promise.all: ${(performance.now() - summaryStart).toFixed(0)}ms`);
 
     const todayDeliverySets: Record<string, Set<number>> = {};
     for (const t of trackingToday) {
@@ -315,29 +268,20 @@ export const dashboardService = {
     const week = resolveRange('week');
     const month = resolveRange('month');
 
-    const analyticsStart = performance.now();
     const [totalSalesAllTime, salesToday, salesThisWeek, salesThisMonth, outstanding, paymentsToday, top, lowStock, outOfStock] =
       await Promise.all([
-        timed('totalSalesAllTime', () =>
-          prisma.order
-            .aggregate({ where: { ...oScope, ...salesEligibleFilter }, _sum: { total: true } })
-            .then((r) => r._sum.total ?? 0)
-        ),
-        salesTotal(oScope, today.start, today.end, 'salesToday'),
-        salesTotal(oScope, week.start, week.end, 'salesThisWeek'),
-        salesTotal(oScope, month.start, month.end, 'salesThisMonth'),
+        prisma.order
+          .aggregate({ where: { ...oScope, ...salesEligibleFilter }, _sum: { total: true } })
+          .then((r) => r._sum.total ?? 0),
+        salesTotal(oScope, today.start, today.end),
+        salesTotal(oScope, week.start, week.end),
+        salesTotal(oScope, month.start, month.end),
         outstandingTotal(oScope),
         paymentsCollected(oScope, today.start, today.end),
         topProducts(oScope, 5),
-        timed('lowStock', () =>
-          productService.list({ stock: 'low', page: 1, pageSize: 5, sortBy: 'availableQty', sortDir: 'asc' })
-        ),
-        timed('outOfStock', () =>
-          productService.list({ stock: 'out', page: 1, pageSize: 5, sortBy: 'availableQty', sortDir: 'asc' })
-        ),
+        productService.list({ stock: 'low', page: 1, pageSize: 5, sortBy: 'availableQty', sortDir: 'asc' }),
+        productService.list({ stock: 'out', page: 1, pageSize: 5, sortBy: 'availableQty', sortDir: 'asc' }),
       ]);
-    // eslint-disable-next-line no-console
-    console.log(`[dashboard timing] getAnalytics TOTAL Promise.all: ${(performance.now() - analyticsStart).toFixed(0)}ms`);
 
     return {
       sales: {
