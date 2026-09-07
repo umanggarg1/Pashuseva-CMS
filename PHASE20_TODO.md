@@ -234,53 +234,133 @@ request, exactly as today.
       not just `/auth/me`) still returns correct data, ~1.05s settled.
 - [x] `tsc --noEmit` clean on both frontend and backend after every edit in this
       step.
-- [ ] DevTools Network tab confirmation that `/auth/me` and `/dashboard/summary`
-      overlap in the browser specifically (verified the *mechanism* — Home's
-      query has no `enabled` gate and `RequireAuth` no longer blocks mounting —
-      but haven't driven an actual browser this session to see the waterfall
-      gone with my own eyes).
-- [ ] Regression-check the PENDING-account screen and role-based sidebar/nav
-      items in an actual browser — reasoned through by reading each component's
-      existing `undefined`-tolerance, not yet visually confirmed.
-- [ ] Re-run the *production* before/after timing comparison specifically
-      (local numbers above aren't a substitute for this).
+- [x] **Real browser confirmation (headless Chrome via Playwright, driven against
+      the local dev stack, session cookie injected directly rather than through
+      the login form)**: `GET /auth/me` and `GET /dashboard/summary` both start
+      **within 1ms of each other** on first load of `/` (162ms/162ms and
+      165ms/166ms across two separate runs) — the waterfall is confirmed gone
+      at the actual network level, not just by reasoning about the code.
+  - `/auth/me` took 2.1–3.5s end to end across the two runs (varied — see the
+    connection-pool-idle-timeout note in Step 3/production section; this is
+    consistent with a cold Neon reconnect between spaced-apart local requests,
+    not a regression from this change).
+  - `/dashboard/summary` took 5.0–6.0s — slow, as expected, and exactly what
+    Step 5 exists to fix. Recorded here as the **local baseline to compare
+    against** once Step 5 lands.
+  - `/trash` (Admin-only `trashCountQuery`, gated on `isAdmin` which itself
+    depends on `currentUser`) correctly fires *after* `/auth/me` resolves —
+    this is expected, intentional sequencing (it needs to know the role
+    first), not a regression of the fix.
+- [x] Screenshot confirms the dashboard renders correctly: full data (Total
+      Sales, Orders, Customers, Low Stock, etc.), correct greeting
+      ("Good Morning, Administrator"), full role-appropriate sidebar nav,
+      Trash badge count — no visual or functional regression.
+- [x] Expired/invalid session test (garbage cookie value): both `/auth/me` and
+      `/dashboard/summary` independently 401'd (confirming the backend really
+      is the boundary, not just `RequireAuth`), and despite **three** 401
+      responses arriving (two for `/auth/me` — React 18 `StrictMode`
+      double-invokes effects/queries in dev only, not production; one for
+      `/dashboard/summary`), the redirect guard produced **exactly one**
+      navigation to `/login`, no loop, no hang.
+- [x] One pre-existing console 404 noticed during the run, for a resource that
+      never appeared in the `/api/*` traffic — almost certainly `favicon.ico`
+      (Vite dev apps commonly lack one) and unrelated to this change; not
+      chased further since it doesn't affect the app.
+- [ ] PENDING-account-status screen specifically not exercised (would need a
+      real PENDING test account) — reasoned through by reading the component's
+      logic, not visually confirmed. Low risk (`user?.status === 'PENDING'`
+      check is unchanged from before, just no longer gates `<Outlet/>` itself).
+- [ ] Production before/after timing comparison — still not done, since nothing
+      has been pushed yet.
 
 ### Step 5 — `dashboard.service.ts`'s `getSummary()`, informed by the table above
 
-**Not started — needs its own check-in before beginning, per instruction.**
+#### Step 5A — instrumentation ✅ done, real numbers captured
 
-- [ ] **First step, before changing anything**: add temporary per-query timing
-      instrumentation around each of the ~22 round-trips (a `timed(label, fn)`
-      wrapper logging duration per query) and capture one real run's numbers.
-      The fix strategy genuinely differs depending on what's found — a flat
-      ~900ms-1s across all of them points at the connection/network floor (Step
-      3's territory, already addressed for the shared middleware but each
-      query still pays it individually); a few outliers at 2-3s+ (most likely
-      `lowStock`'s full-table scan, or `topProducts`'s two sequential queries)
-      point at query-shape fixes being the bigger lever. Remove the
-      instrumentation once the real culprits are identified — it's diagnostic,
-      not meant to ship.
+Added a temporary `timed(label, fn)` wrapper around every query in the
+`Promise.all` (plus finer splits inside `topProducts`, `outstandingTotal`, and
+`productService.list`'s `lowStock` branch — DB fetch vs. in-JS filter/sort
+measured separately), and a total-batch timer around the whole `Promise.all`.
+Local dev backend, 3 consecutive requests, same shared Neon DB as production:
+
+| Query | Run 1 (cold pool) | Run 2 | Run 3 (warm pool) |
+|---|---|---|---|
+| `totalCustomers` | 268ms | 252ms | 257ms |
+| `totalSalesAllTime` | 269ms | 265ms | 259ms |
+| `outstanding.orderTotals`/`.paid` | 518/756ms | 523/745ms | 493/493ms |
+| `topProducts.groupBy` | 1268ms | 1307ms | 505ms |
+| `topProducts.findMany` | 740ms | 662ms | 253ms |
+| `totalOrders` | 1766ms | 1760ms | 250ms |
+| `ordersToday` | 2480ms | 2062ms | 251ms |
+| `lowStock.findAllMatching` (17 rows) | 2010ms | 1970ms | 764ms |
+| `lowStock.filterSortInJS` | 0ms | 0ms | 0ms |
+| **TOTAL `Promise.all`** | **2480ms** | **2267ms** | **779ms** |
+| `trackingToday` (sequential, *after* the batch, no contention) | 267ms | 254ms | 262ms |
+
+**This is Case C, decisively — connection pool contention, not query-shape
+problems, is the dominant cost for most of these 19 queries.** The evidence:
+
+1. **Warm-pool run (3) shows a clean two-wave pattern**: ~10 queries finish in
+   249–507ms (the pool's 10 connections, immediately available), the remaining
+   ~9 queue and finish in 758–779ms (waiting for one of those 10 to free up,
+   then completing fast once they get it). That's exactly the signature of
+   `pg.Pool`'s default `max: 10` being smaller than the ~19-query fan-out —
+   not a coincidence.
+2. **`trackingToday`, run outside the contended batch, is consistently ~250–270ms
+   across all 3 runs** — the same *kind* of simple query that takes up to
+   2480ms *inside* the batch takes a quarter-second once it isn't competing
+   for a connection. Same query shape, wildly different cost, purely a
+   function of contention.
+3. **Simple `count()` queries (`totalOrders`, `ordersToday`) are among the
+   *slowest* in the cold runs** — there's no query-shape reason a `count()`
+   should take 1.7–2.5s; that's queueing time, not execution time.
+4. **`lowStock`'s in-JS filter/sort is `0ms` every single run** — the concern
+   about it not scaling as the catalog grows is still real and worth fixing
+   for the future (only 17 rows in this dataset), but it is **not** currently
+   contributing meaningful latency; its slot in the table is dominated by
+   queue position like everything else, not its own query shape.
+5. **`topProducts`'s two sequential queries are a real, independent cost**
+   (505+253=758ms even warm) — smaller than the pool-contention effect, but
+   genuine and worth folding into one query or running the two round-trips
+   back-to-back with less overhead, on its own merits.
+6. **Cold-pool runs (1–2, ~2.3–2.5s total) vs. warm-pool run (3, 0.78s)** is
+   also its own separate, real finding: the *first* dashboard load after any
+   gap pays for re-establishing however many of the pool's connections had
+   gone idle/closed, on top of whatever contention exists — consistent with
+   the pg.Pool default 10s `idleTimeoutMillis` already suspected in the
+   original production investigation.
+
+**Revised priority, based on this data (checking in before proceeding —
+see chat)**: raising `pg.Pool`'s `max` (or reducing how many queries fire
+concurrently per dashboard load, which has the same effect from the other
+direction) looks like the single highest-leverage fix here, not the
+last-resort item originally hypothesized before real numbers existed. The
+`trackingToday` fold-in and `topProducts`/`lowStock` query-shape fixes are
+still worth doing — smaller, genuine, independent wins — but none of them is
+the dominant cost the way pool contention is.
+
+- [ ] **Not yet decided — needs a decision before proceeding**: increase
+      `pg.Pool`'s `max`, reduce concurrent query count via the essential/
+      analytics split (or both — they're complementary, not either/or: a
+      larger pool helps *this* request's internal fan-out, while fewer queries
+      per request helps when *multiple users* load the dashboard at the same
+      time and would otherwise all compete for the same enlarged pool anyway).
 - [ ] Fold `trackingToday` into the main `Promise.all` — it doesn't depend on any
-      of the other 19 results, there's no reason it runs after them.
+      of the other results, there's no reason it runs after them (small,
+      independent win regardless of the pool-size decision).
 - [ ] Fix `lowStock`'s full-table fetch-then-filter-in-JS
-      (`product.service.ts:92-105`) — push the `availableQty < minimumStock`
-      comparison into the database query instead of loading every matching
-      product to compute 5 rows. (Needs a raw/computed-column comparison since
-      it's a column-vs-column condition, not a fixed threshold — a schema/query
-      detail to work out during implementation, not now.)
-- [ ] Revisit whether all ~19 belong in one response at all, per the "essential
-      now, analytics after" split already agreed: Summary counts + status
-      breakdowns + recent orders/customers as the fast/first-paint path;
-      sales-aggregation-heavy and top-products/low-stock/out-of-stock as a
-      second, lazily-loaded call once the fast path has rendered. This is the
-      one item in this plan that's a real API/shape change (two endpoints or one
-      endpoint with a `?full=true` toggle) rather than a pure backend
-      optimization — flagging it as needing its own sign-off before building,
-      since it also means `Home.tsx` renders in two stages instead of one.
-- [ ] Only after the above: reconsider `pg.Pool`'s default `max: 10` — explicitly
-      *not* the first move (per the "don't bump pool size before understanding
-      the queries" instruction), revisited only if the query set is still wide
-      enough after the fixes above to warrant it.
+      (`product.service.ts:92-105`) — confirmed not currently a hot path
+      (17 rows, 0ms JS time), but a real scalability risk as the product
+      catalog grows; push the `availableQty < minimumStock` comparison into
+      the database query instead of loading every matching product.
+- [ ] `topProducts`'s two sequential queries (758ms combined even warm) — worth
+      addressing on its own, independent of the pool-size decision.
+- [ ] Revisit whether all ~19 belong in one response at all (the "essential now,
+      analytics after" split) — still a real option and still the one item
+      here that's an API/shape change rather than a pure optimization, but its
+      priority relative to "just increase the pool" needs the check-in below.
+- [ ] Remove the Step 5A timing instrumentation once the above is decided and
+      implemented — it's diagnostic, not meant to ship long-term.
 
 ### Step 6 — Hosting-level factors (last, since 1–5 apply regardless of outcome here)
 
