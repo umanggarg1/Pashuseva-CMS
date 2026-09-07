@@ -594,11 +594,21 @@ export default function Home() {
   // than fired alongside it — firing both at once would still be ~19-22 concurrent
   // DB queries split across 2 HTTP requests instead of 1, which doesn't reduce peak
   // pool pressure. Employees never see analytics data, so skip the request entirely.
+  //
+  // Found in production verification: also gated on `currentUser` actually having
+  // resolved, not just `summaryQuery` — Step 1 made /auth/me and /dashboard/summary
+  // fire in parallel, so there's a real window where summaryQuery.isSuccess is true
+  // before currentUser has loaded. In that window `currentUser?.role === 'EMPLOYEE'`
+  // reads as false (currentUser is undefined), so without this guard the analytics
+  // request could fire for an employee depending purely on which of the two parallel
+  // requests happens to resolve first. Not a security issue either way — getAnalytics
+  // applies the same data-scope filtering as every other endpoint — but it defeats
+  // the point of skipping the request for employees.
   const isEmployee = currentUser?.role === 'EMPLOYEE';
   const analyticsQuery = useQuery({
     queryKey: ['dashboard', 'analytics'],
     queryFn: () => apiFetch<DashboardAnalytics>('/dashboard/analytics'),
-    enabled: summaryQuery.isSuccess && !isEmployee,
+    enabled: summaryQuery.isSuccess && currentUser !== undefined && !isEmployee,
   });
 
   return (
