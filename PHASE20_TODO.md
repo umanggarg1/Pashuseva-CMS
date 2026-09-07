@@ -1,12 +1,22 @@
 # Phase 20 — First-Load Performance: Kill the Auth Waterfall, Then the Rest
 
-**Status: Steps 1–6 implemented/investigated, verified locally, and committed
-(`ab8d80a`, `359aaa9`, `49c64ae`, `f67c4ed`, `8fc1698`) — none pushed yet.
-Step 6 surfaced a major finding not yet acted on: Render's backend is running
-in Singapore, ~15,500 km from Neon's AWS us-east-2 — likely the single
-largest remaining contributor to production latency, and a separate
-infrastructure decision from everything else in this document (see Step 6).
-Ready for final review of the full chain before pushing.**
+**Status: Steps 1–6 complete. Steps 1–5's code changes are implemented,
+verified locally, and committed (`0f1b452`, `33ed39d`, `e103400`, `15affa4`,
+`ea5dbf1`, `2a40491`) on local `main` — **still not pushed**, per instruction.
+Step 6's hosting-level fix (move Render from Singapore to Ohio, next to
+Neon's AWS us-east-2) has been carried out and verified directly in
+production — a measured ~3x latency improvement on its own, before any of
+Steps 1–5's code even reaches that service. Step 6 also surfaced and fixed a
+real, active production bug (`SameSite=Lax` silently breaking session
+persistence on the real cross-origin setup) — that fix was pushed immediately
+and out of sequence as `5091eeb` on `origin/main`, since it was an active
+outage, not something to hold for the combined push. Local `main` has since
+been rebased onto `origin/main`: the original local copy of that fix
+(`910ad98`) was dropped automatically as already-upstream, so `5091eeb` is
+now the single source of truth for it. Ready for final review of the full
+local commit chain before pushing; once pushed,
+re-test `/dashboard/summary` + `/dashboard/analytics` against the
+now-updated Ohio service to see the combined effect.**
 
 Reviewed by the user after the architecture was finalized; the review approved the
 plan with a few concrete refinements, folded in below (a redirect-loop guard for
@@ -482,7 +492,8 @@ repeat of the Step 5A/5B benchmark methodology (3 warm runs, 1 cold run,
 3-concurrent-request test) against the two new, smaller endpoints, at pool
 `max` 10 / 15 / 20, before deciding a final pool size.
 
-- [x] Commit Step 5C locally (already typechecked, verified) — `f67c4ed`.
+- [x] Commit Step 5C locally (already typechecked, verified) — `15affa4`
+      (rewritten by the later rebase onto `origin/main`; was `f67c4ed` before).
 
 #### Step 5D — post-split pool re-benchmark (`max` 10 / 15 / 20) ✅ done — max: 10 wins outright
 
@@ -538,7 +549,8 @@ headline numbers.
       the backend afterward, and both endpoints re-verified with a fresh curl
       smoke test (200, correct data, no timing-log noise) before removal was
       considered done.
-- [x] Commit Step 5D (pool comment update + instrumentation removal) — `8fc1698`.
+- [x] Commit Step 5D (pool comment update + instrumentation removal) — `ea5dbf1`
+      (rewritten by the later rebase onto `origin/main`; was `8fc1698` before).
       Not pushed yet — the full Phase 20 commit chain goes to `origin/main`
       together, only after Step 6 is also done.
 
@@ -577,24 +589,109 @@ headline numbers.
     but region mismatch is very plausibly the *single largest* remaining
     contributor to production latency specifically, larger than anything
     fixed so far, and entirely orthogonal to all of it.
-- [ ] **Recommended, not yet done — this is an infrastructure action outside
-      this environment's reach (no Render dashboard/API access), for the user
-      to decide on and carry out**: create a new Render web service in the
-      **Ohio** region (Render's US-East option, geographically/physically the
-      closest match to Neon's AWS us-east-2 — not necessarily the same
-      underlying AWS region Render itself runs on, but far closer than
-      Singapore by an order of magnitude) pointed at the same GitHub repo and
-      env vars, verify it against the same shared Neon DB, then repoint
-      `frontend/vercel.json`'s rewrite target at the new service's URL once
-      confirmed healthy, and only then decommission the Singapore one. This is
-      a configuration/redeploy decision, not a paid-tier one — Render's free
-      tier is available in the Ohio region same as Singapore.
-  - Not attempted as part of this document per the standing instruction not
-    to change architecture/pool again in Step 6 — this is genuinely a
-    separate action (service region), not a code change, and moving
-    production traffic to a new backend service is exactly the kind of
-    hard-to-reverse, shared-infrastructure action that needs the user's own
-    execution and sign-off, not something to do unprompted.
+- [x] **Migration carried out by the user** (infrastructure action outside
+      this environment's reach — no Render dashboard/API access here): created
+      a new Render web service, `pashuseva-cms-1`, in the **Ohio** region,
+      pointed at the same GitHub repo and same Neon `DATABASE_URL`. Frontend
+      repointed at it via Vercel's `VITE_API_BASE_URL` project env var (the
+      mechanism `lib/api.ts` actually uses — see below), redeployed.
+- [x] **Verified directly against the new service** (`https://pashuseva-cms-1.onrender.com`),
+      same shared Neon DB, with a diagnostic JWT signed using the local `.env`'s
+      `JWT_SECRET` (confirmed matching production, as established earlier this
+      session):
+
+  | Check | Result |
+  |---|---|
+  | `GET /api/health` | 200, 0.34s |
+  | `GET /auth/me`, no cookie | 401 |
+  | `GET /auth/me`, valid token | 200, correct payload |
+  | `GET /dashboard/summary` | 200 — old, pre-split shape (still has `topProducts` inline) |
+  | `GET /dashboard/analytics` | 404 |
+  | `POST /auth/login`, wrong password | 401, correct error (proves DB + bcrypt path works) |
+  | `POST /auth/logout` | 204 |
+  | `GET /orders` | 200, correct paginated data |
+  | `GET /customers` | 200, correct paginated data |
+  | `GET /users` (roles/permissions) | 200, correct data |
+  | CORS for `https://pashuseva-cms.vercel.app` | present and correct |
+
+  The `/dashboard/summary` old-shape response and the `/dashboard/analytics`
+  404 are **expected, not bugs** — this new service is running whatever's
+  currently on `origin/main`, which doesn't yet include the still-unpushed
+  Step 5C split. This turned out to be a useful, if accidental, test
+  condition: it isolates the region change's effect from Steps 1–5's code
+  changes entirely, since none of that code is on this service yet.
+- [x] **Latency comparison, old (Singapore) vs. new (Ohio), same DB, warm
+      requests, 3 samples each:**
+
+  | Endpoint | Singapore | Ohio |
+  |---|---|---|
+  | `GET /auth/me` | ~1.0–1.3s (one 2.4s) | ~0.33–0.36s (one 1.0s) |
+  | `GET /orders` | ~1.2–1.3s (one 2.6s) | ~0.29–0.45s (one 0.88s) |
+
+  **Roughly a 3x improvement**, measured directly rather than estimated from
+  the physical-distance reasoning above — confirms the Step 6 hypothesis
+  concretely, and this is *before* any of Steps 1–5's code-level
+  optimizations have even reached this service yet. The two sets of fixes
+  (region + code) are additive, not overlapping.
+- [x] **`frontend/vercel.json`'s stale `/api/(.*)` rewrite (still pointing at
+      the old Singapore URL) removed, not just updated** — verified first,
+      per instruction, that it was actually dead: `lib/api.ts` builds every
+      request (`apiFetch`, `apiUrl`, `assetUrl`) from `VITE_API_BASE_URL`
+      (an absolute URL, either the Vercel project env var or the
+      `localhost:4000` dev default), and a repo-wide search found no
+      same-origin `/api/...` fetch anywhere in the frontend that this rewrite
+      could ever have intercepted. Left the SPA fallback rewrite
+      (`/(.*) → /index.html`) in place, untouched.
+- [x] **Found and fixed a real, active production bug as a direct side effect
+      of verifying the `vercel.json` question — not part of the original Step
+      6 scope, but discovered while establishing which of two architectures
+      (same-origin Vercel proxy vs. direct cross-origin fetch) production
+      actually uses.** Inspecting the deployed JS bundle confirmed direct
+      cross-origin (`VITE_API_BASE_URL` baked in as an absolute URL) — which
+      contradicted a comment in `backend/src/utils/jwt.ts` claiming the
+      opposite and justifying `SameSite=Lax` on that basis. A real-browser
+      test (Playwright's cookie jar — deliberately not curl, which ignores
+      `SameSite` entirely and had been masking this all session) proved
+      `SameSite=Lax` silently drops the session cookie on every cross-site
+      fetch: a login would succeed and store the cookie, but no subsequent
+      request would ever send it back, breaking session persistence for every
+      real browser user regardless of anything else in this document.
+  - Separately, the same investigation caught a second, unrelated bug
+    introduced that same day: the Vercel env var `VITE_API_BASE_URL` had been
+    set to the bare Ohio origin with no `/api` suffix, 404ing every API call.
+    Fixed by correcting the env var (your action, in the Vercel dashboard) —
+    confirmed via the redeployed bundle.
+  - Fixed `authCookieOptions()` to use `SameSite=None` (paired with the
+    existing `Secure=true`) in production, `Lax` in local dev (frontend/
+    backend share a site there — `localhost`, different ports only — so `Lax`
+    already works and `None` would be rejected outright since `secure` is
+    false in dev). Committed separately from the Phase 20 chain (locally as
+    `910ad98` at the time), since it's an unrelated correctness fix, not a
+    performance change.
+  - **Pushed immediately, out of sequence with the rest of Phase 20** — this
+    was an active outage (real users could not stay logged in), not something
+    to hold for the final combined push. Isolated via cherry-pick onto a
+    branch based on `origin/main`, pushed as `5091eeb` on `origin/main`,
+    rather than pushing the full local `main`, so none of Steps 1–5's
+    unreviewed performance changes went out with it. Local `main` was then
+    rebased onto `origin/main` — the original local `910ad98` was dropped
+    automatically (content already upstream via `5091eeb`), leaving a clean,
+    non-duplicated history: `origin/main` has the fix, local `main` has
+    everything else on top of it.
+  - **Verified end-to-end in production, not just deployed**: signed up a
+    disposable test account through the real signup flow, logged in through
+    the actual `pashuseva-cms.vercel.app` login form (Playwright driving real
+    Chrome, not a fabricated request), and confirmed the real `Set-Cookie`
+    response now reads `HttpOnly; Secure; SameSite=None`, and that a
+    follow-up `/auth/me` call from the same browser session — previously the
+    exact request that would have silently failed — returned 200 with
+    correct data. Screenshot confirmed the app rendered real session data.
+    Test account deleted afterward; nothing left behind in the shared DB.
+- [x] `DATABASE_URL`/Neon config untouched, per instruction — this step only
+      ever concerned Render's region, never the database.
+- [x] **Singapore service (`pashuseva-cms.onrender.com`) kept running
+      temporarily as a rollback option**, per instruction — not decommissioned
+      as part of this step.
 - [x] Revisited connection pooling with real numbers from Step 5 — done, see
       Step 5D. No further pool changes here, per instruction.
 - [x] The free-tier cold-start discussion from before this investigation
@@ -602,6 +699,13 @@ headline numbers.
       everything in this document, and is now joined by the region finding
       above as a second, separate hosting-level factor — neither is
       superseded by Steps 1–5's code-level fixes.
+- [ ] **Follow-up, after Steps 1–5 are eventually pushed**: re-test
+      `/dashboard/summary` + `/dashboard/analytics` against the Ohio service
+      once it's running the split code, and re-run the Step 5D-style
+      concurrency check against production (not just local dev) now that both
+      the region and the query-count fixes are in place together.
+- [ ] Decommission the Singapore service once the Ohio one has been stable in
+      production for a reasonable period — not yet, per instruction.
 
 ## Explicitly out of scope for this document
 
