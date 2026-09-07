@@ -1,9 +1,12 @@
 # Phase 20 — First-Load Performance: Kill the Auth Waterfall, Then the Rest
 
-**Status: Steps 1–5D implemented, verified locally, and committed
-(`ab8d80a`, `359aaa9`, `49c64ae`, `f67c4ed`, plus Step 5D's commit) — none
-pushed yet. Step 6 (hosting/region factors) is the only remaining item before
-the full chain goes to `origin/main` together.**
+**Status: Steps 1–6 implemented/investigated, verified locally, and committed
+(`ab8d80a`, `359aaa9`, `49c64ae`, `f67c4ed`, `8fc1698`) — none pushed yet.
+Step 6 surfaced a major finding not yet acted on: Render's backend is running
+in Singapore, ~15,500 km from Neon's AWS us-east-2 — likely the single
+largest remaining contributor to production latency, and a separate
+infrastructure decision from everything else in this document (see Step 6).
+Ready for final review of the full chain before pushing.**
 
 Reviewed by the user after the architecture was finalized; the review approved the
 plan with a few concrete refinements, folded in below (a redirect-loop guard for
@@ -535,26 +538,70 @@ headline numbers.
       the backend afterward, and both endpoints re-verified with a fresh curl
       smoke test (200, correct data, no timing-log noise) before removal was
       considered done.
-- [ ] Commit Step 5D (pool comment update + instrumentation removal). Do not
-      push yet — the full Phase 20 commit chain goes to `origin/main` together,
-      only after Step 6 is also done.
+- [x] Commit Step 5D (pool comment update + instrumentation removal) — `8fc1698`.
+      Not pushed yet — the full Phase 20 commit chain goes to `origin/main`
+      together, only after Step 6 is also done.
 
-### Step 6 — Hosting-level factors (last, since 1–5 apply regardless of outcome here)
+### Step 6 — Hosting-level factors ✅ done — found a major mismatch, not yet acted on
 
-- [ ] Confirm Render's service region vs. Neon's (`...c-5.us-east-2.aws.neon.tech`)
-      — if Render is running somewhere other than `us-east-2`/nearby, that's a
-      fixed per-request network cost no amount of query optimization removes.
-      Requires checking the Render dashboard directly (no API token available in
-      this environment to check programmatically).
-  - [ ] If mismatched, moving the Render service to the same region as Neon is a
-        config change, not a paid-tier decision — worth doing regardless of
-        whether the free tier is kept.
-- [ ] Revisit connection pooling only with real numbers in hand from Step 5,
-      not before.
-- [ ] The free-tier cold-start discussion from before this investigation
+- [x] Confirm Neon's region: `ep-empty-butterfly-ay7l45u8-pooler.c-5.us-east-2.aws.neon.tech`
+      — **AWS us-east-2 (Ohio, USA)**. Already known from `backend/.env`'s
+      `DATABASE_URL`, unchanged this step.
+- [x] Confirm Render's service region — no API token or dashboard access
+      available in this environment, so this required the user checking the
+      Render dashboard directly (Settings tab) rather than being checkable
+      programmatically. Also tried `curl -D -` against the production backend
+      first, on the chance response headers would reveal it — they don't:
+      the only region-shaped header present (`CF-RAY: ...-DEL`) is Cloudflare's
+      *edge* PoP nearest wherever the request originated from, not Render's
+      origin server region, so it's not usable evidence either way.
+  - **Result: Render is running in Singapore.**
+- [x] Compare — **Singapore vs. AWS us-east-2 (Ohio) is a severe mismatch**,
+      roughly opposite sides of the globe (~15,500 km). At fiber-optic speeds,
+      that alone is physically incapable of round-tripping in under
+      ~150–160ms, and real-world Singapore↔US-East routing typically runs
+      180–250ms RTT — before any query execution time. Unlike Step 5's pool
+      contention (which only showed up under concurrent load) or the
+      auth-waterfall/query-count fixes (each save some milliseconds to low
+      hundreds), this is a **fixed cost added to every single database
+      round-trip the backend makes, all the time**, including ones this phase
+      already optimized to be fast locally — a query measured at ~250ms warm
+      in local dev (backend and Neon both effectively nearby) would be paying
+      roughly double that or more in production purely for the Singapore↔Ohio
+      hop, regardless of how few queries the request makes or how healthy the
+      connection pool is.
+  - This reframes the original "why does first load take so long"
+    investigation: Steps 1–5 fixed real, measured problems (a genuine
+    frontend waterfall, duplicated auth queries, a 19–22-query fan-out
+    queueing against the pool) and those fixes are worth keeping regardless —
+    but region mismatch is very plausibly the *single largest* remaining
+    contributor to production latency specifically, larger than anything
+    fixed so far, and entirely orthogonal to all of it.
+- [ ] **Recommended, not yet done — this is an infrastructure action outside
+      this environment's reach (no Render dashboard/API access), for the user
+      to decide on and carry out**: create a new Render web service in the
+      **Ohio** region (Render's US-East option, geographically/physically the
+      closest match to Neon's AWS us-east-2 — not necessarily the same
+      underlying AWS region Render itself runs on, but far closer than
+      Singapore by an order of magnitude) pointed at the same GitHub repo and
+      env vars, verify it against the same shared Neon DB, then repoint
+      `frontend/vercel.json`'s rewrite target at the new service's URL once
+      confirmed healthy, and only then decommission the Singapore one. This is
+      a configuration/redeploy decision, not a paid-tier one — Render's free
+      tier is available in the Ohio region same as Singapore.
+  - Not attempted as part of this document per the standing instruction not
+    to change architecture/pool again in Step 6 — this is genuinely a
+    separate action (service region), not a code change, and moving
+    production traffic to a new backend service is exactly the kind of
+    hard-to-reverse, shared-infrastructure action that needs the user's own
+    execution and sign-off, not something to do unprompted.
+- [x] Revisited connection pooling with real numbers from Step 5 — done, see
+      Step 5D. No further pool changes here, per instruction.
+- [x] The free-tier cold-start discussion from before this investigation
       (Render spin-down, Neon autosuspend) still applies independently of
-      everything in this document — those are separate, orthogonal fixes
-      (upgrade tier / keep-alive ping), not superseded by this plan.
+      everything in this document, and is now joined by the region finding
+      above as a second, separate hosting-level factor — neither is
+      superseded by Steps 1–5's code-level fixes.
 
 ## Explicitly out of scope for this document
 
