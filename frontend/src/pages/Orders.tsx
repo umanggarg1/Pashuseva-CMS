@@ -291,11 +291,11 @@ export default function Orders() {
             <TableHeader>
               <TableRow>
                 <TableHead>Order</TableHead>
-                <TableHead>Article Number</TableHead>
                 <TableHead>Customer</TableHead>
+                <TableHead>Phone</TableHead>
                 <TableHead>Amount</TableHead>
-                <TableHead>Order</TableHead>
                 <TableHead>Payment</TableHead>
+                <TableHead>Article Number</TableHead>
                 <TableHead>Delivery</TableHead>
               </TableRow>
             </TableHeader>
@@ -307,9 +307,6 @@ export default function Orders() {
                       {order.orderNumber}
                     </Link>
                   </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {order.articleNumber ?? '—'}
-                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <span>{order.customer.name}</span>
@@ -318,18 +315,18 @@ export default function Orders() {
                       </span>
                     </div>
                   </TableCell>
-                  <TableCell>₹{order.total.toLocaleString()}</TableCell>
-                  <TableCell>
-                    <StatusBadge
-                      value={order.orderStatus}
-                      tone={orderStatusTone(order.orderStatus)}
-                    />
+                  <TableCell className="text-muted-foreground">
+                    {order.customer.phones.map((p) => p.phone).join(', ') || '—'}
                   </TableCell>
+                  <TableCell>₹{order.total.toLocaleString()}</TableCell>
                   <TableCell>
                     <StatusBadge
                       value={PAYMENT_STATUS_LABEL[order.paymentStatus] ?? order.paymentStatus}
                       tone={paymentStatusTone(order.paymentStatus)}
                     />
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {order.articleNumber ?? '—'}
                   </TableCell>
                   <TableCell>
                     <StatusBadge

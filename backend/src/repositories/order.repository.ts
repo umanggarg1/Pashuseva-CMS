@@ -43,7 +43,14 @@ export const orderRepository = {
         where: whereActive,
         include: {
           customer: {
-            select: { id: true, name: true, phones: { where: { isPrimary: true }, take: 1 } },
+            select: {
+              id: true,
+              name: true,
+              // orderBy keeps phones[0] as the primary number (relied on by the
+              // mobile card view) even though every phone is now fetched, not
+              // just the primary one (needed by the desktop table's Phone column).
+              phones: { orderBy: { isPrimary: 'desc' } },
+            },
           },
           assignedEmployees: { include: { employee: { select: { id: true, name: true } } } },
         },
