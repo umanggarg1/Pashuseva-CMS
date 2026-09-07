@@ -362,6 +362,48 @@ the dominant cost the way pool contention is.
 - [ ] Remove the Step 5A timing instrumentation once the above is decided and
       implemented — it's diagnostic, not meant to ship long-term.
 
+#### Step 5B — `pg.Pool.max: 10 → 20`, benchmarked ✅ done — real tradeoff found, not a clean win
+
+`backend/src/lib/prisma.ts` — `new PrismaPg({ connectionString, max: 20 })`.
+Same 3-run benchmark, then a 3-concurrent-request test as instructed:
+
+| | max=10 cold | max=10 warm | max=20 cold | max=20 warm | max=20, 3 concurrent |
+|---|---|---|---|---|---|
+| Internal `Promise.all` | 2480ms | 779ms | **3839ms** | **515–526ms** | 981–1213ms each |
+| External (curl) total | 4783ms | 1308ms | **7192ms** | **1032–1062ms** | 1506–1732ms each |
+
+**Warm-state result matches what you predicted**: the two-wave pattern shrank
+substantially (previously a ~500ms gap between waves, now ~250ms — didn't fully
+collapse into one wave, because the real concurrent DB-operation count is
+~19–22 once `topProducts`'s and `outstanding`'s internal pairs are counted, right
+at the edge of the new pool size of 20). Warm total dropped ~33–35% both
+internally and externally.
+
+**But the cold-state result went the other way** — the very first request after
+the pool starts empty got *slower*, not faster: 2480ms → 3839ms internally,
+4.8s → 7.2s externally. Establishing up to 20 fresh TLS connections to Neon
+simultaneously costs more up front than establishing 10, and nothing amortizes
+that for the very first visitor. This is exactly the scenario that motivated
+this whole investigation (the "why does first load take so long" question) —
+so a fix that helps every *subsequent* load but makes the *very first* one
+worse is a real, not obviously-net-positive tradeoff, not a clean win to just
+"keep."
+
+**3-concurrent-request test** (3 simultaneous `curl`s, warm pool): each request's
+internal `Promise.all` rose to 981–1213ms (vs. 515–526ms solo) — roughly 2x
+slower under 3x concurrent load, not a linear 3x or a cliff/failure. No errors,
+no timeouts. Graceful degradation, consistent with 3×~20 concurrent DB
+operations queuing against one shared pool of 20.
+
+**Not decided yet — flagging before treating this as final**: keep `max: 20`
+despite the cold-case regression (reasonable if the app stays warm most of the
+time in practice, especially once a keep-alive ping is in place — see the
+free-tier discussion), try a smaller number as a middle ground (e.g. 15), or
+hold off on the pool change entirely until the essential/analytics split
+reduces concurrent query count first (which would make *any* pool size look
+better, cold or warm, since there'd be far fewer connections to establish/queue
+for in the first place).
+
 ### Step 6 — Hosting-level factors (last, since 1–5 apply regardless of outcome here)
 
 - [ ] Confirm Render's service region vs. Neon's (`...c-5.us-east-2.aws.neon.tech`)
