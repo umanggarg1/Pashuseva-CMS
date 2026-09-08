@@ -283,13 +283,6 @@ function buildOrderWhere(actingUser: ActingUser, query: OrderListQuery): Prisma.
 // computed from logic that could drift apart, the count shown to the user
 // could silently disagree with what they download, which is worse than no
 // count at all.
-export const PAYMENT_STATUS_EXPORT_LABEL: Record<PaymentStatus, string> = {
-  PENDING: 'Unpaid',
-  PARTIAL: 'Partially Paid',
-  PAID: 'Paid',
-  REFUNDED: 'Refunded',
-};
-
 function buildOrderExportWhere(
   actingUser: ActingUser,
   filters: OrderExportFilters
@@ -346,21 +339,18 @@ export interface OrderExportRow {
   orderNumber: string;
   orderDate: Date;
   customerName: string;
-  // Raw list (not pre-joined) — Excel shows them comma-separated on one line,
-  // the PDF's compact layout shows each on its own line (up to 2), so each
-  // generator formats this its own way rather than one dictating the other.
+  // Raw list (not pre-joined) — both generators now show each phone on its
+  // own line within the cell, but each formats/wraps it independently rather
+  // than one dictating a shared pre-joined string to the other.
   phones: string[];
   area: string;
   pincode: string;
   articleNumber: string;
   items: { name: string; quantity: number }[];
-  itemsSummary: string;
   total: number;
   paymentStatus: PaymentStatus;
-  paymentLabel: string;
   isPaid: boolean;
   deliveryStatus: DeliveryStatus;
-  deliveryLabel: string;
 }
 
 async function getExportRows(
@@ -378,13 +368,10 @@ async function getExportRows(
     pincode: order.customer.addresses[0]?.pincode?.trim() || '—',
     articleNumber: order.articleNumber ?? '—',
     items: order.items.map((i) => ({ name: i.productName, quantity: i.quantity })),
-    itemsSummary: order.items.map((i) => `${i.productName} × ${i.quantity}`).join(', '),
     total: order.total,
     paymentStatus: order.paymentStatus,
-    paymentLabel: PAYMENT_STATUS_EXPORT_LABEL[order.paymentStatus],
     isPaid: order.paymentStatus === 'PAID',
     deliveryStatus: order.deliveryStatus,
-    deliveryLabel: order.deliveryStatus.replace(/_/g, ' '),
   }));
 }
 
