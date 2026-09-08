@@ -1,17 +1,16 @@
 # Phase 21 — Orders Export (Download Orders with Filters)
 
-**Status: backend and frontend both done and verified end-to-end (real browser,
-real downloads, real cross-checked counts). The PDF's row layout went through
-two further revisions: first a fixed-2-line-row compact design with a
-`+N items` overflow marker (found and fixed a bug where that marker could
-itself get truncated away), then a final revision that drops Order
-Number/Area entirely in favor of a per-report S.No., uncaps Order Items to
-show every item with genuinely variable row height, and locks column
-alignment. Excel was then brought into line with the same core structure and
-abbreviation codes (own revision, see "Excel revision" section below) while
-deliberately keeping Order Number and Area — now Area/PIN Code — since
-Excel's whole purpose is finding/filtering/managing the data, unlike the
-print-only PDF. Nothing committed yet.**
+**Status: backend and frontend both done, verified end-to-end, and reviewed
+against a full pre-push checklist (commits `e5fc11b`, `855e7d2` — still local,
+not pushed). The PDF's row layout went through two revisions (fixed-2-line-row
+compact design, then dropping Order Number/Area for a per-report S.No. with
+uncapped Order Items and variable row height). Excel was then brought into
+line with the same core structure (same columns, same report summary,
+uncapped items, Area/PIN Code) — but its Payment/Delivery **values** were
+reverted back to full words one message later (see "Excel: full words, not
+codes" section) — only the PDF keeps the abbreviated codes now; Excel dropped
+its code legend entirely since full words need no lookup. This latest change
+is not yet committed.**
 
 A "Download Orders" action on the Orders page, opening a filter panel/modal (the
 existing Orders page and its table are explicitly untouched), producing an Excel
@@ -499,6 +498,58 @@ column centered — all exactly as specified.
       (dialog → count → both downloads) — the frontend wasn't touched by this
       change, and the count/filter logic wasn't either, but a full re-run
       would still be the thorough thing to do before this ships.
+
+## Excel: full words, not codes — Payment/Delivery values reverted (PDF unaffected)
+
+One message after the pre-push review, before pushing: the abbreviation codes
+were pulled back out of Excel's Payment/Delivery **values** — Excel now shows
+the same full words the very first Excel revision used (`Paid`/`Unpaid`/
+`Partially Paid`/`Refunded`, `Delivered`/`Dispatched`/`Transit`/`Out for
+Delivery`/`Undispatched`/`Undelivered`), while the **PDF keeps the
+abbreviated codes** (`P`/`UP`/`PP`/`RF`, `D`/`DP`/`T`/`OFD`/`UDP`/`UD`)
+exactly as before. Only Excel changed here — nothing about the PDF's code
+mapping, layout, or legend was touched.
+
+**Same grouping, different spelling** — `DELIVERY_LABEL_FULL`/
+`PAYMENT_LABEL_FULL` (new, Excel-only constants) group real statuses
+identically to `DELIVERY_CODE`/`PAYMENT_CODE` (same "Undelivered" catch-all
+for `RETURN_PENDING`/`RETURN_IN_TRANSIT`/`RETURNED`/`LOST`/`DAMAGED`, not the
+old, more granular `deliveryLabel` field removed as dead code during the
+pre-push review) — so the two formats always agree on what a status *means*,
+only on how compactly it's shown.
+
+**Excel's legend rows removed entirely** — with full words needing no
+lookup, the two `LEGEND_PAYMENT`/`LEGEND_DELIVERY` rows that used to sit in
+Excel's summary block are gone (Excel's row count for a 2-order test dropped
+from 12 to 9 rows as a direct result). Those two shared constants are now
+PDF-only, still used by `drawLegend`. Payment/Delivery column widths widened
+(10→15 and 10→16) to comfortably fit "Partially Paid"/"Out for Delivery"
+without wrapping.
+
+**Dynamic row-number computation kept working correctly** — freeze pane,
+auto-filter range, and `printTitlesRow` are all still computed from
+`sheet.rowCount` as the summary rows are added, not hardcoded, so removing
+2 rows from the summary block correctly shifted everything: verified the
+table header row is now 7 (was 10), `autoFilter: 'A7:K9'` (was `'A10:K12'`),
+`printTitlesRow: '7:7'` (was `'10:10'`) — all three moved together, exactly
+as the dynamic design was meant to handle.
+
+- [x] Added `DELIVERY_LABEL_FULL`/`PAYMENT_LABEL_FULL`, Excel-only, next to
+      the existing (now PDF-only) `DELIVERY_CODE`/`PAYMENT_CODE`.
+- [x] Removed the two legend `sheet.addRow(...)` calls from
+      `generateOrdersExcel`; `LEGEND_PAYMENT`/`LEGEND_DELIVERY` are now only
+      referenced from `drawLegend` (PDF).
+- [x] Widened the `Payment`/`Delivery` `EXCEL_COLUMNS` widths.
+- [x] Corrected two comments that had described Excel using the same
+      abbreviated codes as the PDF — stale as of this change.
+- [x] `tsc --noEmit` and full `npm run build` clean.
+- [x] Verified programmatically (read the generated file back with
+      `exceljs`): Payment/Delivery cells show `"Unpaid"`/`"Undispatched"` (not
+      `"UP"`/`"UDP"`); row count dropped from 12→9 for the same 2-order test
+      (legend rows gone); freeze/auto-filter/print-titles all correctly
+      recomputed at the new header row (7, not 10).
+- [x] Re-confirmed the PDF export still returns 200, unaffected.
+- [ ] Not committed yet.
 
 ## Proposed shape (subject to the decisions above)
 

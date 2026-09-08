@@ -52,6 +52,32 @@ const LEGEND_PAYMENT = 'Payment: P = Paid, UP = Unpaid, PP = Partially Paid, RF 
 const LEGEND_DELIVERY =
   'Delivery: D = Delivered, DP = Dispatched, T = In Transit, OFD = Out for Delivery, UDP = Undispatched, UD = Undelivered (Returned/Lost/Damaged)';
 
+// Excel-only — full, human-readable values (never the PDF's abbreviated
+// codes), so the sheet stays self-explanatory for filtering/sorting without
+// needing a legend. Grouped identically to DELIVERY_CODE/PAYMENT_CODE above
+// (same "Undelivered" catch-all for RETURN_PENDING/RETURN_IN_TRANSIT/
+// RETURNED/LOST/DAMAGED) — same underlying meaning as the PDF, just spelled
+// out instead of abbreviated, so the two formats never disagree on what a
+// given order's status actually *means*, only on how compactly it's shown.
+const DELIVERY_LABEL_FULL: Record<DeliveryStatus, string> = {
+  NOT_DISPATCHED: 'Undispatched',
+  DISPATCHED: 'Dispatched',
+  IN_TRANSIT: 'Transit',
+  OUT_FOR_DELIVERY: 'Out for Delivery',
+  DELIVERED: 'Delivered',
+  RETURN_PENDING: 'Undelivered',
+  RETURN_IN_TRANSIT: 'Undelivered',
+  RETURNED: 'Undelivered',
+  LOST: 'Undelivered',
+  DAMAGED: 'Undelivered',
+};
+const PAYMENT_LABEL_FULL: Record<PaymentStatus, string> = {
+  PENDING: 'Unpaid',
+  PARTIAL: 'Partially Paid',
+  PAID: 'Paid',
+  REFUNDED: 'Refunded',
+};
+
 const EXCEL_COLUMNS = [
   { header: 'S.No.', key: 'sNo', width: 7 },
   { header: 'Order', key: 'orderNumber', width: 16 },
@@ -62,8 +88,10 @@ const EXCEL_COLUMNS = [
   { header: 'Article No.', key: 'articleNumber', width: 16 },
   { header: 'Order Items', key: 'items', width: 32 },
   { header: 'Amount', key: 'total', width: 12 },
-  { header: 'Payment', key: 'paymentLabel', width: 10 },
-  { header: 'Delivery', key: 'deliveryLabel', width: 10 },
+  // Wider than the PDF's code columns — these hold full words ("Partially
+  // Paid", "Out for Delivery"), not 1-3 character codes.
+  { header: 'Payment', key: 'paymentLabel', width: 15 },
+  { header: 'Delivery', key: 'deliveryLabel', width: 16 },
 ] as const;
 
 // Center-aligned, vertically centered columns per the locked table; Customer
@@ -75,12 +103,14 @@ const EXCEL_LEFT_COLUMNS = new Set(['customerName', 'items']);
 // PHASE21_TODO.md decision #12 / Excel revision — A4 landscape, fit-to-1-
 // page-wide print setup retained; report summary block (matching the PDF's)
 // added above the table; header bold+centered+frozen+auto-filtered; every
-// data column wrapped and vertically centered; Payment/Delivery now show the
-// same locked abbreviation codes as the PDF (documented via the same legend
-// text, since Excel has no print-once-on-page-1 concept the way pdfkit does
-// — printed as two more rows in the summary block instead); Order Number and
-// Area/PIN Code are kept (unlike the PDF) since they're genuinely useful for
-// finding/filtering a specific order later, which is Excel's whole purpose.
+// data column wrapped and vertically centered. Payment/Delivery deliberately
+// stay full words here (Paid/Unpaid/Partially Paid/Refunded, Delivered/
+// Dispatched/Transit/Out for Delivery/Undispatched/Undelivered) rather than
+// the PDF's abbreviated codes — self-explanatory for filtering/sorting
+// without a legend, unlike the PDF where space is the binding constraint.
+// Order Number and Area/PIN Code are kept (unlike the PDF) since they're
+// genuinely useful for finding/filtering a specific order later, which is
+// Excel's whole purpose.
 export async function generateOrdersExcel(rows: OrderExportRow[], summary: ExportSummary): Promise<Buffer> {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Orders');
@@ -117,10 +147,11 @@ export async function generateOrdersExcel(rows: OrderExportRow[], summary: Expor
     `Unpaid: Rs. ${summary.unpaidAmount.toLocaleString('en-IN')}`,
   ]);
   sheet.addRow([]);
-  sheet.addRow([LEGEND_PAYMENT]).font = { size: 9, color: { argb: 'FF666666' } };
-  sheet.addRow([LEGEND_DELIVERY]).font = { size: 9, color: { argb: 'FF666666' } };
-  sheet.addRow([]);
 
+  // No legend here — unlike the PDF, Excel's Payment/Delivery columns hold
+  // full words ("Partially Paid", "Out for Delivery"), not abbreviated codes,
+  // so there's nothing to look up.
+  //
   // The actual table header — added as a plain row (not via sheet.columns'
   // header shorthand, which always assumes row 1) since it now sits below
   // the summary block at a row number that varies with whether
@@ -146,8 +177,8 @@ export async function generateOrdersExcel(rows: OrderExportRow[], summary: Expor
         ? row.items.map((i) => `${i.name} × ${i.quantity}`).join('\n')
         : '—',
       total: row.total,
-      paymentLabel: PAYMENT_CODE[row.paymentStatus],
-      deliveryLabel: DELIVERY_CODE[row.deliveryStatus],
+      paymentLabel: PAYMENT_LABEL_FULL[row.paymentStatus],
+      deliveryLabel: DELIVERY_LABEL_FULL[row.deliveryStatus],
     });
     excelRow.getCell('orderDate').numFmt = 'dd/mm/yyyy';
     excelRow.getCell('total').numFmt = '"₹"#,##0.00';
