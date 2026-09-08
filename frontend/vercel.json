@@ -1,5 +1,7 @@
 {
   "rewrites": [
+    { "source": "/api/(.*)", "destination": "https://pashuseva-cms-1.onrender.com/api/$1" },
+    { "source": "/public/(.*)", "destination": "https://pashuseva-cms-1.onrender.com/public/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
