@@ -26,6 +26,15 @@ router.get(
   asyncHandler(orderController.getByOrderNumber)
 );
 
+// Phase 21: Orders export — same reason as /number/:orderNumber above, these must
+// come before GET /:id. Gated on order:view (same as the list endpoint) — this
+// exports/counts exactly the rows a user could already see, in bulk, via a file;
+// no separate permission, and orderService.exportCount/exportRows apply the same
+// Data Scope as the normal list.
+router.get('/export/count', authorize('order:view'), asyncHandler(orderController.exportCount));
+router.get('/export/excel', authorize('order:view'), asyncHandler(orderController.exportExcel));
+router.get('/export/pdf', authorize('order:view'), asyncHandler(orderController.exportPdf));
+
 router.get(
   '/:id',
   authorize('order:view'),

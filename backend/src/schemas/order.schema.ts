@@ -167,6 +167,23 @@ export const orderListQuerySchema = z.object({
   sortDir: z.enum(['asc', 'desc']).default('desc'),
 });
 
+// Phase 21: Orders export (count/Excel/PDF all share this — see
+// order.service.ts's buildOrderExportWhere). Deliberately a separate, smaller
+// schema from orderListQuerySchema rather than reusing it — export has no
+// pagination/sort/search, and its payment/delivery filters are shorthand
+// (all/paid/unpaid, all/delivered/undelivered) mapped to real enum filters in
+// the service layer, not raw enum values from the client.
+export const orderExportFiltersSchema = z.object({
+  dateFrom: z.coerce.date().optional(),
+  dateTo: z.coerce.date().optional(),
+  payment: z.enum(['all', 'paid', 'unpaid']).default('all'),
+  // 'all' (or omitted) means no restriction — validated as a plain string here,
+  // not an enum, since the set of real districts is data-driven (see
+  // customerService.getDistinctDistricts), not a fixed list.
+  district: z.string().optional(),
+  delivery: z.enum(['all', 'delivered', 'undelivered']).default('all'),
+});
+
 export type OrderIdParam = z.infer<typeof orderIdParamSchema>;
 export type OrderNumberParam = z.infer<typeof orderNumberParamSchema>;
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
@@ -174,3 +191,4 @@ export type UpdateOrderInput = z.infer<typeof updateOrderSchema>;
 export type CancelOrderInput = z.infer<typeof cancelOrderSchema>;
 export type UpdateDeliveryStatusInput = z.infer<typeof updateDeliveryStatusSchema>;
 export type OrderListQuery = z.infer<typeof orderListQuerySchema>;
+export type OrderExportFilters = z.infer<typeof orderExportFiltersSchema>;

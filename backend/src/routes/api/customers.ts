@@ -25,6 +25,12 @@ router.get(
 
 router.post('/', authorize('customer:create'), asyncHandler(customerController.create));
 
+// Phase 21: Orders export dialog's Area picklist — registered before `/:id`
+// (same reasoning as `/search-for-order` above: a single-segment path here would
+// otherwise be greedily matched as `:id`). Gated on customer:view since it's
+// derived from customer address data, though it returns no customer records.
+router.get('/districts', authorize('customer:view'), asyncHandler(customerController.districts));
+
 // Assignment used to be Admin/Manager role-only (§24: "Assign Customers"). Phase 15
 // made Manager access configurable, riding on customer:update at the time — Phase 19
 // splits it into its own customer:assign permission instead (not granted to an

@@ -28,6 +28,12 @@ export const customerController = {
     res.json({ data, total, page: query.page, pageSize: query.pageSize });
   },
 
+  // Phase 21: Orders export dialog's Area picklist.
+  async districts(_req: Request, res: Response) {
+    const districts = await customerService.getDistinctDistricts();
+    res.json({ data: districts });
+  },
+
   async getById(req: Request, res: Response) {
     const { id } = customerIdParamSchema.parse(req.params);
     const customer = await customerService.getById(id, requireActingUser(req));

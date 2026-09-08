@@ -85,6 +85,18 @@ export const customerRepository = {
     });
   },
 
+  // Phase 21: backs the Orders export dialog's Area picklist. Raw values, not
+  // deduped/normalized here — real addresses have inconsistent casing/whitespace
+  // ("Gurugram" / "gurugram " / "GURUGRAM"), so that cleanup happens in
+  // customerService.getDistinctDistricts, once, in one place, rather than trying
+  // to get Postgres's case-sensitive DISTINCT to do it.
+  getAllDistricts() {
+    return prisma.customerAddress.findMany({
+      where: { district: { not: null } },
+      select: { district: true },
+    });
+  },
+
   // Phase 19: the order-creation-time customer search. Deliberately a lean, fixed
   // shape (name/phone/city/currently-assigned-employees only) — never the full
   // profile (notes, order history, addresses beyond the primary city) — this is the

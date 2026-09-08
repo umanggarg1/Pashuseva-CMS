@@ -10,15 +10,71 @@ import {
   cancelOrderSchema,
   updateDeliveryStatusSchema,
   orderListQuerySchema,
+  orderExportFiltersSchema,
+  type OrderExportFilters,
 } from '../schemas/order.schema';
 import { createOrderNoteSchema } from '../schemas/orderNote.schema';
 import { paymentIdParamSchema, createPaymentSchema, reversePaymentSchema } from '../schemas/payment.schema';
 import { HttpError } from '../utils/httpError';
 import { generateParcelSummaryPdf } from '../services/parcelSummary.service';
+import { generateOrdersExcel, generateOrdersPdf } from '../services/orderExport.service';
 
 function requireActingUser(req: Request) {
   if (!req.user) throw new HttpError(401, 'Not authenticated');
   return req.user;
+}
+
+function formatDDMMYYYY(date: Date) {
+  const d = String(date.getDate()).padStart(2, '0');
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  return `${d}/${m}/${date.getFullYear()}`;
+}
+
+// Phase 21: the export PDF's summary header only names filters actually
+// restricted (not "all") — see PHASE21_TODO.md's request text: an unfiltered
+// export shows just the date range, not "Area: All | Payment: All | Delivery: All".
+function buildExportSummaryMeta(filters: OrderExportFilters) {
+  const dateRangeLabel =
+    filters.dateFrom && filters.dateTo
+      ? `${formatDDMMYYYY(filters.dateFrom)} – ${formatDDMMYYYY(filters.dateTo)}`
+      : filters.dateFrom
+        ? `From ${formatDDMMYYYY(filters.dateFrom)}`
+        : filters.dateTo
+          ? `Until ${formatDDMMYYYY(filters.dateTo)}`
+          : 'All dates';
+
+  const activeFilters: string[] = [];
+  if (filters.district && filters.district.toLowerCase() !== 'all') {
+    activeFilters.push(`Area: ${filters.district}`);
+  }
+  if (filters.payment !== 'all') {
+    activeFilters.push(`Payment: ${filters.payment === 'paid' ? 'Paid' : 'Unpaid'}`);
+  }
+  if (filters.delivery !== 'all') {
+    activeFilters.push(`Delivery: ${filters.delivery === 'delivered' ? 'Delivered' : 'Undelivered'}`);
+  }
+
+  return {
+    dateRangeLabel,
+    filterSummaryLine: activeFilters.length > 0 ? activeFilters.join(' | ') : null,
+  };
+}
+
+// Shared by both exportExcel and exportPdf — same summary block (title, date
+// range, active-filter line, Orders/Total/Paid/Unpaid) on both formats now
+// that Excel's report also carries one, per PHASE21_TODO.md's Excel revision.
+function buildExportSummary(rows: Awaited<ReturnType<typeof orderService.exportRows>>, filters: OrderExportFilters) {
+  const totalAmount = rows.reduce((sum, r) => sum + r.total, 0);
+  const paidAmount = rows.filter((r) => r.isPaid).reduce((sum, r) => sum + r.total, 0);
+  const { dateRangeLabel, filterSummaryLine } = buildExportSummaryMeta(filters);
+  return {
+    dateRangeLabel,
+    filterSummaryLine,
+    orderCount: rows.length,
+    totalAmount,
+    paidAmount,
+    unpaidAmount: totalAmount - paidAmount,
+  };
 }
 
 export const orderController = {
@@ -26,6 +82,36 @@ export const orderController = {
     const query = orderListQuerySchema.parse(req.query);
     const { data, total } = await orderService.list(requireActingUser(req), query);
     res.json({ data, total, page: query.page, pageSize: query.pageSize });
+  },
+
+  // Phase 21: Orders export — count/excel/pdf all parse the same
+  // orderExportFiltersSchema and go through orderService.exportCount/exportRows,
+  // which both share buildOrderExportWhere. See PHASE21_TODO.md decision #9.
+  async exportCount(req: Request, res: Response) {
+    const filters = orderExportFiltersSchema.parse(req.query);
+    const count = await orderService.exportCount(requireActingUser(req), filters);
+    res.json({ count });
+  },
+
+  async exportExcel(req: Request, res: Response) {
+    const filters = orderExportFiltersSchema.parse(req.query);
+    const rows = await orderService.exportRows(requireActingUser(req), filters);
+    const buffer = await generateOrdersExcel(rows, buildExportSummary(rows, filters));
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader('Content-Disposition', 'attachment; filename="orders-export.xlsx"');
+    res.send(buffer);
+  },
+
+  async exportPdf(req: Request, res: Response) {
+    const filters = orderExportFiltersSchema.parse(req.query);
+    const rows = await orderService.exportRows(requireActingUser(req), filters);
+    const buffer = await generateOrdersPdf(rows, buildExportSummary(rows, filters));
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="orders-export.pdf"');
+    res.send(buffer);
   },
 
   async getById(req: Request, res: Response) {

@@ -135,6 +135,26 @@ function buildCustomerWhere(
 }
 
 export const customerService = {
+  // Phase 21: powers the Orders export dialog's Area picklist. Not scoped by the
+  // acting user's Data Scope — these are just place names, not customer records,
+  // and the export/count endpoints themselves apply the real scoping regardless of
+  // which district is picked (picking one you have no customers in just yields 0
+  // results, nothing leaks). Case-insensitive dedupe + trim here, once, since real
+  // address data has inconsistent casing/whitespace ("Gurugram" / "gurugram ").
+  async getDistinctDistricts() {
+    const rows = await customerRepository.getAllDistricts();
+    const byLower = new Map<string, string>();
+    for (const { district } of rows) {
+      const trimmed = district?.trim();
+      if (!trimmed) continue;
+      const key = trimmed.toLowerCase();
+      // First-seen casing wins as the display form — arbitrary but stable, and
+      // good enough for a filter dropdown (not a canonical spelling authority).
+      if (!byLower.has(key)) byLower.set(key, trimmed);
+    }
+    return [...byLower.values()].sort((a, b) => a.localeCompare(b));
+  },
+
   // Phase 19: the order-creation-time customer search (PHASE19_TODO.md §A). With
   // order:customerSearchAll, searches every non-trashed customer regardless of
   // Data Scope; without it, falls back to the caller's normal customerDataWhere

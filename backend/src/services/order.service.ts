@@ -12,7 +12,12 @@ import { orderDataWhere, hasCustomerDataAccess, hasOrderDataAccess } from '../ut
 import { computeDeletionExpiry } from '../utils/trash';
 import { recalculateCustomerState } from '../utils/customerAutomation';
 import type { Role, OrderStatus, DeliveryStatus, PaymentStatus, DataScope } from '../generated/prisma/enums';
-import type { CreateOrderInput, UpdateOrderInput, OrderListQuery } from '../schemas/order.schema';
+import type {
+  CreateOrderInput,
+  UpdateOrderInput,
+  OrderListQuery,
+  OrderExportFilters,
+} from '../schemas/order.schema';
 import type { CreatePaymentInput } from '../schemas/payment.schema';
 
 // Phase 11 §8: both orderStatus and deliveryStatus are "forward-only, no backward
@@ -268,6 +273,121 @@ function buildOrderWhere(actingUser: ActingUser, query: OrderListQuery): Prisma.
   return { AND: filters };
 }
 
+// Phase 21: Orders export — deliberately separate from buildOrderWhere above,
+// not an extension of it. Export has its own smaller filter set (no search/
+// pagination/sort) and its payment/delivery filters are shorthand
+// (all/paid/unpaid, all/delivered/undelivered) that need mapping to real enum
+// filters, unlike the list endpoint's raw enum passthrough. This is the single
+// function backing the export's count and both file formats — see
+// PHASE21_TODO.md decision #9: if the count and the actual file were ever
+// computed from logic that could drift apart, the count shown to the user
+// could silently disagree with what they download, which is worse than no
+// count at all.
+export const PAYMENT_STATUS_EXPORT_LABEL: Record<PaymentStatus, string> = {
+  PENDING: 'Unpaid',
+  PARTIAL: 'Partially Paid',
+  PAID: 'Paid',
+  REFUNDED: 'Refunded',
+};
+
+function buildOrderExportWhere(
+  actingUser: ActingUser,
+  filters: OrderExportFilters
+): Prisma.OrderWhereInput {
+  const scope = orderDataWhere(actingUser, actingUser.orderDataScope);
+  const exportFilters: Prisma.OrderWhereInput[] = [scope];
+
+  // dateTo is normalized to the END of that calendar day here — a bare "To: 8 Sep"
+  // must include every order placed on the 8th, not exclude them by comparing
+  // against 8 Sep 00:00:00 (see PHASE21_TODO.md decision #1; the existing /orders
+  // list filter has this exact bug but is deliberately left as-is here, out of
+  // scope for this change).
+  if (filters.dateFrom || filters.dateTo) {
+    const dateFilter: Prisma.DateTimeFilter = {};
+    if (filters.dateFrom) dateFilter.gte = filters.dateFrom;
+    if (filters.dateTo) {
+      const endOfDay = new Date(filters.dateTo);
+      endOfDay.setHours(23, 59, 59, 999);
+      dateFilter.lte = endOfDay;
+    }
+    exportFilters.push({ orderDate: dateFilter });
+  }
+
+  // "Unpaid" means anything not fully paid (PENDING or PARTIAL) — same convention
+  // dashboard.service.ts already uses for COD/due amounts. REFUNDED orders fall
+  // under neither Paid nor Unpaid (only visible when Payment=All) — see
+  // PHASE21_TODO.md decision #2.
+  if (filters.payment === 'paid') {
+    exportFilters.push({ paymentStatus: 'PAID' });
+  } else if (filters.payment === 'unpaid') {
+    exportFilters.push({ paymentStatus: { in: ['PENDING', 'PARTIAL'] } });
+  }
+
+  // "Undelivered" is everything except DELIVERED (returns/lost/damaged included) —
+  // see PHASE21_TODO.md decision #3.
+  if (filters.delivery === 'delivered') {
+    exportFilters.push({ deliveryStatus: 'DELIVERED' });
+  } else if (filters.delivery === 'undelivered') {
+    exportFilters.push({ deliveryStatus: { not: 'DELIVERED' } });
+  }
+
+  if (filters.district && filters.district.toLowerCase() !== 'all') {
+    exportFilters.push({
+      customer: {
+        addresses: { some: { district: { equals: filters.district, mode: 'insensitive' } } },
+      },
+    });
+  }
+
+  return { AND: exportFilters };
+}
+
+export interface OrderExportRow {
+  orderNumber: string;
+  orderDate: Date;
+  customerName: string;
+  // Raw list (not pre-joined) — Excel shows them comma-separated on one line,
+  // the PDF's compact layout shows each on its own line (up to 2), so each
+  // generator formats this its own way rather than one dictating the other.
+  phones: string[];
+  area: string;
+  pincode: string;
+  articleNumber: string;
+  items: { name: string; quantity: number }[];
+  itemsSummary: string;
+  total: number;
+  paymentStatus: PaymentStatus;
+  paymentLabel: string;
+  isPaid: boolean;
+  deliveryStatus: DeliveryStatus;
+  deliveryLabel: string;
+}
+
+async function getExportRows(
+  actingUser: ActingUser,
+  filters: OrderExportFilters
+): Promise<OrderExportRow[]> {
+  const where = buildOrderExportWhere(actingUser, filters);
+  const orders = await orderRepository.findAllForExport(where);
+  return orders.map((order) => ({
+    orderNumber: order.orderNumber,
+    orderDate: order.orderDate,
+    customerName: order.customer.name,
+    phones: order.customer.phones.map((p) => p.phone),
+    area: order.customer.addresses[0]?.district?.trim() || '—',
+    pincode: order.customer.addresses[0]?.pincode?.trim() || '—',
+    articleNumber: order.articleNumber ?? '—',
+    items: order.items.map((i) => ({ name: i.productName, quantity: i.quantity })),
+    itemsSummary: order.items.map((i) => `${i.productName} × ${i.quantity}`).join(', '),
+    total: order.total,
+    paymentStatus: order.paymentStatus,
+    paymentLabel: PAYMENT_STATUS_EXPORT_LABEL[order.paymentStatus],
+    isPaid: order.paymentStatus === 'PAID',
+    deliveryStatus: order.deliveryStatus,
+    deliveryLabel: order.deliveryStatus.replace(/_/g, ' '),
+  }));
+}
+
 interface ResolvedItem {
   productId: number;
   productName: string;
@@ -331,6 +451,16 @@ export const orderService = {
       take: query.pageSize,
       orderBy: { [query.sortBy]: query.sortDir },
     });
+  },
+
+  // Phase 21: Orders export. exportCount and exportRows both go through
+  // buildOrderExportWhere — see that function's comment for why this matters.
+  exportCount(actingUser: ActingUser, filters: OrderExportFilters) {
+    return orderRepository.countForExport(buildOrderExportWhere(actingUser, filters));
+  },
+
+  exportRows(actingUser: ActingUser, filters: OrderExportFilters) {
+    return getExportRows(actingUser, filters);
   },
 
   async getById(id: number) {

@@ -63,6 +63,37 @@ export const orderRepository = {
     return { data, total };
   },
 
+  // Phase 21: Orders export (Excel/PDF). No pagination — the whole filtered set is
+  // needed to build one file — and a deliberately lean select (not findMany's
+  // include-everything shape), since this can realistically return far more rows
+  // than any paginated list view ever does.
+  countForExport(where: Prisma.OrderWhereInput) {
+    return prisma.order.count({ where: { ...where, deletedAt: null } });
+  },
+
+  findAllForExport(where: Prisma.OrderWhereInput) {
+    return prisma.order.findMany({
+      where: { ...where, deletedAt: null },
+      select: {
+        orderNumber: true,
+        orderDate: true,
+        articleNumber: true,
+        total: true,
+        paymentStatus: true,
+        deliveryStatus: true,
+        customer: {
+          select: {
+            name: true,
+            phones: { orderBy: { isPrimary: 'desc' } },
+            addresses: { select: { district: true, pincode: true }, take: 1 },
+          },
+        },
+        items: { select: { productName: true, quantity: true } },
+      },
+      orderBy: { orderDate: 'desc' },
+    });
+  },
+
   findById(id: number) {
     return prisma.order.findFirst({
       where: { id, deletedAt: null },

@@ -23,6 +23,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import ErrorState from '@/components/ErrorState';
 import EmptyState from '@/components/EmptyState';
 import PageHeader from '@/components/PageHeader';
+import DownloadOrdersDialog from '@/components/DownloadOrdersDialog';
 import { apiFetch } from '@/lib/api';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
 
@@ -168,9 +169,12 @@ export default function Orders() {
       <PageHeader
         title="Orders"
         action={
-          <Button asChild>
-            <Link to="/orders/new">+ Create Order</Link>
-          </Button>
+          <div className="flex gap-2">
+            <DownloadOrdersDialog />
+            <Button asChild>
+              <Link to="/orders/new">+ Create Order</Link>
+            </Button>
+          </div>
         }
       />
 
