@@ -199,16 +199,26 @@ export default function CustomerDetail() {
             {customer.status === 'ACTIVE' ? 'Active Customer' : 'Inactive Customer'}
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           {canCreateOrder && (
-            <Button onClick={() => navigate(`/orders/new?customerId=${customer.id}`)}>
+            <Button
+              className="h-8 px-2.5 text-xs md:h-10 md:px-4 md:text-sm"
+              onClick={() => navigate(`/orders/new?customerId=${customer.id}`)}
+            >
               + Create Order
             </Button>
           )}
           <EditCustomerDialog customer={customer} />
           {hasPermission(currentUser, 'customer:delete') && (
             <ConfirmDialog
-              trigger={<Button variant="destructive">Delete</Button>}
+              trigger={
+                <Button
+                  variant="destructive"
+                  className="h-8 px-2.5 text-xs md:h-10 md:px-4 md:text-sm"
+                >
+                  Delete
+                </Button>
+              }
               title="Delete Customer?"
               description="This customer will be moved to Trash. You can restore it within 10 days."
               confirmLabel="Move to Trash"
@@ -654,7 +664,9 @@ function EditCustomerDialog({ customer }: { customer: CustomerDetailData }) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline">Edit</Button>
+        <Button variant="outline" className="h-8 px-2.5 text-xs md:h-10 md:px-4 md:text-sm">
+          Edit
+        </Button>
       </DialogTrigger>
       <DialogContent className="max-h-[85vh] overflow-y-auto">
         <DialogHeader>

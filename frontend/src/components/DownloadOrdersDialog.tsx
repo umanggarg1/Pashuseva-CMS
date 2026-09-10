@@ -208,7 +208,9 @@ export default function DownloadOrdersDialog() {
       }}
     >
       <DialogTrigger asChild>
-        <Button variant="outline">Download Orders</Button>
+        <Button variant="outline" className="h-8 px-2.5 text-xs md:h-10 md:px-4 md:text-sm">
+          Download Orders
+        </Button>
       </DialogTrigger>
       <DialogContent className="max-w-lg">
         <DialogHeader>

@@ -172,9 +172,9 @@ export default function Orders() {
       <PageHeader
         title="Orders"
         action={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             {canExportOrders && <DownloadOrdersDialog />}
-            <Button asChild>
+            <Button asChild className="h-8 px-2.5 text-xs md:h-10 md:px-4 md:text-sm">
               <Link to="/orders/new">+ Create Order</Link>
             </Button>
           </div>
