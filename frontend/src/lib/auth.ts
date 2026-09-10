@@ -19,10 +19,13 @@ export interface CurrentUser {
 export const CURRENT_USER_KEY = ['auth', 'me'];
 
 export function useCurrentUser() {
+  // No retry:false override here anymore -- this now inherits queryClient.ts's
+  // default retry (one retry, skipped only for a confirmed 401), so a single
+  // transient failure (e.g. the backend/DB waking from an idle cold-start)
+  // doesn't instantly and permanently read as "logged out".
   return useQuery({
     queryKey: CURRENT_USER_KEY,
     queryFn: () => apiFetch<CurrentUser>('/auth/me'),
-    retry: false,
   });
 }
 
