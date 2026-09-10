@@ -169,8 +169,12 @@ export default function Products() {
       <PageHeader
         title="Products"
         action={
-          <div className="flex gap-2">
-            <Button variant="outline" asChild>
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              variant="outline"
+              asChild
+              className="h-8 px-2.5 text-xs md:h-10 md:px-4 md:text-sm"
+            >
               <Link to="/categories">Manage Categories</Link>
             </Button>
             <AddProductDialog categories={categoriesQuery.data ?? []} defaultOpen={openAddOnLoad} />
@@ -458,7 +462,7 @@ function AddProductDialog({
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button>+ Add Product</Button>
+        <Button className="h-8 px-2.5 text-xs md:h-10 md:px-4 md:text-sm">+ Add Product</Button>
       </DialogTrigger>
       <DialogContent className="max-h-[85vh] overflow-y-auto">
         <DialogHeader>
