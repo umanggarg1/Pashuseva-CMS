@@ -22,6 +22,13 @@ export const PERMISSIONS = [
   // Trash (Phase 3 addendum) — Order never had a deactivate-equivalent permission
   // to reuse the way Customer/Product did, so this is genuinely new.
   'order:delete',
+  // Phase 21 addendum: bulk "Download Orders" export (Excel/PDF). Originally
+  // shipped gated on order:view (decision #8 — "same rows the list already shows,
+  // just in a file"), but a bulk file of every order's customer/phone/amount is a
+  // meaningfully bigger data-egress surface than paging the list, so it's its own
+  // grant now. Data Scope still applies on top — an export never returns rows the
+  // caller couldn't see in the list. Not in DEFAULT_EMPLOYEE_PERMISSIONS.
+  'order:export',
   'product:view',
   // Phase 15: product create/update and reports viewing used to be Admin/Manager
   // role-gated only (no permission existed for them). Now that Manager access is

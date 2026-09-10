@@ -27,13 +27,13 @@ router.get(
 );
 
 // Phase 21: Orders export — same reason as /number/:orderNumber above, these must
-// come before GET /:id. Gated on order:view (same as the list endpoint) — this
-// exports/counts exactly the rows a user could already see, in bulk, via a file;
-// no separate permission, and orderService.exportCount/exportRows apply the same
-// Data Scope as the normal list.
-router.get('/export/count', authorize('order:view'), asyncHandler(orderController.exportCount));
-router.get('/export/excel', authorize('order:view'), asyncHandler(orderController.exportExcel));
-router.get('/export/pdf', authorize('order:view'), asyncHandler(orderController.exportPdf));
+// come before GET /:id. Gated on order:export (Phase 21 addendum — was order:view
+// originally; a bulk Excel/PDF of every order is its own data-egress grant now).
+// orderService.exportCount/exportRows still apply the same Data Scope as the normal
+// list on top, so an export never returns rows the caller couldn't already see.
+router.get('/export/count', authorize('order:export'), asyncHandler(orderController.exportCount));
+router.get('/export/excel', authorize('order:export'), asyncHandler(orderController.exportExcel));
+router.get('/export/pdf', authorize('order:export'), asyncHandler(orderController.exportPdf));
 
 router.get(
   '/:id',

@@ -32,6 +32,9 @@ export const PERMISSION_MODULES: PermissionModule[] = [
       { value: 'order:update', label: 'Edit' },
       { value: 'order:cancel', label: 'Cancel' },
       { value: 'order:delete', label: 'Delete' },
+      // Phase 21 addendum: the bulk "Download Orders" Excel/PDF export — its own
+      // grant now, was bundled into View originally.
+      { value: 'order:export', label: 'Download / Export' },
       // Phase 19: search every active customer (not just Data Scope) when creating
       // an order — independent of the Customers module's own View/Data Scope.
       { value: 'order:customerSearchAll', label: 'Search All Customers (Order Creation)' },

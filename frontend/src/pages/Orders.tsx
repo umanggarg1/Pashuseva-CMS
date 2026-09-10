@@ -25,6 +25,7 @@ import EmptyState from '@/components/EmptyState';
 import PageHeader from '@/components/PageHeader';
 import DownloadOrdersDialog from '@/components/DownloadOrdersDialog';
 import { apiFetch } from '@/lib/api';
+import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
 
 interface OrderListItem {
@@ -111,6 +112,8 @@ export default function Orders() {
   // A dashboard link like /orders?deliveryStatus=IN_TRANSIT should land pre-filtered —
   // read the initial filter values from the URL once, on mount (Phase 9 §4-5).
   const [searchParams] = useSearchParams();
+  const { data: currentUser } = useCurrentUser();
+  const canExportOrders = hasPermission(currentUser, 'order:export');
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search);
   const [orderStatus, setOrderStatus] = useState(searchParams.get('orderStatus') ?? 'all');
@@ -170,7 +173,7 @@ export default function Orders() {
         title="Orders"
         action={
           <div className="flex gap-2">
-            <DownloadOrdersDialog />
+            {canExportOrders && <DownloadOrdersDialog />}
             <Button asChild>
               <Link to="/orders/new">+ Create Order</Link>
             </Button>
