@@ -1,5 +1,6 @@
 import prisma, { PrismaClientOrTx } from '../lib/prisma';
 import { Prisma } from '../generated/prisma/client';
+import { activeOrderWhere } from '../utils/activeOrder';
 import type {
   OrderStatus,
   PaymentStatus,
@@ -212,6 +213,24 @@ export const orderRepository = {
       where: { customerId, deletedAt: null },
       select: { orderStatus: true, deliveryStatus: true, createdById: true },
     });
+  },
+
+  // Phase 18 follow-up: does this Employee have at least one still-active, non-trashed order
+  // they're an assigned employee on, for this customer? Backs the order->customer
+  // visibility bridge (utils/dataScope.ts) at the single-record access checks that
+  // can't express it as a scope where-clause — checkCustomerAccess and
+  // order.service.ts's assertCustomerAccessible. "Active" is activeOrderWhere, the
+  // query-shaped twin of isOrderActive.
+  async employeeHasActiveAssignedOrderForCustomer(employeeId: number, customerId: number) {
+    const count = await prisma.order.count({
+      where: {
+        customerId,
+        deletedAt: null,
+        assignedEmployees: { some: { employeeId } },
+        ...activeOrderWhere,
+      },
+    });
+    return count > 0;
   },
 
   async nextOrderNumber(client: PrismaClientOrTx = prisma) {

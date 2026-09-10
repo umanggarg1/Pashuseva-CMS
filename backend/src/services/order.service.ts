@@ -185,9 +185,19 @@ async function assertCustomerAccessible(customerId: number, actingUser: ActingUs
   const customer = await customerRepository.findAssignmentById(customerId);
   if (!customer) throw new NotFoundError('Customer not found');
 
-  if (!hasCustomerDataAccess(actingUser, actingUser.customerDataScope, customer)) {
-    throw new HttpError(403, 'You do not have access to this customer');
+  if (hasCustomerDataAccess(actingUser, actingUser.customerDataScope, customer)) return;
+
+  // Phase 18 follow-up: same order->customer visibility bridge as checkCustomerAccess — an
+  // Employee with a still-active order assigned to them for this customer can place
+  // another order for them, even without a direct customer assignment.
+  if (
+    actingUser.role === 'EMPLOYEE' &&
+    (await orderRepository.employeeHasActiveAssignedOrderForCustomer(actingUser.id, customerId))
+  ) {
+    return;
   }
+
+  throw new HttpError(403, 'You do not have access to this customer');
 }
 
 // Same rule as checkOrderAccess middleware (derived from the order's customer's live

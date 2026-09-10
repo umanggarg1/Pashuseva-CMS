@@ -1,27 +1,11 @@
 import { orderRepository } from '../repositories/order.repository';
 import { customerRepository } from '../repositories/customer.repository';
 import type { PrismaClientOrTx } from '../lib/prisma';
-import type { OrderStatus, DeliveryStatus } from '../generated/prisma/enums';
-
-// Phase 19: the one definition of "is this order still active" that both Customer
-// status and automatic Customer-Employee assignment removal share, so they can never
-// disagree with each other. See PHASE19_TODO.md's design note 1 for the reasoning —
-// in particular, an order cancelled *before* dispatch (orderService.cancel's
-// immediate-restore path) never enters the return flow at all, so deliveryStatus
-// stays NOT_DISPATCHED forever; that case has to be checked explicitly, not just
-// "is deliveryStatus terminal."
-const DELIVERY_TERMINAL_STATUSES: readonly DeliveryStatus[] = [
-  'DELIVERED',
-  'RETURNED',
-  'LOST',
-  'DAMAGED',
-];
-
-export function isOrderActive(order: { orderStatus: OrderStatus; deliveryStatus: DeliveryStatus }): boolean {
-  if (DELIVERY_TERMINAL_STATUSES.includes(order.deliveryStatus)) return false;
-  if (order.orderStatus === 'CANCELLED' && order.deliveryStatus === 'NOT_DISPATCHED') return false;
-  return true;
-}
+// Phase 19's "is this order still active" definition moved to utils/activeOrder.ts
+// (a leaf module) in the Phase 18 order->customer visibility follow-up, so
+// utils/dataScope.ts and the order repository can share it without an import
+// cycle. isOrderActive's behaviour is unchanged.
+import { isOrderActive } from './activeOrder';
 
 // Recomputes Customer.status from scratch from its current order set, and removes
 // any Employee's CustomerAssignedEmployee row once none of the orders *they created*

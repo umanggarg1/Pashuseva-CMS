@@ -1,5 +1,6 @@
 import { Prisma } from '../generated/prisma/client';
 import type { Role, DataScope } from '../generated/prisma/enums';
+import { activeOrderWhere } from './activeOrder';
 
 // Phase 15 addendum: the single source of truth for "which customers/orders can
 // this user see" — used for both list-query scoping (buildCustomerWhere/
@@ -24,6 +25,13 @@ type ScopedUser = { id: number; role: Role | null };
 // Phase 19: a customer (and therefore an order, via its customer) can have several
 // assigned Employees now, not just one — the Manager fallback fires if *any* of
 // them reports to the acting Manager.
+//
+// Phase 18 follow-up (see PHASE18_TODO.md, the "reverse gap" note under section 2):
+// an Employee also sees a customer they have a still-active *order* assigned to
+// them for (customerDataWhere's Employee branch, and the async fallback in
+// checkCustomerAccess / order.service.ts's assertCustomerAccessible for the
+// single-record checks that can't be expressed as a where-clause). The Order side
+// is unchanged — this only closes the reverse gap on Customers.
 type ManagedEmployee = { managedBy: { managerId: number }[] };
 type AssignedEmployeeRow = { employee?: ManagedEmployee | null };
 
@@ -49,7 +57,29 @@ export function customerDataWhere(
       ],
     };
   }
-  return { assignedEmployees: { some: { employeeId: actingUser.id } } };
+  // Employee: their own assigned customers, PLUS any customer they have a still-
+  // active order assigned to them for (Phase 18 follow-up). This bridges the gap
+  // left by Phase 18 §2 — an Employee handed an order for a customer outside their scope
+  // could open the order but not pull up the customer. Visibility here is derived,
+  // not materialised (no CustomerAssignedEmployee row is written), and it expires
+  // on its own once the order is delivered/returned because `activeOrderWhere`
+  // stops matching. Deliberately keyed off the *order's* assigned employees only,
+  // never off orderDataScope — a broad "sees all orders" grant must not silently
+  // widen customer access the admin scoped to ASSIGNED.
+  return {
+    OR: [
+      { assignedEmployees: { some: { employeeId: actingUser.id } } },
+      {
+        orders: {
+          some: {
+            deletedAt: null,
+            assignedEmployees: { some: { employeeId: actingUser.id } },
+            ...activeOrderWhere,
+          },
+        },
+      },
+    ],
+  };
 }
 
 export function orderDataWhere(

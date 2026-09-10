@@ -13,7 +13,17 @@ export async function checkCustomerAccess(req: Request, _res: Response, next: Ne
     if (!customer) throw new NotFoundError('Customer not found');
 
     if (!hasCustomerDataAccess(req.user, req.user.customerDataScope, customer)) {
-      throw new HttpError(403, 'You do not have access to this customer');
+      // Phase 18 follow-up: an Employee can also reach a customer they have a still-active
+      // order assigned to them for, even without a direct customer assignment —
+      // the reverse of the Phase 18 order-visibility bridge. Only worth the extra
+      // query on the path where the direct assignment check has already failed;
+      // Admin / Manager / customerDataScope=ALL pass above and never reach here.
+      const viaActiveOrder =
+        req.user.role === 'EMPLOYEE' &&
+        (await orderRepository.employeeHasActiveAssignedOrderForCustomer(req.user.id, id));
+      if (!viaActiveOrder) {
+        throw new HttpError(403, 'You do not have access to this customer');
+      }
     }
     next();
   } catch (err) {

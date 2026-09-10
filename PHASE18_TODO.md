@@ -97,6 +97,77 @@ spread object, so scope's `OR` and search's `OR` can never collide. Confirmed li
 uninvolved Employee's search for the test order now correctly returns empty (was
 returning the order before the fix).
 
+### Follow-up (Phase 18 addendum, added later): the reverse gap — an assigned order's customer
+
+**Status: Done + verified (backend-only, no migration, no frontend change).**
+
+§2 above made an *order* visible to an Employee on its `OrderAssignedEmployee` row
+even when they don't own the customer. The mirror image was never added:
+`customerDataWhere`'s Employee branch still only matched directly-assigned
+customers, so that same Employee could open the order but the customer behind it
+did not appear on the Customers page, was not found by Ctrl+K, and 403'd on
+`GET /customers/:id`. (Originally drafted as a standalone "Phase 22" plan, folded
+in here since it is purely the completion of §2's shared-visibility story.)
+
+**Rule adopted** (user-confirmed): an Employee sees a customer if they are directly
+assigned to it **OR** they have a still-**active** order assigned to them for it —
+visibility that expires on its own once the order finishes, so the Customers list
+does not accumulate every customer an Employee ever touched an order for.
+
+- "Active" reuses Phase 19's `isOrderActive` definition exactly: not
+  `DELIVERED`/`RETURNED`/`LOST`/`DAMAGED`, and not `CANCELLED` + `NOT_DISPATCHED`
+  (cancelled *before* dispatch). Cancelled *after* dispatch stays active until the
+  goods physically return (`RETURNED`/`LOST`/`DAMAGED`), so the handler can track
+  the return.
+- **Not** keyed off `orderDataScope` — `orderDataScope = 'ALL'` (sees every order)
+  must not silently widen customer access an admin deliberately scoped to
+  `ASSIGNED`. Only orders the Employee is *assigned* to bridge.
+- **No** `CustomerAssignedEmployee` row is written — the "who owns the customer"
+  and "who works this order" assignments stay separate; the visibility is derived
+  at query time.
+- Manager / Admin / `customerDataScope = 'ALL'` unchanged (those
+  `customerDataWhere` branches were not touched). Orders side (`orderDataWhere`,
+  `buildOrderWhere`, the Orders page) unchanged. `recalculateCustomerState`
+  unchanged.
+
+**Implementation:**
+- New leaf module `utils/activeOrder.ts` holds `DELIVERY_TERMINAL_STATUSES`,
+  `isOrderActive` (moved here from `customerAutomation.ts`, behaviour identical),
+  and `activeOrderWhere` — the Prisma-`where` twin of `isOrderActive`. Leaf module
+  with no local imports, so `customerAutomation.ts`, `dataScope.ts` and
+  `order.repository.ts` can all share it without an import cycle.
+- `dataScope.ts`: `customerDataWhere` Employee branch becomes an `OR` of
+  (assigned-to-customer) and (has a non-trashed order assigned to me matching
+  `activeOrderWhere`). Flows automatically to the Customers list, Ctrl+K search
+  (reuses `customerService.list`), dashboard customer counts, and the
+  order-creation customer search.
+- `order.repository.ts`: `employeeHasActiveAssignedOrderForCustomer(employeeId,
+  customerId)` — a scoped `COUNT`, for the single-record checks that cannot be
+  expressed as a scope where-clause.
+- `middleware/checkAccess.ts` (`checkCustomerAccess`) and `order.service.ts`
+  (`assertCustomerAccessible`): an Employee-only fallback to that repo method, run
+  only when the existing sync `hasCustomerDataAccess` check has already failed —
+  Admin / Manager / `ALL` scope never reach the extra query.
+
+**Verified** — no disposable data created or mutated (per instruction); read-only
+against the real dev DB plus a standalone check:
+- `utils/activeOrder.verify.ts` — `activeOrderWhere` vs `isOrderActive` over all
+  60 `OrderStatus × DeliveryStatus` combinations: all agree. Import-safe,
+  `npx ts-node src/utils/activeOrder.verify.ts`, exits non-zero on drift.
+- Jitender Rajput (#37): directly-assigned customers 2 → 42 visible (**+40** via
+  the bridge); every one of the 40 has `customer.assignedEmployees = []` and a
+  genuinely active bridging order, and `employeeHasActiveAssignedOrderForCustomer`
+  agrees with the scoped list on all 40.
+- Cancelled-after-dispatch (`CANCELLED` / `RETURN_IN_TRANSIT`) — still counted
+  active, customer still visible. Matches the locked rule.
+- 7 customers whose only Jitender-assigned order is already `DELIVERED` /
+  `RETURNED`, with no direct assignment → not visible, fallback returns `false`
+  (the expiry direction, shown with real already-terminal data instead of
+  mutating a live order).
+- Test user (#46): +0 via the bridge — no spurious visibility.
+- `tsc --noEmit` clean (backend). Frontend untouched — the Customers page, search
+  and Customer Detail render whatever the scoped API returns.
+
 ## 3. One employee can work under multiple managers
 
 **Status: Done.**
