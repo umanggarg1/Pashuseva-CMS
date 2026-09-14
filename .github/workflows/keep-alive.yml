@@ -1,0 +1,31 @@
+name: Keep backend + database warm
+
+# Render's free web-service tier spins down after ~15 minutes with no traffic,
+# and Neon (Postgres) autosuspends its compute similarly -- the first request
+# after either has been idle can take many seconds to wake back up. This pings
+# a DB-touching endpoint often enough that neither ever gets the chance to go
+# to sleep. See PHASE20_TODO.md's cold-start note -- the one factor that
+# earlier performance work flagged as known but explicitly left unfixed.
+#
+# 10 minutes, not 15: GitHub's own docs warn scheduled workflows can be
+# delayed (more so under high platform load), so this leaves margin under
+# Render's spin-down window rather than cutting it exactly at the threshold.
+#
+# Caveat worth knowing: GitHub auto-disables scheduled workflows after 60 days
+# with no commits to the repo. Not a concern for an actively developed repo,
+# but if this job silently stops running after a long quiet period, that's why
+# -- a commit (or manually re-running this workflow once) re-enables it.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /api/health/warm
+        run: |
+          URL="${{ vars.RENDER_HEALTH_URL || 'https://pashuseva-cms-1.onrender.com/api/health/warm' }}"
+          echo "Pinging $URL"
+          curl -sf --max-time 60 "$URL"
