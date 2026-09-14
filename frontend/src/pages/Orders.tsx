@@ -303,6 +303,7 @@ export default function Orders() {
                 <TableHead>Amount</TableHead>
                 <TableHead>Payment</TableHead>
                 <TableHead>Article Number</TableHead>
+                <TableHead>Order Status</TableHead>
                 <TableHead>Delivery</TableHead>
               </TableRow>
             </TableHeader>
@@ -337,6 +338,12 @@ export default function Orders() {
                   </TableCell>
                   <TableCell>
                     <StatusBadge
+                      value={order.orderStatus}
+                      tone={orderStatusTone(order.orderStatus)}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge
                       value={order.deliveryStatus}
                       tone={deliveryStatusTone(order.deliveryStatus)}
                     />
@@ -345,7 +352,7 @@ export default function Orders() {
               ))}
               {query.data.data.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7}>
+                  <TableCell colSpan={8}>
                     <EmptyState message="No orders found." />
                   </TableCell>
                 </TableRow>
