@@ -21,6 +21,72 @@ type ActingUser = {
   customerDataScope?: DataScope | null;
 };
 
+// Bug fix: update()'s activity log used to log "Phone numbers updated"/"Address
+// updated" whenever those fields were merely *present* in the request body, not
+// when they actually differed from what's already stored — EditCustomerDialog
+// always submits the full form (phones/address pre-filled from the existing
+// customer), so saving with zero real edits still logged both as changed every
+// time. These do a real value comparison instead, the same way name/email
+// already do just above.
+type PhoneValue = { phone: string; label?: string | null; isPrimary: boolean };
+type AddressValue = {
+  line1: string;
+  line2?: string | null;
+  city: string;
+  district?: string | null;
+  state: string;
+  pincode: string;
+  landmark?: string | null;
+  country?: string | null;
+};
+
+function normalizePhone(p: PhoneValue) {
+  return { phone: p.phone, label: p.label || null, isPrimary: p.isPrimary };
+}
+
+function phonesEqual(a: PhoneValue[], b: PhoneValue[]): boolean {
+  if (a.length !== b.length) return false;
+  const sort = (list: PhoneValue[]) =>
+    list.map(normalizePhone).sort((x, y) => x.phone.localeCompare(y.phone));
+  return JSON.stringify(sort(a)) === JSON.stringify(sort(b));
+}
+
+function normalizeAddress(a: AddressValue) {
+  return {
+    line1: a.line1,
+    line2: a.line2 || null,
+    city: a.city,
+    district: a.district || null,
+    state: a.state,
+    pincode: a.pincode,
+    landmark: a.landmark || null,
+    country: a.country || 'India',
+  };
+}
+
+function addressEqual(a: AddressValue, b: AddressValue): boolean {
+  return JSON.stringify(normalizeAddress(a)) === JSON.stringify(normalizeAddress(b));
+}
+
+// Human-readable summaries for the Activity panel's "(from -> to)" — phones/
+// address are arrays/objects, not scalars, so there's no single old/new string
+// the way name/email have one already; these condense each into one line.
+function formatPhonesForActivity(phones: PhoneValue[]): string {
+  return phones
+    .slice()
+    .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary))
+    .map((p) => `${p.phone}${p.isPrimary ? ' (primary)' : ''}`)
+    .join(', ');
+}
+
+function formatAddressForActivity(a: AddressValue): string {
+  // Every field addressEqual compares must appear here too, or a real change
+  // (e.g. landmark-only) can render as an identical-looking "from -> to".
+  return [a.line1, a.line2, a.city, a.district, a.state, a.pincode, a.landmark, a.country]
+    .filter(Boolean)
+    .join(', ');
+}
+
 // Phase 18: a Manager may assign a customer to any Employee who reports to them —
 // "reports to" now means EmployeeManager membership, not a single managerId
 // equality, since an Employee can report to several Managers at once.
@@ -251,15 +317,45 @@ export const customerService = {
     const existing = await customerRepository.findById(id);
     if (!existing) throw new NotFoundError('Customer not found');
 
-    const changes: string[] = [];
-    if (input.name && input.name !== existing.name) changes.push('Name updated');
-    if (input.email !== undefined && input.email !== existing.email) changes.push('Email updated');
-    if (input.phones) changes.push('Phone numbers updated');
-    if (input.address) changes.push('Address updated');
+    // Each entry carries the human-readable from/to shown in the Activity panel —
+    // see formatPhonesForActivity/formatAddressForActivity above.
+    const changes: { activity: string; from: string; to: string }[] = [];
+    if (input.name && input.name !== existing.name) {
+      changes.push({ activity: 'Name updated', from: existing.name, to: input.name });
+    }
+    if (input.email !== undefined && input.email !== existing.email) {
+      changes.push({
+        activity: 'Email updated',
+        from: existing.email ?? '(none)',
+        to: input.email ?? '(none)',
+      });
+    }
+    if (input.phones && !phonesEqual(input.phones, existing.phones)) {
+      changes.push({
+        activity: 'Phone numbers updated',
+        from: formatPhonesForActivity(existing.phones),
+        to: formatPhonesForActivity(input.phones),
+      });
+    }
+    if (input.address) {
+      const existingAddress = existing.addresses[0];
+      if (!existingAddress || !addressEqual(input.address, existingAddress)) {
+        changes.push({
+          activity: 'Address updated',
+          from: existingAddress ? formatAddressForActivity(existingAddress) : '(none)',
+          to: formatAddressForActivity(input.address),
+        });
+      }
+    }
 
-    const customer = await customerRepository.update(id, input);
+    // Pass the phones/addresses already fetched above straight through, rather
+    // than having the repository re-query for the same rows inside its own
+    // transaction — cuts two redundant DB round trips off every save.
+    const customer = await customerRepository.update(id, input, existing.phones, existing.addresses);
     await Promise.all(
-      changes.map((activity) => customerRepository.recordActivity(id, activity, actingUser.id))
+      changes.map((c) =>
+        customerRepository.recordActivity(id, c.activity, actingUser.id, { from: c.from, to: c.to })
+      )
     );
     return customer;
   },

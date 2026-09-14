@@ -548,6 +548,7 @@ export const orderService = {
           createdCustomer.id,
           'Customer created',
           actingUser.id,
+          undefined,
           tx
         );
         customerId = createdCustomer.id;

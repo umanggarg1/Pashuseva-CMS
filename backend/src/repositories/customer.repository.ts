@@ -19,6 +19,118 @@ interface AddressInput {
   country?: string;
 }
 
+interface ExistingPhoneRow {
+  id: number;
+  phone: string;
+  label: string | null;
+  isPrimary: boolean;
+}
+
+interface ExistingAddressRow {
+  id: number;
+  line1: string;
+  line2: string | null;
+  city: string;
+  district: string | null;
+  state: string;
+  pincode: string;
+  landmark: string | null;
+  country: string;
+}
+
+// update() used to delete-all-then-recreate every phone/address row on every
+// save, even when nothing about them changed — the same "full replacement set,
+// not a diff" convention order.repository.ts uses for OrderAddress/
+// OrderAssignedEmployee. That's fine when the set is genuinely different, but on
+// a no-op save (or one that only touched name/email) it burned new row ids and
+// bumped CustomerAddress.updatedAt for no real edit. These reconcile against
+// what's already stored instead: matched rows are updated in place (or left
+// untouched if identical), only genuinely new/removed entries insert/delete.
+//
+// Take the existing rows as a parameter rather than re-querying for them —
+// customerService.update() already fetched the customer (including phones/
+// addresses) to compute the activity-log diff, and re-fetching the same rows
+// here was two extra DB round trips per save for no reason. Measured live
+// against the real (remote, Neon) dev DB: that redundancy alone was costing
+// roughly half the total save time on a no-op save (see PHASE_ addendum notes
+// for the numbers) — removed by threading the already-loaded rows through
+// instead of asking the database for them twice.
+async function syncPhones(
+  tx: PrismaClientOrTx,
+  customerId: number,
+  phones: PhoneInput[],
+  existing: ExistingPhoneRow[]
+) {
+  // Matched by phone number — the only value stable enough to key on, since the
+  // client never sends row ids. Two rows sharing one number isn't prevented by
+  // the schema but isn't a realistic case either.
+  const existingByPhone = new Map(existing.map((p) => [p.phone, p]));
+  const incomingNumbers = new Set(phones.map((p) => p.phone));
+
+  for (const incoming of phones) {
+    const match = existingByPhone.get(incoming.phone);
+    const label = incoming.label ?? null;
+    if (!match) {
+      await tx.customerPhone.create({ data: { ...incoming, label, customerId } });
+    } else if (match.label !== label || match.isPrimary !== incoming.isPrimary) {
+      await tx.customerPhone.update({
+        where: { id: match.id },
+        data: { label, isPrimary: incoming.isPrimary },
+      });
+    }
+  }
+
+  const removedIds = existing.filter((p) => !incomingNumbers.has(p.phone)).map((p) => p.id);
+  if (removedIds.length > 0) {
+    await tx.customerPhone.deleteMany({ where: { id: { in: removedIds } } });
+  }
+}
+
+// Same reconciliation for the (practically 1:1) address — update the existing row
+// in place, only if it actually changed; create one only if none exists yet. Also
+// cleans up any extra rows beyond the first, preserving the "at most one address
+// per customer" invariant the old delete-all+create always incidentally kept.
+// Takes the existing rows as a parameter — same reasoning as syncPhones above.
+async function syncAddress(
+  tx: PrismaClientOrTx,
+  customerId: number,
+  address: AddressInput,
+  existingRows: ExistingAddressRow[]
+) {
+  const [existing, ...extras] = existingRows;
+  const normalized = {
+    line1: address.line1,
+    line2: address.line2 ?? null,
+    city: address.city,
+    district: address.district ?? null,
+    state: address.state,
+    pincode: address.pincode,
+    landmark: address.landmark ?? null,
+    country: address.country ?? 'India',
+  };
+
+  if (!existing) {
+    await tx.customerAddress.create({ data: { ...normalized, customerId } });
+  } else {
+    const changed =
+      existing.line1 !== normalized.line1 ||
+      existing.line2 !== normalized.line2 ||
+      existing.city !== normalized.city ||
+      existing.district !== normalized.district ||
+      existing.state !== normalized.state ||
+      existing.pincode !== normalized.pincode ||
+      existing.landmark !== normalized.landmark ||
+      existing.country !== normalized.country;
+    if (changed) {
+      await tx.customerAddress.update({ where: { id: existing.id }, data: normalized });
+    }
+  }
+
+  if (extras.length > 0) {
+    await tx.customerAddress.deleteMany({ where: { id: { in: extras.map((e) => e.id) } } });
+  }
+}
+
 export const customerRepository = {
   // Every one of these excludes trashed customers by default — Trash (Phase 3
   // addendum) has its own dedicated findTrashed/restore/permanentDelete below, so
@@ -148,6 +260,12 @@ export const customerRepository = {
     });
   },
 
+  // existingPhones/existingAddresses: the caller (customerService.update) already
+  // fetched the customer — including phones/addresses — to compute its own
+  // activity-log diff, so it's passed straight through here instead of this
+  // method re-querying for the same rows inside the transaction. Optional only
+  // because a couple of other, narrower callers don't have them handy and don't
+  // touch phones/address anyway (data.phones/data.address absent => unused).
   update(
     id: number,
     data: {
@@ -156,19 +274,17 @@ export const customerRepository = {
       notes?: string;
       phones?: PhoneInput[];
       address?: AddressInput;
-    }
+    },
+    existingPhones: ExistingPhoneRow[] = [],
+    existingAddresses: ExistingAddressRow[] = []
   ) {
     return prisma.$transaction(async (tx) => {
       if (data.phones) {
-        await tx.customerPhone.deleteMany({ where: { customerId: id } });
-        await tx.customerPhone.createMany({
-          data: data.phones.map((phone) => ({ ...phone, customerId: id })),
-        });
+        await syncPhones(tx, id, data.phones, existingPhones);
       }
 
       if (data.address) {
-        await tx.customerAddress.deleteMany({ where: { customerId: id } });
-        await tx.customerAddress.create({ data: { ...data.address, customerId: id } });
+        await syncAddress(tx, id, data.address, existingAddresses);
       }
 
       return tx.customer.update({
@@ -246,14 +362,19 @@ export const customerRepository = {
     return client.customerAssignedEmployee.deleteMany({ where: { customerId, employeeId } });
   },
 
+  // metadata carries a { from, to } pair for edits that changed something concrete
+  // (name/email/phones/address) so the Activity panel can show what actually
+  // changed, not just that "something" did. Optional: activity entries that
+  // aren't a value edit (assignment, trash, notes) pass nothing, same as before.
   recordActivity(
     customerId: number,
     activity: string,
     createdById: number,
+    metadata?: Prisma.InputJsonValue,
     client: PrismaClientOrTx = prisma
   ) {
     return client.customerActivity.create({
-      data: { customerId, activity, createdById },
+      data: { customerId, activity, createdById, metadata },
     });
   },
 

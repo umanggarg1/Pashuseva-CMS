@@ -90,6 +90,7 @@ interface NoteRow {
 interface ActivityRow {
   id: number;
   activity: string;
+  metadata: { from?: string; to?: string } | null;
   createdAt: string;
   createdBy: { id: number; name: string | null } | null;
 }
@@ -563,6 +564,12 @@ function ActivityPanel({
               {new Date(a.createdAt).toLocaleDateString()}
             </span>{' '}
             — {a.activity}
+            {a.metadata?.from && a.metadata?.to && (
+              <span className="text-muted-foreground">
+                {' '}
+                ({a.metadata.from} → {a.metadata.to})
+              </span>
+            )}
             {a.createdBy?.name && (
               <span className="text-muted-foreground"> by {a.createdBy.name}</span>
             )}
