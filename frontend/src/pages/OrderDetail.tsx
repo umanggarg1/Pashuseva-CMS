@@ -40,6 +40,7 @@ import EmployeeMultiSelect from '@/components/EmployeeMultiSelect';
 import { apiFetch, apiUrl, ApiError } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { packagingUnitLabel } from '@/lib/productUnits';
+import { openArticleNumberTracking } from '@/lib/articleTracking';
 
 // Full lifecycle, for the visual status strip — Out for Delivery/Delivered are
 // reached automatically via the delivery-status sync, not manually, but they're
@@ -947,7 +948,24 @@ function DeliveryCard({
         <div className="border-t pt-3">
           {!editingArticleNumber ? (
             <p className="flex items-center gap-2 text-muted-foreground">
-              Article Number (Tracking No.): {order.articleNumber ?? 'Not set'}
+              Article Number (Tracking No.):{' '}
+              {order.articleNumber ? (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => openArticleNumberTracking(order.articleNumber!)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      openArticleNumberTracking(order.articleNumber!);
+                    }
+                  }}
+                  className="cursor-pointer text-primary hover:underline"
+                >
+                  {order.articleNumber}
+                </span>
+              ) : (
+                'Not set'
+              )}
               {canEdit && (
                 <button
                   type="button"

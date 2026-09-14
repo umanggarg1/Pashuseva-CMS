@@ -113,3 +113,113 @@ unrelated field (discount) and confirm articleNumber/estimatedDeliveryCharges st
 untouched; activity log entries correct for every change. Test order cancelled
 afterward. `tsc --noEmit`/`eslint` clean on both packages (0 errors, same
 pre-existing warnings), `vite build` clean.
+
+## Addendum, 2026-09-14 — Article No. click-to-copy-and-track (India Post)
+
+**Status: IMPLEMENTED, `tsc --noEmit` clean. Not yet browser-verified or
+committed (user asked not to commit/push this session).** Frontend-only, no
+backend/DB involvement.
+
+### Request, as given
+
+On the Orders page, clicking the Article No. should:
+1. Copy the Article Number to the clipboard (browser Clipboard API — e.g. `EW123456789IN`).
+2. Open the India Post Track & Trace website in a new tab.
+3. Show a small success toast, e.g. *"Article number copied. Opening India Post..."*
+
+User flow (manual from there — no automation):
+```
+Click Article No. -> Copy Article No. -> Open India Post in new tab
+  -> Paste Article No. -> Enter CAPTCHA -> Search
+```
+
+Explicit constraints: no India Post API integration, no database changes, no
+delivery-status changes, no Orders table/layout changes, no scraping or automatic
+interaction with the India Post site, Article Number stored/displayed exactly as
+today.
+
+### Where Article No. actually appears (checked before planning)
+
+- **Orders list page** (`Orders.tsx`) — the one named in the request:
+  - Desktop table cell, currently plain text: `order.articleNumber ?? '—'`
+    ([Orders.tsx:335-337](frontend/src/pages/Orders.tsx#L335-L337)).
+  - Mobile card, currently plain text, only rendered when set:
+    `Article No: {order.articleNumber}` ([Orders.tsx:377-381](frontend/src/pages/Orders.tsx#L377-L381))
+    — **this line sits inside the card's own outer `<Link to=".../orders/:id">`**,
+    so a click handler here needs `preventDefault`/`stopPropagation` or it will
+    also navigate to Order Detail.
+  - Neither cell has any click handler today — safe to add one without conflicting
+    with existing behavior on this page.
+- **Order Detail page** (`OrderDetail.tsx`), NOT named in the request, found while
+  scoping — two more places the same text shows:
+  - The Delivery card's editable field: `Article Number (Tracking No.): {value}`
+    plus a separate small pencil icon button that opens inline-edit
+    ([OrderDetail.tsx:948-963](frontend/src/pages/OrderDetail.tsx#L948-L963)). The
+    text itself has no click handler today — only the pencil icon does — so adding
+    copy+track to the text would not conflict with editing.
+  - The printable/receipt view: `<p>Article Number (Tracking No.): {order.articleNumber}</p>`
+    ([OrderDetail.tsx:730](frontend/src/pages/OrderDetail.tsx#L730)) — this is the
+    printed document shown to/for the customer, not an interactive page element.
+    **Proposed: leave this one alone regardless of the answer below** — a printed
+    page has no "click" and no clipboard.
+
+### Questions — answered
+
+1. **URL**: user said to search for it — initially confirmed via web search as the
+   official India Post consignment-tracking page
+   (`.../dop.portal.tracking/trackconsignment.aspx`), then **revised by explicit
+   instruction to the India Post homepage**: `https://www.indiapost.gov.in/`.
+2. **Scope**: Orders list **+ Order Detail**. The printable/receipt line
+   ([OrderDetail.tsx:730](frontend/src/pages/OrderDetail.tsx#L730)) stays untouched
+   as proposed — no interactivity on a printed document.
+3. **Desktop vs mobile**: **both**.
+4. **Visual affordance**: minimal cue added — `text-primary` + `hover:underline` +
+   `cursor-pointer` on the article number text itself only, no column width/spacing
+   change.
+
+### Defaults I'll apply unless told otherwise (stated, not asked)
+
+- No article number (`'—'` shown) stays fully inert — no copy, no new tab, no
+  click handler attached at all.
+- Toast text used verbatim: *"Article number copied. Opening India Post..."*
+  (`toast.success(...)`, the `sonner` pattern already used throughout
+  `OrderDetail.tsx`).
+- Implementation order inside the click handler: call `window.open(url, '_blank')`
+  **synchronously first**, then `navigator.clipboard.writeText(...)` — calling
+  `window.open` after an `await` risks some browsers' popup blocker treating it as
+  no longer inside the original user gesture. The user-visible result (copy done,
+  tab opened, toast shown) is the same either way — this only affects internal
+  call order, not behavior described in the request.
+- If `navigator.clipboard.writeText` rejects (e.g. permissions denied) the new tab
+  still opens (tracking still needs to work), and the toast/console reflects the
+  copy failure rather than silently claiming success.
+- No India Post API call, no `fetch` to their site, no autofill of the tracking
+  number into their search box, no scraping — the new tab opens to the bare
+  tracking page only, exactly as the request's manual flow describes.
+
+### TODO checklist
+
+- [x] India Post URL confirmed via web search (question 1).
+- [x] Questions 2-4 answered by the user.
+- [x] New `frontend/src/lib/articleTracking.ts`: `INDIA_POST_TRACKING_URL` +
+      `openArticleNumberTracking(articleNumber)` — opens the tab first
+      (synchronously, within the click gesture), then copies to the clipboard;
+      toast on success, a different toast if the clipboard write rejects; tab
+      still opens either way.
+- [x] `Orders.tsx` desktop table cell: article number wrapped in a
+      `role="button"` span (click + Enter/Space) calling the shared handler when
+      set, stays plain `—` text when not.
+- [x] `Orders.tsx` mobile card: same, plus `preventDefault`/`stopPropagation`
+      since this line sits inside the card's own outer `<Link>` to Order Detail
+      — confirmed the card still navigates normally when clicking anywhere else.
+- [x] `OrderDetail.tsx` Delivery card's editable field: the read-only article
+      number text (not the separate pencil-icon edit button) gets the same
+      handler; edit flow (`setEditingArticleNumber`) untouched, still a sibling
+      element.
+- [x] Printable/receipt line ([OrderDetail.tsx:730](frontend/src/pages/OrderDetail.tsx#L730))
+      deliberately left as plain text, per question 2's answer.
+- [x] `tsc --noEmit` clean (frontend).
+- [ ] Manual browser verification (clipboard actually receives the value, new tab
+      opens to the confirmed URL, toast text matches, existing Order Detail
+      navigation/edit behavior unaffected) — not yet done.
+- [ ] Not committed — user asked not to commit/push this session.

@@ -27,6 +27,7 @@ import DownloadOrdersDialog from '@/components/DownloadOrdersDialog';
 import { apiFetch } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
+import { openArticleNumberTracking } from '@/lib/articleTracking';
 
 interface OrderListItem {
   id: number;
@@ -334,7 +335,23 @@ export default function Orders() {
                     />
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {order.articleNumber ?? '—'}
+                    {order.articleNumber ? (
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openArticleNumberTracking(order.articleNumber!)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            openArticleNumberTracking(order.articleNumber!);
+                          }
+                        }}
+                        className="cursor-pointer text-primary hover:underline"
+                      >
+                        {order.articleNumber}
+                      </span>
+                    ) : (
+                      '—'
+                    )}
                   </TableCell>
                   <TableCell>
                     <StatusBadge
@@ -383,7 +400,26 @@ export default function Orders() {
                 )}
                 {order.articleNumber && (
                   <p className="text-sm text-muted-foreground">
-                    Article No: {order.articleNumber}
+                    Article No:{' '}
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        openArticleNumberTracking(order.articleNumber!);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          openArticleNumberTracking(order.articleNumber!);
+                        }
+                      }}
+                      className="cursor-pointer text-primary hover:underline"
+                    >
+                      {order.articleNumber}
+                    </span>
                   </p>
                 )}
                 <div className="mt-2 flex flex-wrap gap-2">
