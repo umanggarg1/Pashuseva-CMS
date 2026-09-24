@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
@@ -112,21 +112,38 @@ function deliveryStatusTone(status: string) {
 export default function Orders() {
   // A dashboard link like /orders?deliveryStatus=IN_TRANSIT should land pre-filtered —
   // read the initial filter values from the URL once, on mount (Phase 9 §4-5).
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data: currentUser } = useCurrentUser();
   const canExportOrders = hasPermission(currentUser, 'order:export');
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(searchParams.get('search') ?? '');
   const debouncedSearch = useDebouncedValue(search);
   const [orderStatus, setOrderStatus] = useState(searchParams.get('orderStatus') ?? 'all');
   const [paymentStatus, setPaymentStatus] = useState(searchParams.get('paymentStatus') ?? 'all');
   const [deliveryStatus, setDeliveryStatus] = useState(searchParams.get('deliveryStatus') ?? 'all');
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
-  const [sort, setSort] = useState('orderDate:desc');
-  const [page, setPage] = useState(1);
+  const [dateFrom, setDateFrom] = useState(searchParams.get('dateFrom') ?? '');
+  const [dateTo, setDateTo] = useState(searchParams.get('dateTo') ?? '');
+  const [sort, setSort] = useState(searchParams.get('sort') ?? 'orderDate:desc');
+  const [page, setPage] = useState(Number(searchParams.get('page')) || 1);
   // Customer Detail's "View All Orders" link (Phase 11 §1) — a customerId in the URL
   // filters this list without any dedicated UI control for it.
   const customerId = searchParams.get('customerId');
+
+  // Keep page/search/filters/sort in the URL so navigating to an order and hitting
+  // Back (useSmartBack) restores this exact list state instead of resetting to page 1.
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (debouncedSearch) next.set('search', debouncedSearch);
+    if (orderStatus !== 'all') next.set('orderStatus', orderStatus);
+    if (paymentStatus !== 'all') next.set('paymentStatus', paymentStatus);
+    if (deliveryStatus !== 'all') next.set('deliveryStatus', deliveryStatus);
+    if (customerId) next.set('customerId', customerId);
+    if (dateFrom) next.set('dateFrom', dateFrom);
+    if (dateTo) next.set('dateTo', dateTo);
+    if (sort !== 'orderDate:desc') next.set('sort', sort);
+    if (page !== 1) next.set('page', String(page));
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, orderStatus, paymentStatus, deliveryStatus, customerId, dateFrom, dateTo, sort, page]);
 
   const customerQuery = useQuery({
     queryKey: ['customer-name', customerId],

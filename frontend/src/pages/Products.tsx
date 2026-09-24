@@ -119,13 +119,27 @@ export default function Products() {
   // A dashboard link like /products?stock=low should land pre-filtered, same pattern
   // as Orders (Phase 9).
   const [searchParams, setSearchParams] = useSearchParams();
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(searchParams.get('search') ?? '');
   const debouncedSearch = useDebouncedValue(search);
-  const [categoryId, setCategoryId] = useState<string>('all');
-  const [active, setActive] = useState<string>('all');
+  const [categoryId, setCategoryId] = useState<string>(searchParams.get('categoryId') ?? 'all');
+  const [active, setActive] = useState<string>(searchParams.get('active') ?? 'all');
   const [stock, setStock] = useState<string>(searchParams.get('stock') ?? 'all');
-  const [sort, setSort] = useState<string>('createdAt:desc');
-  const [page, setPage] = useState(1);
+  const [sort, setSort] = useState<string>(searchParams.get('sort') ?? 'createdAt:desc');
+  const [page, setPage] = useState(Number(searchParams.get('page')) || 1);
+
+  // Keep page/search/filters/sort in the URL so navigating to a product and hitting
+  // Back (useSmartBack) restores this exact list state instead of resetting to page 1.
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (debouncedSearch) next.set('search', debouncedSearch);
+    if (categoryId !== 'all') next.set('categoryId', categoryId);
+    if (active !== 'all') next.set('active', active);
+    if (stock !== 'all') next.set('stock', stock);
+    if (sort !== 'createdAt:desc') next.set('sort', sort);
+    if (page !== 1) next.set('page', String(page));
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearch, categoryId, active, stock, sort, page]);
 
   // Dashboard's "+ Add Product" quick action links here with ?add=1 so it opens
   // straight into the Add Product dialog instead of just landing on the list.

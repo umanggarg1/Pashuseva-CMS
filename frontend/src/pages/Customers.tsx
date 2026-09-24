@@ -98,17 +98,49 @@ export default function Customers() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(searchParams.get('search') ?? '');
   const debouncedSearch = useDebouncedValue(search);
-  const [status, setStatus] = useState<string>('all');
-  const [city, setCity] = useState('');
-  const [district, setDistrict] = useState('');
-  const [state, setState] = useState('');
-  const [assignedEmployeeId, setAssignedEmployeeId] = useState<string>('all');
-  const [createdFrom, setCreatedFrom] = useState('');
-  const [createdTo, setCreatedTo] = useState('');
-  const [sort, setSort] = useState<string>('createdAt:desc');
-  const [page, setPage] = useState(1);
+  const [status, setStatus] = useState<string>(searchParams.get('status') ?? 'all');
+  const [city, setCity] = useState(searchParams.get('city') ?? '');
+  const [district, setDistrict] = useState(searchParams.get('district') ?? '');
+  const [state, setState] = useState(searchParams.get('state') ?? '');
+  const [assignedEmployeeId, setAssignedEmployeeId] = useState<string>(
+    searchParams.get('assignedEmployeeId') ?? 'all',
+  );
+  const [createdFrom, setCreatedFrom] = useState(searchParams.get('createdFrom') ?? '');
+  const [createdTo, setCreatedTo] = useState(searchParams.get('createdTo') ?? '');
+  const [sort, setSort] = useState<string>(searchParams.get('sort') ?? 'createdAt:desc');
+  const [page, setPage] = useState(Number(searchParams.get('page')) || 1);
+
+  // Keep page/search/filters/sort in the URL so navigating to a customer and hitting
+  // Back (useSmartBack) restores this exact list state instead of resetting to page 1.
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (debouncedSearch) next.set('search', debouncedSearch);
+    if (status !== 'all') next.set('status', status);
+    if (city) next.set('city', city);
+    if (district) next.set('district', district);
+    if (state) next.set('state', state);
+    if (isAdmin && assignedEmployeeId !== 'all') next.set('assignedEmployeeId', assignedEmployeeId);
+    if (createdFrom) next.set('createdFrom', createdFrom);
+    if (createdTo) next.set('createdTo', createdTo);
+    if (sort !== 'createdAt:desc') next.set('sort', sort);
+    if (page !== 1) next.set('page', String(page));
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    debouncedSearch,
+    status,
+    city,
+    district,
+    state,
+    isAdmin,
+    assignedEmployeeId,
+    createdFrom,
+    createdTo,
+    sort,
+    page,
+  ]);
 
   const employeesQuery = useQuery({
     queryKey: ['users'],

@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Plus, Trash2, ArrowLeft } from 'lucide-react';
+import { useSmartBack } from '@/lib/useSmartBack';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -105,6 +106,7 @@ interface EmployeeOption {
 export default function CustomerDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const goBack = useSmartBack('/customers');
   const queryClient = useQueryClient();
   const { data: currentUser } = useCurrentUser();
   const canCreateOrder = hasPermission(currentUser, 'order:create');
@@ -186,12 +188,13 @@ export default function CustomerDetail() {
 
   return (
     <div className="space-y-6">
-      <Link
-        to="/customers"
+      <button
+        type="button"
+        onClick={goBack}
         className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft className="h-4 w-4" /> Back to customers
-      </Link>
+      </button>
 
       <div className="flex items-center justify-between">
         <div>

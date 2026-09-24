@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { ArrowLeft, Check, MapPin, Pencil, Printer, Search, Trash2 } from 'lucide-react';
 import type { DuplicateOrderState } from './CreateOrder';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
+import { useSmartBack } from '@/lib/useSmartBack';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -230,6 +231,7 @@ function fillPdfTab(tab: Window | null, blob: Blob) {
 export default function OrderDetail() {
   const { orderNumber } = useParams();
   const navigate = useNavigate();
+  const goBack = useSmartBack('/orders');
   const queryClient = useQueryClient();
   const { data: currentUser } = useCurrentUser();
   const canEditOrder = hasPermission(currentUser, 'order:update');
@@ -376,12 +378,13 @@ export default function OrderDetail() {
 
   return (
     <div className="space-y-6">
-      <Link
-        to="/orders"
+      <button
+        type="button"
+        onClick={goBack}
         className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft className="h-4 w-4" /> Back to orders
-      </Link>
+      </button>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>

@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ArrowLeft, Package } from 'lucide-react';
+import { useSmartBack } from '@/lib/useSmartBack';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -66,6 +67,7 @@ function stockStatus(product: ProductDetailData) {
 export default function ProductDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const goBack = useSmartBack('/products');
   const queryClient = useQueryClient();
   const { data: currentUser } = useCurrentUser();
   const canAddStock = hasPermission(currentUser, 'stock:add');
@@ -132,12 +134,13 @@ export default function ProductDetail() {
 
   return (
     <div className="space-y-6">
-      <Link
-        to="/products"
+      <button
+        type="button"
+        onClick={goBack}
         className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
       >
         <ArrowLeft className="h-4 w-4" /> Back to products
-      </Link>
+      </button>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card>
