@@ -68,6 +68,18 @@ export const productRepository = {
     return client.stockHistory.create({ data });
   },
 
+  // Phase 23: has this order's stock already been put back — at cancel-before-
+  // dispatch ('Order Cancelled') or at an earlier RETURNED ('Order Returned')? Used
+  // by orderService to make "restore stock exactly once" hold on the server,
+  // however the order reached RETURNED.
+  async hasStockRestoreForOrder(orderId: number, client: PrismaClientOrTx = prisma) {
+    const row = await client.stockHistory.findFirst({
+      where: { orderId, reason: { in: ['Order Cancelled', 'Order Returned'] } },
+      select: { id: true },
+    });
+    return row !== null;
+  },
+
   findStockHistory(productId: number) {
     return prisma.stockHistory.findMany({
       where: { productId },

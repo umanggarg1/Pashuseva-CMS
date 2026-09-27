@@ -1017,6 +1017,15 @@ export const orderService = {
   ) {
     const existing = await orderRepository.findById(id);
     if (!existing) throw new NotFoundError('Order not found');
+    // Phase 23: an order that never left can't be "returned" — for every role,
+    // Admin/Manager included. Without this, cancelling before dispatch (stock back
+    // immediately) and then walking the return path to RETURNED restored stock twice.
+    if (
+      (DELIVERY_RETURN_SEQUENCE as readonly string[]).includes(data.deliveryStatus) &&
+      existing.deliveryStatus === 'NOT_DISPATCHED'
+    ) {
+      throw new HttpError(400, 'This order was never dispatched — there is nothing to return.');
+    }
     assertNotBackwardDelivery(existing.deliveryStatus, data.deliveryStatus, actingUser);
     // Recording a payment here needs the same authority as the dedicated payments
     // endpoint would — delivery:update alone (e.g. a rider confirming drop-off)
@@ -1119,7 +1128,23 @@ export const orderService = {
     // Stock is restored only once the return is actually confirmed back, not at
     // the moment the order was cancelled (see orderService.cancel) — the physical
     // item isn't back in the warehouse just because the customer cancelled.
-    if (data.deliveryStatus === 'RETURNED') {
+    // Phase 23: and only ever once per order. If it was already put back (cancelled
+    // before dispatch, or an earlier RETURNED that an Admin later corrected away
+    // from and back), RETURNED is still recorded but the restock is skipped.
+    const alreadyRestored =
+      data.deliveryStatus === 'RETURNED' &&
+      (await productRepository.hasStockRestoreForOrder(id, tx));
+    if (alreadyRestored) {
+      await orderRepository.recordActivity(
+        id,
+        'Stock already restored — not restored again',
+        actingUser.id,
+        undefined,
+        undefined,
+        tx
+      );
+    }
+    if (data.deliveryStatus === 'RETURNED' && !alreadyRestored) {
       for (const item of existing.items) {
         if (item.productId) {
           await productRepository.incrementStock(item.productId, item.quantity, tx);

@@ -21,6 +21,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import ErrorState from '@/components/ErrorState';
 import EmptyState from '@/components/EmptyState';
 import PageHeader from '@/components/PageHeader';
@@ -29,6 +30,12 @@ import { apiFetch } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
 import ArticleNumberEditor from '@/components/ArticleNumberEditor';
+import DeliveryStatusEditor from '@/components/DeliveryStatusEditor';
+import ChangeDeliveryStatusDialog, {
+  type DeliveryDialogOrder,
+  type SavedDeliveryOrder,
+} from '@/components/ChangeDeliveryStatusDialog';
+import { deliveryStatusLabel } from '@/lib/deliveryStatus';
 
 interface OrderListItem {
   id: number;
@@ -48,6 +55,11 @@ interface OrderListResponse {
   page: number;
   pageSize: number;
 }
+
+// Phase 23: the fields a save can change on a list row — merged into the cached
+// list from whichever endpoint's response (Article No. or delivery status).
+type RowUpdate = Pick<OrderListItem, 'id'> &
+  Partial<Pick<OrderListItem, 'articleNumber' | 'orderStatus' | 'deliveryStatus' | 'paymentStatus'>>;
 
 interface ArticleNumberSaveResult {
   order: Pick<OrderListItem, 'id' | 'articleNumber' | 'orderStatus' | 'deliveryStatus'>;
@@ -115,6 +127,71 @@ function deliveryStatusTone(status: string) {
   return 'warning' as const;
 }
 
+// Phase 23: Delivered / Returned / Lost / Damaged picked from a row open the shared
+// Change Status dialog. The row doesn't carry the delivery address (Delivered At
+// prefill) or the remaining balance, so load them first — same query keys as Order
+// Details, and wait for a fresh copy so the dialog never starts from a stale status.
+function RowDeliveryDialog({
+  target,
+  canOverrideStatus,
+  canAddPayment,
+  canViewPayments,
+  onClose,
+  onSaved,
+}: {
+  target: { order: OrderListItem; status: string };
+  canOverrideStatus: boolean;
+  canAddPayment: boolean;
+  canViewPayments: boolean;
+  onClose: () => void;
+  onSaved: (saved: SavedDeliveryOrder) => void;
+}) {
+  const { order, status } = target;
+  // refetchOnMount 'always': the app-wide 30s staleTime would otherwise skip the fetch
+  // when the same order is reopened soon after, leaving the gate below waiting forever.
+  const detail = useQuery({
+    queryKey: ['order', order.orderNumber],
+    queryFn: () => apiFetch<DeliveryDialogOrder>(`/orders/number/${order.orderNumber}`),
+    refetchOnMount: 'always',
+  });
+  const payments = useQuery({
+    queryKey: ['order', order.id, 'payments'],
+    queryFn: () => apiFetch<{ remaining: number }>(`/orders/${order.id}/payments`),
+    enabled: canViewPayments,
+    refetchOnMount: 'always',
+  });
+
+  // isFetchedAfterMount, not isFetching: a later background refetch (e.g. window focus)
+  // must not swap the open dialog back to "Loading" and lose what was typed.
+  if (!detail.data || !detail.isFetchedAfterMount) {
+    return (
+      <Dialog open onOpenChange={(open) => !open && onClose()}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {detail.isError ? `Could not load ${order.orderNumber}` : `Loading ${order.orderNumber}…`}
+            </DialogTitle>
+          </DialogHeader>
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
+  return (
+    <ChangeDeliveryStatusDialog
+      order={detail.data}
+      canOverrideStatus={canOverrideStatus}
+      canAddPayment={canAddPayment}
+      remaining={payments.data?.remaining}
+      open
+      onOpenChange={(open) => !open && onClose()}
+      initialStatus={status}
+      showTrigger={false}
+      onSuccess={onSaved}
+    />
+  );
+}
+
 export default function Orders() {
   // A dashboard link like /orders?deliveryStatus=IN_TRANSIT should land pre-filtered —
   // read the initial filter values from the URL once, on mount (Phase 9 §4-5).
@@ -123,6 +200,16 @@ export default function Orders() {
   const canExportOrders = hasPermission(currentUser, 'order:export');
   // Phase 22: same permission the backend's PATCH /orders/:id/article-number checks.
   const canEditArticleNumber = hasPermission(currentUser, 'delivery:update');
+  // Phase 23: same permission as PATCH /orders/:id/delivery-status; the rest mirror
+  // what Order Details passes to the shared Change Status dialog.
+  const canEditDelivery = hasPermission(currentUser, 'delivery:update');
+  const canOverrideStatus = currentUser?.role === 'ADMIN' || currentUser?.role === 'MANAGER';
+  const canAddPayment = hasPermission(currentUser, 'payment:create');
+  const canViewPayments = hasPermission(currentUser, 'payment:view');
+  // Delivered / Returned / Lost / Damaged picked from a row → the shared dialog.
+  const [dialogTarget, setDialogTarget] = useState<{ order: OrderListItem; status: string } | null>(
+    null
+  );
   const queryClient = useQueryClient();
   const [search, setSearch] = useState(searchParams.get('search') ?? '');
   const debouncedSearch = useDebouncedValue(search);
@@ -199,33 +286,62 @@ export default function Orders() {
         body: JSON.stringify({ articleNumber }),
       }),
     onSuccess: (result, { order }) => {
-      queryClient.setQueriesData<OrderListResponse>({ queryKey: ['orders'] }, (old) => {
-        // ['orders', 'export', 'count', …] shares the prefix but isn't a list page.
-        if (!old || !Array.isArray(old.data)) return old;
-        return {
-          ...old,
-          data: old.data.map((row) =>
-            row.id === result.order.id
-              ? {
-                  ...row,
-                  articleNumber: result.order.articleNumber,
-                  orderStatus: result.order.orderStatus,
-                  deliveryStatus: result.order.deliveryStatus,
-                }
-              : row
-          ),
-        };
+      applySavedRow(order, {
+        id: result.order.id,
+        articleNumber: result.order.articleNumber,
+        orderStatus: result.order.orderStatus,
+        deliveryStatus: result.order.deliveryStatus,
       });
-      queryClient.invalidateQueries({ queryKey: ['orders'] });
-      queryClient.invalidateQueries({ queryKey: ['order', order.orderNumber] });
-      queryClient.invalidateQueries({ queryKey: ['order', order.id] });
-      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
-      queryClient.invalidateQueries({ queryKey: ['reports'] });
       toast.success(
         result.autoDispatched
           ? 'Article No. saved — marked Dispatched (Kanina Post Office)'
           : 'Article No. saved'
       );
+    },
+  });
+
+  // Shared by every inline save (Phase 22 Article No., Phase 23 delivery status): write
+  // the saved fields straight into the cached list so the row updates instantly, then
+  // refetch in the background and mark this order's detail, dashboard and reports
+  // stale (only the mounted ones actually refetch).
+  function applySavedRow(order: OrderListItem, update: RowUpdate) {
+    const fields = Object.fromEntries(
+      Object.entries(update).filter(([, v]) => v !== undefined)
+    ) as RowUpdate;
+    queryClient.setQueriesData<OrderListResponse>({ queryKey: ['orders'] }, (old) => {
+      // ['orders', 'export', 'count', …] shares the prefix but isn't a list page.
+      if (!old || !Array.isArray(old.data)) return old;
+      return {
+        ...old,
+        data: old.data.map((row) => (row.id === update.id ? { ...row, ...fields } : row)),
+      };
+    });
+    queryClient.invalidateQueries({ queryKey: ['orders'] });
+    queryClient.invalidateQueries({ queryKey: ['order', order.orderNumber] });
+    queryClient.invalidateQueries({ queryKey: ['order', order.id] });
+    queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+    queryClient.invalidateQueries({ queryKey: ['reports'] });
+  }
+
+  // Phase 23: the simple statuses confirmed inline (Dispatched, In Transit, Out for
+  // Delivery, Return Pending, Return In Transit) — same endpoint as Order Details.
+  const saveDeliveryStatus = useMutation({
+    mutationFn: ({
+      order,
+      deliveryStatus: next,
+      location,
+    }: {
+      order: OrderListItem;
+      deliveryStatus: string;
+      location: string | undefined;
+    }) =>
+      apiFetch<SavedDeliveryOrder>(`/orders/${order.id}/delivery-status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ deliveryStatus: next, location }),
+      }),
+    onSuccess: (saved, { order }) => {
+      applySavedRow(order, saved);
+      toast.success(`${order.orderNumber} → ${deliveryStatusLabel(saved.deliveryStatus)}`);
     },
   });
 
@@ -418,9 +534,21 @@ export default function Orders() {
                     />
                   </TableCell>
                   <TableCell>
-                    <StatusBadge
-                      value={order.deliveryStatus}
-                      tone={deliveryStatusTone(order.deliveryStatus)}
+                    <DeliveryStatusEditor
+                      orderNumber={order.orderNumber}
+                      deliveryStatus={order.deliveryStatus}
+                      orderStatus={order.orderStatus}
+                      canEdit={canEditDelivery}
+                      badge={
+                        <StatusBadge
+                          value={order.deliveryStatus}
+                          tone={deliveryStatusTone(order.deliveryStatus)}
+                        />
+                      }
+                      onSave={(next, location) =>
+                        saveDeliveryStatus.mutateAsync({ order, deliveryStatus: next, location })
+                      }
+                      onOpenDialog={(next) => setDialogTarget({ order, status: next })}
                     />
                   </TableCell>
                 </TableRow>
@@ -473,9 +601,21 @@ export default function Orders() {
                     value={order.orderStatus}
                     tone={orderStatusTone(order.orderStatus)}
                   />
-                  <StatusBadge
-                    value={order.deliveryStatus}
-                    tone={deliveryStatusTone(order.deliveryStatus)}
+                  <DeliveryStatusEditor
+                    orderNumber={order.orderNumber}
+                    deliveryStatus={order.deliveryStatus}
+                    orderStatus={order.orderStatus}
+                    canEdit={canEditDelivery}
+                    badge={
+                      <StatusBadge
+                        value={order.deliveryStatus}
+                        tone={deliveryStatusTone(order.deliveryStatus)}
+                      />
+                    }
+                    onSave={(next, location) =>
+                      saveDeliveryStatus.mutateAsync({ order, deliveryStatus: next, location })
+                    }
+                    onOpenDialog={(next) => setDialogTarget({ order, status: next })}
                   />
                 </div>
               </Link>
@@ -507,6 +647,21 @@ export default function Orders() {
             </div>
           </div>
         </>
+      )}
+
+      {dialogTarget && (
+        <RowDeliveryDialog
+          key={`${dialogTarget.order.id}-${dialogTarget.status}`}
+          target={dialogTarget}
+          canOverrideStatus={canOverrideStatus}
+          canAddPayment={canAddPayment}
+          canViewPayments={canViewPayments}
+          onClose={() => setDialogTarget(null)}
+          onSaved={(saved) => {
+            applySavedRow(dialogTarget.order, saved);
+            setDialogTarget(null);
+          }}
+        />
       )}
     </div>
   );
