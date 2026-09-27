@@ -260,6 +260,9 @@ local dry run first (14/14 there).
 No real customer orders were read or modified. All 5 test orders end at
 RETURNED / CANCELLED.
 
-**Admin cleanup pending:** move ORD-2026-000167 … ORD-2026-000171 and customer
-#152 "TEST Phase23 — delete me" to Trash. (The test account lacks `order:delete`;
-don't work around it.)
+**Admin cleanup: done (2026-09-27).** An Admin moved ORD-2026-000167 …
+ORD-2026-000171 and customer #152 "TEST Phase23 — delete me" to Trash; no
+permissions were changed. Verified read-only from `test@gmail.com`, where a trashed
+record returns 404 but an existing, unassigned one returns 403: `/orders/169`–`/173`
+→ 404 "Order not found"; `/customers/152` → 404 "Customer not found"; FEED SAMPLE
+500G stock still 99.
