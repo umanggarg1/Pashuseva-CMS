@@ -306,3 +306,81 @@ reset by restarting the local backend between runs.
   the transaction; left as-is for now.
 - **Order Details wording:** without `delivery:update`, an order with no Article
   No. now shows "—" (the shared editor's empty state) instead of "Not set".
+
+## Production release (2026-09-27)
+
+Pushed `b8ba5c7` + `0b374e3` to `origin/main`. No schema change, so no migration.
+
+**Deployment confirmed:**
+
+- **Vercel:** the live bundle `index-Dx2e0KLL.js` at `pashuseva-cms.vercel.app` contains the Phase 22 editor (`Add Article No.`, the `article-number` call, the Kanina toast, the format message).
+- **Render:** a logged-in `PATCH /api/orders/999999999/article-number` (the order doesn't exist, so it can't change anything) returned the new route's `404 Order not found`. The old backend would have returned an unknown-route 404.
+
+**Read-only browser checks on production:** login `test@gmail.com` (EMPLOYEE, has `delivery:update` + `order:update`). Every non-GET browser request except login was blocked by the test harness, and none was attempted.
+
+| # | Check | Result |
+|---|---|---|
+| P1 | Render serves the new route | ✅ |
+| P2 | `+ Add Article No.` shown for a `delivery:update` user | ✅ |
+| P3 | `+ Add` autofocuses; Esc cancels with zero requests | ✅ |
+| P4 | Invalid `12345` → inline error, editor stays open, zero requests | ✅ |
+| P6 | Mobile 390px: `+ Add` opens the editor inside the card without opening the order | ✅ |
+| P7 | Expected Delivery / Charges ✏️ shown for an `order:update` user | ✅ |
+| P9 | No write request attempted by the UI | ✅ |
+| P5 | Same number + Save, zero requests | ✅ on test order A (see below) |
+| P8 | Change Status location optional | ✅ on test order C (see below) |
+| — | Auto-dispatch on a production order | ✅ on test orders A and B (see below) |
+
+Up to this point no production data had been changed. The user then asked for dedicated test orders.
+
+### Production write test on 3 dedicated test orders (user-approved)
+
+Account `test@gmail.com`: EMPLOYEE, permissions `customer:view/create/update`,
+`order:view/create/update`, `order:customerSearchAll`, `product:view`,
+`delivery:view/update`, `payment:view/create/edit`. It has **no**
+`order:cancel`, `order:delete` or `customer:delete`.
+
+Setup: test customer **#151 "TEST Phase22 — delete me"** (phone 9000022022), and
+3 orders of 1 × FEED SAMPLE 500G (#36, ₹50, cash): **ORD-2026-000164 (#166),
+ORD-2026-000165 (#167), ORD-2026-000166 (#168)**. The same script first passed
+12/12 as a dry run against the local DB. In the browser, saves were allowed only
+for these 3 order ids.
+
+| # | Check | Result |
+|---|---|---|
+| A1 | Orders list: typed `te000000001in` → toast; row shows TE000000001IN / CONFIRMED / DISPATCHED | ✅ |
+| A2 | DB: number uppercased, DISPATCHED, CONFIRMED | ✅ |
+| A3 | Tracking: DISPATCHED @ **Kanina Post Office**, note "Auto-dispatched on article number entry" | ✅ |
+| A4 | Activity: Article number changed + Delivery status changed + Order status auto-updated | ✅ |
+| P5 | Same number + Enter → editor closes, zero requests, no new tracking row | ✅ |
+| B1 | Order Details: first number `TE000000002IN` → Delivery card shows Kanina Post Office; DB DISPATCHED/CONFIRMED | ✅ |
+| P8 | Change Status → DISPATCHED with an **empty** location: no `*`, saved, tracking location null, CONFIRMED | ✅ |
+| G | The browser attempted no save outside the 3 test orders | ✅ |
+| CLEAN | FEED SAMPLE 500G stock back to 99 (its starting value) | ✅ |
+| CLEAN | Orders moved to Trash | ❌ The account lacks `order:delete` (403) — **Admin must finish** |
+
+Cleanup done:
+- `POST /cancel` → 403 (no `order:cancel`).
+- Each order was instead walked Return Pending → Return In Transit → Returned. That
+  set order status to Cancelled through the existing delivery sync and restored the
+  stock.
+- Afterwards `test@gmail.com` gets **403** on these orders: Phase 19 automatically
+  unassigns an Employee once all their orders for that customer are done, so the
+  account lost access. This is expected.
+
+**No other production orders or customers were modified.** The only order
+touched outside the three test orders was `ORD-2026-000029`, which was viewed
+read-only. The single `PATCH` probe targeted a non-existent order id
+(999999999).
+
+**Admin cleanup pending:** don't work around the missing `order:delete`
+permission or change permissions just to let the test account clean up.
+
+**Left for an Admin:** move ORD-2026-000164, -000165 and -000166 to Trash, then
+move customer #151 "TEST Phase22 — delete me" to Trash. Until then, the three
+orders count as Cancelled/Returned in the dashboard and reports. Order numbers
+164–166 and their invoice numbers are used up.
+
+Notes:
+- An Employee who enters Article Nos. needs **Delivery → Update Delivery Status** (`delivery:update`).
+- In the desktop table, the `+ Add Article No.` label can wrap onto two lines when the Article Number column is narrow (cosmetic).
