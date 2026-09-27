@@ -1,6 +1,6 @@
 # Phase 24 — Delivery Status menu: all valid next steps + Cancel order
 
-**Status: implemented and verified locally 2026-09-27. Never run against production.**
+**Status: released and verified on production 2026-09-27 (see "Production release + verification" at the end). Test data cleaned up.**
 
 - Verified on a throwaway Docker Postgres (`crm-phase24-test`, `localhost:55432`):
   - **Backend: 23/23** new checks.
@@ -169,9 +169,10 @@ No real customer orders were read or modified.
 **Heads-up:** `test@gmail.com` now holds `order:cancel`, `order:delete` and
 `customer:delete`. Revoke them if they were granted only for testing.
 
-**Admin cleanup pending:** move ORD-2026-000172 … ORD-2026-000175 and customer
-#153 "TEST Phase24 — delete me" to Trash. (Now that its orders are finished,
-Phase 19 unassigns the test account, so it can no longer reach them itself.)
+**Admin cleanup: done (2026-09-27).** ORD-2026-000172 … ORD-2026-000175 and
+customer #153 "TEST Phase24 — delete me" were moved to Trash. Verified read-only
+from `test@gmail.com`: `/orders/174`–`/177` → 404 "Order not found";
+`/customers/153` → 404 "Customer not found"; FEED SAMPLE 500G stock still 99.
 
 **Not changed here (separate follow-up):** Order Details' Cancel Order button is
 shown for `order:update`, but the backend requires `order:cancel`.
