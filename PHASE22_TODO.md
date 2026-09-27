@@ -373,8 +373,11 @@ touched outside the three test orders was `ORD-2026-000029`, which was viewed
 read-only. The single `PATCH` probe targeted a non-existent order id
 (999999999).
 
-**Admin cleanup pending:** don't work around the missing `order:delete`
-permission or change permissions just to let the test account clean up.
+**Admin cleanup: done (2026-09-27).** An Admin moved all four records to Trash;
+no permissions were changed. This was verified read-only from `test@gmail.com`,
+where a trashed record returns 404 but an existing, unassigned one returns 403:
+`/orders/166`, `/167`, `/168` → 404 "Order not found"; `/customers/151` → 404
+"Customer not found"; FEED SAMPLE 500G stock still 99.
 
 **Left for an Admin:** move ORD-2026-000164, -000165 and -000166 to Trash, then
 move customer #151 "TEST Phase22 — delete me" to Trash. Until then, the three
