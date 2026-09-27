@@ -215,3 +215,51 @@ through the real login page as Admin, an Employee with `delivery:update`, and an
 Employee without it). Screenshots checked by eye: desktop ▾ triggers, the
 next-step menu, the Delivered dialog with the address prefill + payment section,
 and the mobile confirm box.
+
+## Production release + verification (2026-09-27)
+
+Pushed `c8b832a` + `299deb1` to `origin/main` at 15:40. No schema change, so no
+migration.
+
+**Deployment confirmed:**
+
+- **Vercel:** live bundle `index-BSSYkZ3s.js` contains the Phase 23 editor text
+  ("Starting a return also marks the order as Cancelled.") at 15:41.
+- **Render:** check P1 below. The first request was the new backend rule itself;
+  the old backend would have accepted it.
+
+**Production test on dedicated test orders only**, run by the same script as a
+local dry run first (14/14 there).
+
+- **Account:** `test@gmail.com` (EMPLOYEE with `delivery:update`, `payment:create/view`;
+  no `order:cancel` / `order:delete`).
+- **Test customer:** **#152 "TEST Phase23 — delete me"** (phone 9000022023).
+- **5 orders** of 1 × FEED SAMPLE 500G (#36): **ORD-2026-000167 (#169) … ORD-2026-000171 (#173)**.
+- **Browser saves** were allowed only for these 5 order ids.
+- **Stock recorded before any change: 99.**
+
+| # | Check | Result |
+|---|---|---|
+| P1 | Never-dispatched order → RETURN_PENDING refused (400 "never dispatched"), order unchanged — also proves Render runs 299deb1 | ✅ |
+| P2 | Menu for NOT_DISPATCHED = DISPATCHED only | ✅ |
+| P3 | Simple status: confirm box ("Dispatch Location (optional)"); Cancel = no request; Confirm = one PATCH; row DISPATCHED + CONFIRMED; location saved | ✅ |
+| P4 | IN TRANSIT with an empty location (Enter) → saved without location, PROCESSING | ✅ |
+| P5 | OUT FOR DELIVERY menu = DELIVERED… · RETURN PENDING · LOST… · DAMAGED… | ✅ |
+| P6 | DELIVERED… → shared dialog preselected, Delivered At prefilled, Received By + Payment Details; **Cancelled** (no delivery or payment recorded on production — the save path is covered locally, U4) | ✅ |
+| P7 | RETURN PENDING: warning shown; row → CANCELLED + RETURN PENDING | ✅ |
+| P8 | RETURNED… → shared dialog (preselected, Received By) → saved; **stock +1 exactly** | ✅ |
+| P9 | RETURNED logged again → 200, **stock not restored twice**, activity "Stock already restored — not restored again" | ✅ |
+| P10 | LOST… / DAMAGED… open the shared dialog preselected; Cancel sends nothing; reopening works | ✅ |
+| P11 | Mobile: menu + confirm never open the order | ✅ |
+| P12 | Phase 22 regression: first Article No. → DISPATCHED + CONFIRMED @ Kanina Post Office | ✅ |
+| G | No browser write outside the test orders | ✅ |
+| CLEAN | Every test order walked back to RETURNED; **stock 99 → 94 (5 orders) → 99** — each restored exactly once | ✅ |
+| — | Employee **without** `delivery:update` on production | **NOT RUN** (no such production test account; covered locally, U8) |
+| — | Concurrent-submission race | Not attempted on production, by design |
+
+No real customer orders were read or modified. All 5 test orders end at
+RETURNED / CANCELLED.
+
+**Admin cleanup pending:** move ORD-2026-000167 … ORD-2026-000171 and customer
+#152 "TEST Phase23 — delete me" to Trash. (The test account lacks `order:delete`;
+don't work around it.)
