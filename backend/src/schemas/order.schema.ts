@@ -117,6 +117,17 @@ export const updateOrderSchema = z.object({
   estimatedDeliveryCharges: estimatedDeliveryChargesSchema,
 });
 
+// Phase 22: PATCH /orders/:id/article-number. Only normalizes here (trim +
+// uppercase, '' → null = clear) — the India Post format check is deliberately in
+// orderService.updateArticleNumber, *after* its no-op compare, so re-saving an
+// older non-conforming number unchanged doesn't fail validation.
+export const updateArticleNumberSchema = z.object({
+  articleNumber: z
+    .string()
+    .transform((v) => v.trim().toUpperCase())
+    .transform((v) => (v === '' ? null : v)),
+});
+
 export const cancelOrderSchema = z.object({
   reason: z.string().min(1),
 });

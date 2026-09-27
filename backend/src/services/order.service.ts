@@ -11,6 +11,7 @@ import { hasPermission } from '../utils/permissions';
 import { orderDataWhere, hasCustomerDataAccess, hasOrderDataAccess } from '../utils/dataScope';
 import { computeDeletionExpiry } from '../utils/trash';
 import { recalculateCustomerState } from '../utils/customerAutomation';
+import { DEFAULT_DISPATCH_LOCATION, INDIA_POST_ARTICLE_NUMBER_REGEX } from '../constants/delivery';
 import type { Role, OrderStatus, DeliveryStatus, PaymentStatus, DataScope } from '../generated/prisma/enums';
 import type {
   CreateOrderInput,
@@ -1024,106 +1025,188 @@ export const orderService = {
       throw new HttpError(403, 'You do not have permission to record a payment');
     }
 
-    return prisma.$transaction(async (tx) => {
-      let order = await orderRepository.updateDeliveryStatus(
-        id,
-        {
-          deliveryStatus: data.deliveryStatus,
-          location: data.location,
-          note: data.note,
-          receivedBy: data.receivedBy,
-          updatedById: actingUser.id,
-        },
-        tx
-      );
+    return prisma.$transaction((tx) =>
+      orderService.applyDeliveryStatusChange(existing, data, actingUser, tx)
+    );
+  },
+
+  // Phase 22: the body of updateDeliveryStatus's transaction, pulled out so
+  // updateArticleNumber's auto-dispatch runs the exact same status/tracking/
+  // activity/order-status-sync logic inside *its* transaction instead of a copy.
+  // Callers do their own pre-checks (backward-move, payment permission) first.
+  async applyDeliveryStatusChange(
+    existing: NonNullable<Awaited<ReturnType<typeof orderRepository.findById>>>,
+    data: {
+      deliveryStatus: DeliveryStatus;
+      location?: string;
+      note?: string;
+      receivedBy?: string;
+      paymentCollected?: boolean;
+      paymentMethod?: 'CASH' | 'ONLINE';
+    },
+    actingUser: ActingUser,
+    tx: Prisma.TransactionClient
+  ) {
+    const id = existing.id;
+    let order = await orderRepository.updateDeliveryStatus(
+      id,
+      {
+        deliveryStatus: data.deliveryStatus,
+        location: data.location,
+        note: data.note,
+        receivedBy: data.receivedBy,
+        updatedById: actingUser.id,
+      },
+      tx
+    );
+    await orderRepository.recordActivity(
+      id,
+      'Delivery status changed',
+      actingUser.id,
+      existing.deliveryStatus,
+      data.deliveryStatus,
+      tx
+    );
+
+    // Phase 17: Delivery Status drives Order Status for normal progression —
+    // see DELIVERY_TO_ORDER_STATUS. A cancelled order stays Cancelled regardless
+    // (Return Pending/In Transit/Returned all map back to Cancelled anyway, so
+    // this never fights the cancellation), it's simply never anything else.
+    const mappedOrderStatus = DELIVERY_TO_ORDER_STATUS[data.deliveryStatus];
+    if (mappedOrderStatus && mappedOrderStatus !== existing.orderStatus) {
+      order = await orderRepository.updateStatus(id, mappedOrderStatus, tx);
       await orderRepository.recordActivity(
         id,
-        'Delivery status changed',
+        'Order status auto-updated (delivery sync)',
         actingUser.id,
-        existing.deliveryStatus,
-        data.deliveryStatus,
+        existing.orderStatus,
+        mappedOrderStatus,
         tx
       );
+    }
 
-      // Phase 17: Delivery Status drives Order Status for normal progression —
-      // see DELIVERY_TO_ORDER_STATUS. A cancelled order stays Cancelled regardless
-      // (Return Pending/In Transit/Returned all map back to Cancelled anyway, so
-      // this never fights the cancellation), it's simply never anything else.
-      const mappedOrderStatus = DELIVERY_TO_ORDER_STATUS[data.deliveryStatus];
-      if (mappedOrderStatus && mappedOrderStatus !== existing.orderStatus) {
-        order = await orderRepository.updateStatus(id, mappedOrderStatus, tx);
+    // Payment collected at the point of delivery (COD, or confirming an online
+    // payment already made) — same ledger path as addPayment, just inline in this
+    // transaction instead of a separate follow-up request. Only fires for the
+    // DELIVERED transition itself, and only for whatever's still actually owed —
+    // never double-collects if the order was already fully paid by then.
+    if (data.deliveryStatus === 'DELIVERED' && data.paymentCollected) {
+      const paidSoFar = await paymentRepository.sumForOrder(id, tx);
+      const remaining = existing.total - paidSoFar;
+      if (remaining > 0) {
+        await paymentRepository.create(
+          {
+            orderId: id,
+            amount: remaining,
+            method: data.paymentMethod!,
+            createdById: actingUser.id,
+          },
+          tx
+        );
+        const newPaymentStatus = orderService.paidStatusFor(paidSoFar + remaining, existing.total);
+        order = await orderRepository.setPaymentStatus(id, newPaymentStatus, tx);
         await orderRepository.recordActivity(
           id,
-          'Order status auto-updated (delivery sync)',
+          'Payment added',
           actingUser.id,
-          existing.orderStatus,
-          mappedOrderStatus,
+          existing.paymentStatus,
+          `+₹${remaining} (${data.paymentMethod}) → ${newPaymentStatus}`,
           tx
         );
       }
+    }
 
-      // Payment collected at the point of delivery (COD, or confirming an online
-      // payment already made) — same ledger path as addPayment, just inline in this
-      // transaction instead of a separate follow-up request. Only fires for the
-      // DELIVERED transition itself, and only for whatever's still actually owed —
-      // never double-collects if the order was already fully paid by then.
-      if (data.deliveryStatus === 'DELIVERED' && data.paymentCollected) {
-        const paidSoFar = await paymentRepository.sumForOrder(id, tx);
-        const remaining = existing.total - paidSoFar;
-        if (remaining > 0) {
-          await paymentRepository.create(
+    // Stock is restored only once the return is actually confirmed back, not at
+    // the moment the order was cancelled (see orderService.cancel) — the physical
+    // item isn't back in the warehouse just because the customer cancelled.
+    if (data.deliveryStatus === 'RETURNED') {
+      for (const item of existing.items) {
+        if (item.productId) {
+          await productRepository.incrementStock(item.productId, item.quantity, tx);
+          await productRepository.recordStockHistory(
             {
+              productId: item.productId,
+              change: item.quantity,
+              reason: 'Order Returned',
               orderId: id,
-              amount: remaining,
-              method: data.paymentMethod!,
               createdById: actingUser.id,
             },
             tx
           );
-          const newPaymentStatus = orderService.paidStatusFor(paidSoFar + remaining, existing.total);
-          order = await orderRepository.setPaymentStatus(id, newPaymentStatus, tx);
-          await orderRepository.recordActivity(
-            id,
-            'Payment added',
-            actingUser.id,
-            existing.paymentStatus,
-            `+₹${remaining} (${data.paymentMethod}) → ${newPaymentStatus}`,
-            tx
-          );
         }
       }
+    }
 
-      // Stock is restored only once the return is actually confirmed back, not at
-      // the moment the order was cancelled (see orderService.cancel) — the physical
-      // item isn't back in the warehouse just because the customer cancelled.
-      if (data.deliveryStatus === 'RETURNED') {
-        for (const item of existing.items) {
-          if (item.productId) {
-            await productRepository.incrementStock(item.productId, item.quantity, tx);
-            await productRepository.recordStockHistory(
-              {
-                productId: item.productId,
-                change: item.quantity,
-                reason: 'Order Returned',
-                orderId: id,
-                createdById: actingUser.id,
-              },
-              tx
-            );
-          }
-        }
+    // Phase 19 §C: every delivery status change can shift whether this order still
+    // counts as "active" for its customer (most notably reaching DELIVERED or
+    // RETURNED) — recalculateCustomerState re-derives Customer.status and prunes
+    // any Employee's auto-assignment whose orders for this customer are all done
+    // now. A no-op recompute (e.g. DISPATCHED -> IN_TRANSIT) costs one query and
+    // changes nothing, which is fine — it's meant to be cheap to call anywhere.
+    await recalculateCustomerState(existing.customerId, tx);
+
+    return order;
+  },
+
+  // Phase 22: Article No. save from the Orders list or Order Details. Three paths,
+  // cheapest first:
+  //   - unchanged (after trim/uppercase) → no-op, nothing written;
+  //   - number-only (changed/cleared, or order not eligible) → one update + one
+  //     activity row, off a lean lookup — no items/payments/stock loaded;
+  //   - first number on a NOT_DISPATCHED, non-cancelled order → auto-dispatch to
+  //     DEFAULT_DISPATCH_LOCATION through applyDeliveryStatusChange, all in one
+  //     transaction so the number never saves without the dispatch (or vice versa).
+  // The format check runs only *after* the no-op compare, so re-saving an older
+  // non-conforming number unchanged never fails (PHASE22_TODO.md decision #12).
+  async updateArticleNumber(id: number, articleNumber: string | null, actingUser: ActingUser) {
+    const current = await orderRepository.findArticleState(id);
+    if (!current) throw new NotFoundError('Order not found');
+
+    if (articleNumber === (current.articleNumber?.trim().toUpperCase() || null)) {
+      return { order: current, autoDispatched: false };
+    }
+    if (articleNumber !== null && !INDIA_POST_ARTICLE_NUMBER_REGEX.test(articleNumber)) {
+      throw new HttpError(
+        400,
+        'Article No. must be 2 letters, 9 digits, then IN — e.g. AB123456789IN'
+      );
+    }
+
+    const shouldAutoDispatch =
+      !current.articleNumber &&
+      articleNumber !== null &&
+      current.deliveryStatus === 'NOT_DISPATCHED' &&
+      current.orderStatus !== 'CANCELLED';
+    // Only the auto-dispatch path needs the full order (applyDeliveryStatusChange
+    // reads total/paymentStatus/items/customerId).
+    const existing = shouldAutoDispatch ? await orderRepository.findById(id) : null;
+
+    return prisma.$transaction(async (tx) => {
+      let order = await orderRepository.setArticleNumber(id, articleNumber, tx);
+      await orderRepository.recordActivity(
+        id,
+        'Article number changed',
+        actingUser.id,
+        current.articleNumber ?? undefined,
+        articleNumber ?? undefined,
+        tx
+      );
+
+      if (existing) {
+        order = await orderService.applyDeliveryStatusChange(
+          existing,
+          {
+            deliveryStatus: 'DISPATCHED',
+            location: DEFAULT_DISPATCH_LOCATION,
+            note: 'Auto-dispatched on article number entry',
+          },
+          actingUser,
+          tx
+        );
       }
 
-      // Phase 19 §C: every delivery status change can shift whether this order still
-      // counts as "active" for its customer (most notably reaching DELIVERED or
-      // RETURNED) — recalculateCustomerState re-derives Customer.status and prunes
-      // any Employee's auto-assignment whose orders for this customer are all done
-      // now. A no-op recompute (e.g. DISPATCHED -> IN_TRANSIT) costs one query and
-      // changes nothing, which is fine — it's meant to be cheap to call anywhere.
-      await recalculateCustomerState(existing.customerId, tx);
-
-      return order;
-    });
+      return { order, autoDispatched: existing !== null };
+    }, { timeout: 15000 });
   },
 
   getTracking(orderId: number) {

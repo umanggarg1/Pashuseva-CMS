@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -27,7 +28,7 @@ import DownloadOrdersDialog from '@/components/DownloadOrdersDialog';
 import { apiFetch } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
-import { openArticleNumberTracking } from '@/lib/articleTracking';
+import ArticleNumberEditor from '@/components/ArticleNumberEditor';
 
 interface OrderListItem {
   id: number;
@@ -46,6 +47,11 @@ interface OrderListResponse {
   total: number;
   page: number;
   pageSize: number;
+}
+
+interface ArticleNumberSaveResult {
+  order: Pick<OrderListItem, 'id' | 'articleNumber' | 'orderStatus' | 'deliveryStatus'>;
+  autoDispatched: boolean;
 }
 
 const PAGE_SIZE = 20;
@@ -115,6 +121,9 @@ export default function Orders() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: currentUser } = useCurrentUser();
   const canExportOrders = hasPermission(currentUser, 'order:export');
+  // Phase 22: same permission the backend's PATCH /orders/:id/article-number checks.
+  const canEditArticleNumber = hasPermission(currentUser, 'delivery:update');
+  const queryClient = useQueryClient();
   const [search, setSearch] = useState(searchParams.get('search') ?? '');
   const debouncedSearch = useDebouncedValue(search);
   const [orderStatus, setOrderStatus] = useState(searchParams.get('orderStatus') ?? 'all');
@@ -177,6 +186,48 @@ export default function Orders() {
   });
 
   const totalPages = query.data ? Math.max(1, Math.ceil(query.data.total / PAGE_SIZE)) : 1;
+
+  // Phase 22: one save action for every row (ArticleNumberEditor only holds UI
+  // state). On success the returned order is written straight into the cached list
+  // so the row updates instantly, then the list refetches in the background — which
+  // is also what drops an auto-dispatched order out of a "Not Dispatched" filter.
+  // Page/search/filters/sort live in the URL + query key, so they're untouched.
+  const saveArticleNumber = useMutation({
+    mutationFn: ({ order, articleNumber }: { order: OrderListItem; articleNumber: string }) =>
+      apiFetch<ArticleNumberSaveResult>(`/orders/${order.id}/article-number`, {
+        method: 'PATCH',
+        body: JSON.stringify({ articleNumber }),
+      }),
+    onSuccess: (result, { order }) => {
+      queryClient.setQueriesData<OrderListResponse>({ queryKey: ['orders'] }, (old) => {
+        // ['orders', 'export', 'count', …] shares the prefix but isn't a list page.
+        if (!old || !Array.isArray(old.data)) return old;
+        return {
+          ...old,
+          data: old.data.map((row) =>
+            row.id === result.order.id
+              ? {
+                  ...row,
+                  articleNumber: result.order.articleNumber,
+                  orderStatus: result.order.orderStatus,
+                  deliveryStatus: result.order.deliveryStatus,
+                }
+              : row
+          ),
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
+      queryClient.invalidateQueries({ queryKey: ['order', order.orderNumber] });
+      queryClient.invalidateQueries({ queryKey: ['order', order.id] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+      queryClient.invalidateQueries({ queryKey: ['reports'] });
+      toast.success(
+        result.autoDispatched
+          ? 'Article No. saved — marked Dispatched (Kanina Post Office)'
+          : 'Article No. saved'
+      );
+    },
+  });
 
   function resetPage<T>(setter: (v: T) => void) {
     return (v: T) => {
@@ -352,23 +403,13 @@ export default function Orders() {
                     />
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {order.articleNumber ? (
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => openArticleNumberTracking(order.articleNumber!)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            openArticleNumberTracking(order.articleNumber!);
-                          }
-                        }}
-                        className="cursor-pointer text-primary hover:underline"
-                      >
-                        {order.articleNumber}
-                      </span>
-                    ) : (
-                      '—'
-                    )}
+                    <ArticleNumberEditor
+                      articleNumber={order.articleNumber}
+                      canEdit={canEditArticleNumber}
+                      onSave={(articleNumber) =>
+                        saveArticleNumber.mutateAsync({ order, articleNumber })
+                      }
+                    />
                   </TableCell>
                   <TableCell>
                     <StatusBadge
@@ -415,28 +456,16 @@ export default function Orders() {
                     📞 {order.customer.phones[0].phone}
                   </p>
                 )}
-                {order.articleNumber && (
+                {(order.articleNumber || canEditArticleNumber) && (
                   <p className="text-sm text-muted-foreground">
                     Article No:{' '}
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        openArticleNumberTracking(order.articleNumber!);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          openArticleNumberTracking(order.articleNumber!);
-                        }
-                      }}
-                      className="cursor-pointer text-primary hover:underline"
-                    >
-                      {order.articleNumber}
-                    </span>
+                    <ArticleNumberEditor
+                      articleNumber={order.articleNumber}
+                      canEdit={canEditArticleNumber}
+                      onSave={(articleNumber) =>
+                        saveArticleNumber.mutateAsync({ order, articleNumber })
+                      }
+                    />
                   </p>
                 )}
                 <div className="mt-2 flex flex-wrap gap-2">

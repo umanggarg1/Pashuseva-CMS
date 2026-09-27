@@ -1,11 +1,13 @@
 # Phase 22 — Inline Article No. on Orders + Auto-Dispatch + Optional Location
 
 **Status: implemented 2026-09-27 (backend + frontend, one pass). Backend and
-frontend `tsc` and ESLint clean. Implemented, **not yet verified**. Backend `.env`
-points at the live Neon DB, so verification runs against a throwaway local Docker
-Postgres (`crm-phase22-test`, `localhost:55432`), never production. That run is in
-progress. This document is committed on its own first; the code is not committed
-yet and waits for verification.**
+frontend `tsc` and ESLint clean. **Backend verified: 44/44 automated checks
+pass** against a throwaway local Docker Postgres (`crm-phase22-test`,
+`localhost:55432`, fresh DB `crm_phase22_run2`), never production. That includes
+the forced-failure rollback test. **Browser verified: 17/17 Playwright checks
+pass** (real UI in Chromium at desktop 1366px and mobile 390px, frontend :5173 →
+backend :4000 on the same local DB). Production Neon was never touched. Code
+diff reviewed.**
 
 Three related changes:
 
@@ -233,9 +235,10 @@ Implementation notes:
 
 **Verification (not done yet — never against the live Neon DB)**
 
-Backend behavior: automated script against the local Docker DB (in progress),
-covering every row below that the API can observe, plus a forced-failure
-rollback test. The rollback test makes the transaction fail after the Article No.
+Backend behavior: automated script against the local Docker DB — **44/44 pass
+(2026-09-27)**. It drives the real Express app over HTTP with real login cookies
+and checks the DB rows directly. It covers every row below that the API can
+observe, plus a forced-failure rollback test. The rollback test makes the transaction fail after the Article No.
 and dispatch writes, then checks that the Article No., delivery status, order
 status, tracking and activity are all unchanged.
 
@@ -243,19 +246,63 @@ UI-only rows (Enter/Esc, mobile card, page/filter preservation, editor states):
 check in the browser against the same local DB.
 
 
-- [ ] Empty → valid number on a Not Dispatched order: Dispatched, 📍 Kanina Post Office in the timeline, 3 activity rows, order status Confirmed
-- [ ] Different number on an already-set order: number only, no new tracking row
-- [ ] Clearing the number: number removed, status unchanged
-- [ ] Cancelled order + number: no dispatch
-- [ ] Already Dispatched / In Transit + number: number only
-- [ ] Invalid format (e.g. `12345`): error shown, editor stays open with the typed value
-- [ ] Lowercase input is saved uppercase
-- [ ] Same number (or same number in lowercase) + Save: editor closes, no request, nothing in activity/tracking
-- [ ] Old non-conforming number (e.g. `DTDC123456789`) opened and saved unchanged: no error
-- [ ] User without `delivery:update`: no edit controls; API returns 403
-- [ ] Enter saves, Esc cancels; saving state shown on the row being saved
-- [ ] Mobile card: editing doesn't open the order
-- [ ] Page 3 + filters + sort → save → still page 3 with the same filters and sort; row updates instantly
-- [ ] Order Details: entering the number there auto-dispatches too
-- [ ] Change Delivery Status → Dispatched / In Transit with empty location: saves; no 📍 in the timeline
-- [ ] Regression: manual status change, Add Location Update, payment on Delivered, stock restore on Returned
+Backend — verified by the automated run:
+
+- [x] Empty → valid number on a Not Dispatched order: DISPATCHED, tracking row at Kanina Post Office with the auto note and the acting user, 3 activity rows in order, PENDING → CONFIRMED (A1)
+- [x] Lowercase + spaces input saved as `AB123456789IN` (A1)
+- [x] Same number (exact, and lowercase) → no-op: no activity, no tracking, `updatedAt` untouched (A2)
+- [x] Different number on an already-set order: number only, no new tracking row (A3)
+- [x] Clearing: number removed, still DISPATCHED/CONFIRMED; re-adding afterwards doesn't dispatch again (A4)
+- [x] Cancelled order + number: number saved, stays CANCELLED / NOT_DISPATCHED (A5)
+- [x] In Transit + number: number only (A6)
+- [x] Invalid formats (`12345`, 8 digits, `…US` suffix, digit in prefix) → 400, nothing written (A7)
+- [x] Old non-conforming number (`dtdc123456789`) saved unchanged → 200 no-op; changed to another invalid value → 400 (A8)
+- [x] Processing order auto-dispatched → CONFIRMED (decision #2) (A9)
+- [x] `order:update` without `delivery:update` → 403; `delivery:update` + order outside ASSIGNED scope → 403; on own assigned order → 200 + auto-dispatch (A10–A10c)
+- [x] Decision #13 backend side: an `order:update` user can save Expected Delivery/Charges; a `delivery:update`-only user gets 403 there (A10d–e)
+- [x] Trashed / missing order → 404; missing body field → 400 (A11)
+- [x] Number-only and no-op paths never call `findById` (the full order load) (A12)
+- [x] **Rollback:** failure forced inside the transaction after the Article No. + dispatch writes → Article No., delivery status, order status, tracking and activity all unchanged; a real save afterwards auto-dispatches normally (R1)
+- [x] Change Delivery Status → DISPATCHED / IN_TRANSIT with no location → 200, tracking location null (C1)
+- [x] Add Location Update (same status + location) still logs a checkpoint (C2)
+- [x] Delivered + payment collected → PAID, one payment for the full total (C3)
+- [x] Dispatched via Article No. → cancel → Return path → Returned restores stock exactly once (C4)
+- [x] Legacy `PATCH /orders/:id { articleNumber }` still saves and does not auto-dispatch (C5)
+- [x] Not Dispatched list filter excludes the auto-dispatched order; list rows carry `articleNumber`/`orderStatus` for the cache merge (C6)
+
+UI — verified in the browser, 17/17 (2026-09-27, headless Chromium via Playwright,
+logged in through the real login page as `admin@t.local` / `del@t.local` /
+`nodel@t.local`, against the local DB):
+
+- [x] `+ Add Article No.` autofocuses the input; Esc and ✕ cancel with **zero** requests (U1a–c)
+- [x] Enter saves; while saving, the input and ✓ are disabled and the spinner shows (PATCH held 1.5 s) (U1d)
+- [x] **Instant row update from the cache write:** with the list refetch held 3 s, the row already shows `AB100000001IN` (typed lowercase) + CONFIRMED + DISPATCHED right after the PATCH returns; exactly one PATCH sent (U1e–f)
+- [x] ✓ button saves (U1g)
+- [x] Invalid `12345` → inline error, editor stays open with `12345`, **zero requests** (U2)
+- [x] Same number via Enter, and `  ab000000001in ` via ✓ → editor closes with **zero requests** (U3)
+- [x] Page 3 + search `Rahul` + Not Dispatched + oldest-first → save → URL/search box/"Page 3 of N" unchanged; the auto-dispatched row drops out after the refresh (U6)
+- [x] Mobile 390px: `+ Add`, clicking into the input, typing, Enter-save, ✏️ and ✕ never navigate; tapping the card body still opens the order (U5)
+- [x] Order Details: `+ Add` → auto-dispatch; the Delivery card shows DISPATCHED + 📍 Kanina Post Office and the number (U7)
+- [x] Change Status → DISPATCHED: label "Dispatch Location" without `*`, Update enabled while empty; saved with null location; no 📍 on the page (footer store-address pin excluded) (U9)
+- [x] → IN TRANSIT with empty location allowed; Add Location Update still shows `Current Location *` and "Add Update" stays disabled until filled (U10)
+- [x] `delivery:update`-only user: Expected Delivery/Charges ✏️ hidden; Article No. `+ Add` and Change Status shown (U8a)
+- [x] `order:update`-only user: Expected Delivery/Charges ✏️ shown; no Article No. edit and no Change Status; the number is still click-to-track (U8b)
+- [x] Orders list without `delivery:update`: no `+ Add`/✏️; numbers still clickable; empty cells show — (U4)
+
+Screenshots checked by eye: mobile card editor fits with ✓/✕; the inline error wraps under the input in the desktop row; the Change Status dialog has no `*`.
+
+Test-run notes (test-script issues, not app bugs, all fixed and re-run in full):
+a hidden print-only `<p>` on Order Details also contains the number (the selector
+was narrowed to the clickable span); the footer's store-address map pin had to be
+excluded from the "no 📍" count; and the login rate limiter (5 per 15 min) was
+reset by restarting the local backend between runs.
+
+## Known limitations / notes (found in the final review, not blockers)
+
+- **Concurrent first saves:** if two users save a first number for the same order
+  at the same moment, both can pass the "empty + NOT_DISPATCHED" check and dispatch
+  twice (two tracking rows). `updateDeliveryStatus` already uses the same
+  read-then-write pattern. Tightening it would need a conditional update inside
+  the transaction; left as-is for now.
+- **Order Details wording:** without `delivery:update`, an order with no Article
+  No. now shows "—" (the shared editor's empty state) instead of "Not set".

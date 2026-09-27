@@ -9,6 +9,7 @@ import {
   updateOrderStatusSchema,
   cancelOrderSchema,
   updateDeliveryStatusSchema,
+  updateArticleNumberSchema,
   orderListQuerySchema,
   orderExportFiltersSchema,
   type OrderExportFilters,
@@ -184,6 +185,13 @@ export const orderController = {
     const input = updateDeliveryStatusSchema.parse(req.body);
     const order = await orderService.updateDeliveryStatus(id, input, requireActingUser(req));
     res.json(order);
+  },
+
+  async updateArticleNumber(req: Request, res: Response) {
+    const { id } = orderIdParamSchema.parse(req.params);
+    const { articleNumber } = updateArticleNumberSchema.parse(req.body);
+    const result = await orderService.updateArticleNumber(id, articleNumber, requireActingUser(req));
+    res.json(result);
   },
 
   async getTracking(req: Request, res: Response) {

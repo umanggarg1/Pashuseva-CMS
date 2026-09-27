@@ -354,6 +354,19 @@ export const orderRepository = {
     });
   },
 
+  // Phase 22: lean lookup for orderService.updateArticleNumber — just what its
+  // no-op / number-only / auto-dispatch decision needs, not findById's full graph.
+  findArticleState(id: number) {
+    return prisma.order.findFirst({
+      where: { id, deletedAt: null },
+      select: { id: true, articleNumber: true, deliveryStatus: true, orderStatus: true },
+    });
+  },
+
+  setArticleNumber(id: number, articleNumber: string | null, client: PrismaClientOrTx = prisma) {
+    return client.order.update({ where: { id }, data: { articleNumber } });
+  },
+
   updateStatus(id: number, orderStatus: OrderStatus, client: PrismaClientOrTx = prisma) {
     return client.order.update({ where: { id }, data: { orderStatus } });
   },

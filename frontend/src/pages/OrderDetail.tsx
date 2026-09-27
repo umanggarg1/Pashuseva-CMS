@@ -41,7 +41,7 @@ import EmployeeMultiSelect from '@/components/EmployeeMultiSelect';
 import { apiFetch, apiUrl, ApiError } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { packagingUnitLabel } from '@/lib/productUnits';
-import { openArticleNumberTracking } from '@/lib/articleTracking';
+import ArticleNumberEditor from '@/components/ArticleNumberEditor';
 
 // Full lifecycle, for the visual status strip — Out for Delivery/Delivered are
 // reached automatically via the delivery-status sync, not manually, but they're
@@ -309,7 +309,6 @@ export default function OrderDetail() {
     mutationFn: (body: {
       assignedEmployeeIds?: number[];
       expectedDelivery?: string;
-      articleNumber?: string;
       estimatedDeliveryCharges?: string;
     }) => apiFetch(`/orders/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
     onSuccess: () => {
@@ -317,6 +316,26 @@ export default function OrderDetail() {
       toast.success('Order updated');
     },
     onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to update order'),
+  });
+
+  // Phase 22: same endpoint as the Orders list's inline editor, so a first Article
+  // No. auto-dispatches from here too. Errors are shown inline by the editor.
+  const saveArticleNumber = useMutation({
+    mutationFn: (articleNumber: string) =>
+      apiFetch<{ autoDispatched: boolean }>(`/orders/${id}/article-number`, {
+        method: 'PATCH',
+        body: JSON.stringify({ articleNumber }),
+      }),
+    onSuccess: (result) => {
+      invalidateOrder();
+      queryClient.invalidateQueries({ queryKey: ['order', id, 'tracking'] });
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
+      toast.success(
+        result.autoDispatched
+          ? 'Article No. saved — marked Dispatched (Kanina Post Office)'
+          : 'Article No. saved'
+      );
+    },
   });
 
   // Trash (Phase 3 addendum) — distinct from Cancel: this hides the order entirely,
@@ -631,13 +650,14 @@ export default function OrderDetail() {
         tracking={trackingQuery.data}
         isTrackingPending={trackingQuery.isPending}
         canEdit={canEditDelivery}
+        canEditOrderFields={canEditOrder}
         canOverrideStatus={canOverrideStatus}
         canAddPayment={canAddPayment}
         remaining={paymentsQuery.data?.remaining}
         onSaveExpectedDelivery={(expectedDelivery) =>
           updateOrderFields.mutate({ expectedDelivery })
         }
-        onSaveArticleNumber={(articleNumber) => updateOrderFields.mutate({ articleNumber })}
+        onSaveArticleNumber={(articleNumber) => saveArticleNumber.mutateAsync(articleNumber)}
         onSaveEstimatedDeliveryCharges={(estimatedDeliveryCharges) =>
           updateOrderFields.mutate({ estimatedDeliveryCharges })
         }
@@ -814,6 +834,7 @@ function DeliveryCard({
   tracking,
   isTrackingPending,
   canEdit,
+  canEditOrderFields,
   canOverrideStatus,
   canAddPayment,
   remaining,
@@ -827,19 +848,21 @@ function DeliveryCard({
   tracking: TrackingRow[] | undefined;
   isTrackingPending: boolean;
   canEdit: boolean;
+  // Phase 22: Expected Delivery / Estimated Delivery Charges save via PATCH
+  // /orders/:id, which checks order:update — not delivery:update like the rest of
+  // this card — so their ✏️ follow that permission instead of canEdit.
+  canEditOrderFields: boolean;
   canOverrideStatus: boolean;
   canAddPayment: boolean;
   remaining: number | undefined;
   onSaveExpectedDelivery: (date: string) => void;
-  onSaveArticleNumber: (value: string) => void;
+  onSaveArticleNumber: (value: string) => Promise<unknown>;
   onSaveEstimatedDeliveryCharges: (value: string) => void;
   isSavingOrder: boolean;
   onStatusChanged: () => void;
 }) {
   const [editingDate, setEditingDate] = useState(false);
   const [dateValue, setDateValue] = useState(order.expectedDelivery?.slice(0, 10) ?? '');
-  const [editingArticleNumber, setEditingArticleNumber] = useState(false);
-  const [articleNumberValue, setArticleNumberValue] = useState(order.articleNumber ?? '');
   const [editingCharges, setEditingCharges] = useState(false);
   const [chargesValue, setChargesValue] = useState(
     order.estimatedDeliveryCharges?.toString() ?? ''
@@ -910,7 +933,7 @@ function DeliveryCard({
               {order.expectedDelivery
                 ? new Date(order.expectedDelivery).toLocaleDateString()
                 : 'Not set'}
-              {canEdit && (
+              {canEditOrderFields && (
                 <button
                   type="button"
                   onClick={() => {
@@ -949,62 +972,14 @@ function DeliveryCard({
         </div>
 
         <div className="border-t pt-3">
-          {!editingArticleNumber ? (
-            <p className="flex items-center gap-2 text-muted-foreground">
-              Article Number (Tracking No.):{' '}
-              {order.articleNumber ? (
-                <span
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => openArticleNumberTracking(order.articleNumber!)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      openArticleNumberTracking(order.articleNumber!);
-                    }
-                  }}
-                  className="cursor-pointer text-primary hover:underline"
-                >
-                  {order.articleNumber}
-                </span>
-              ) : (
-                'Not set'
-              )}
-              {canEdit && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setArticleNumberValue(order.articleNumber ?? '');
-                    setEditingArticleNumber(true);
-                  }}
-                  className="text-primary hover:underline"
-                >
-                  <Pencil className="h-3 w-3" />
-                </button>
-              )}
-            </p>
-          ) : (
-            <div className="flex items-center gap-2">
-              <Input
-                value={articleNumberValue}
-                onChange={(e) => setArticleNumberValue(e.target.value)}
-                placeholder="e.g. DTDC123456789"
-                className="h-8 w-48"
-              />
-              <Button size="sm" variant="ghost" onClick={() => setEditingArticleNumber(false)}>
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                disabled={isSavingOrder}
-                onClick={() => {
-                  onSaveArticleNumber(articleNumberValue);
-                  setEditingArticleNumber(false);
-                }}
-              >
-                Save
-              </Button>
-            </div>
-          )}
+          <p className="flex flex-wrap items-center gap-2 text-muted-foreground">
+            Article Number (Tracking No.):{' '}
+            <ArticleNumberEditor
+              articleNumber={order.articleNumber}
+              canEdit={canEdit}
+              onSave={onSaveArticleNumber}
+            />
+          </p>
         </div>
 
         <div className="border-t pt-3">
@@ -1014,7 +989,7 @@ function DeliveryCard({
               {order.estimatedDeliveryCharges != null
                 ? `₹${order.estimatedDeliveryCharges.toLocaleString()}`
                 : 'Not set'}
-              {canEdit && (
+              {canEditOrderFields && (
                 <button
                   type="button"
                   onClick={() => {
@@ -1446,16 +1421,16 @@ function ReversePaymentDialog({
   );
 }
 
-const STATUS_FIELD_CONFIG: Record<string, { locationLabel: string; locationRequired: boolean }> = {
-  DISPATCHED: { locationLabel: 'Dispatch Location', locationRequired: true },
-  IN_TRANSIT: { locationLabel: 'Current Location', locationRequired: true },
-  OUT_FOR_DELIVERY: { locationLabel: 'Out for Delivery From', locationRequired: false },
-  DELIVERED: { locationLabel: 'Delivered At', locationRequired: false },
-  RETURN_PENDING: { locationLabel: 'Location', locationRequired: false },
-  RETURN_IN_TRANSIT: { locationLabel: 'Current Location', locationRequired: true },
-  RETURNED: { locationLabel: 'Received Back At', locationRequired: false },
-  LOST: { locationLabel: 'Last Known Location', locationRequired: false },
-  DAMAGED: { locationLabel: 'Location', locationRequired: false },
+const STATUS_FIELD_CONFIG: Record<string, { locationLabel: string }> = {
+  DISPATCHED: { locationLabel: 'Dispatch Location' },
+  IN_TRANSIT: { locationLabel: 'Current Location' },
+  OUT_FOR_DELIVERY: { locationLabel: 'Out for Delivery From' },
+  DELIVERED: { locationLabel: 'Delivered At' },
+  RETURN_PENDING: { locationLabel: 'Location' },
+  RETURN_IN_TRANSIT: { locationLabel: 'Current Location' },
+  RETURNED: { locationLabel: 'Received Back At' },
+  LOST: { locationLabel: 'Last Known Location' },
+  DAMAGED: { locationLabel: 'Location' },
 };
 
 // A separate, lighter dialog from ChangeDeliveryStatusDialog — only used while already
@@ -1572,7 +1547,7 @@ function ChangeDeliveryStatusDialog({
   const showPaymentSection = isDelivered && canAddPayment && order.paymentStatus !== 'PAID';
   const receivedBy = receivedByOption === 'customer' ? order.customer.name : receivedByOther;
 
-  const config = STATUS_FIELD_CONFIG[status] ?? { locationLabel: 'Location', locationRequired: false };
+  const config = STATUS_FIELD_CONFIG[status] ?? { locationLabel: 'Location' };
 
   function resetFields(nextCurrentStatus: string) {
     setStatus(nextCurrentStatus);
@@ -1662,10 +1637,7 @@ function ChangeDeliveryStatusDialog({
             </p>
           </div>
           <div>
-            <label className="text-sm font-medium">
-              {config.locationLabel}
-              {config.locationRequired && ' *'}
-            </label>
+            <label className="text-sm font-medium">{config.locationLabel}</label>
             <Input value={location} onChange={(e) => setLocation(e.target.value)} />
           </div>
           {(status === 'DELIVERED' || status === 'RETURNED') && (
@@ -1746,7 +1718,7 @@ function ChangeDeliveryStatusDialog({
             Cancel
           </Button>
           <Button
-            disabled={(config.locationRequired && !location.trim()) || updateStatus.isPending}
+            disabled={updateStatus.isPending}
             onClick={() => updateStatus.mutate()}
           >
             {updateStatus.isPending

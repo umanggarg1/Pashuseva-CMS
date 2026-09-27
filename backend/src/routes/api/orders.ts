@@ -99,6 +99,16 @@ router.patch(
   asyncHandler(orderController.updateDeliveryStatus)
 );
 
+// Phase 22: Article No. save from the Orders list / Order Details. delivery:update,
+// not order:update — saving a first number can auto-dispatch the order (see
+// orderService.updateArticleNumber), which is a delivery change.
+router.patch(
+  '/:id/article-number',
+  authorize('delivery:update'),
+  checkOrderAccess,
+  asyncHandler(orderController.updateArticleNumber)
+);
+
 router.get(
   '/:id/tracking',
   authorize('order:view'),
