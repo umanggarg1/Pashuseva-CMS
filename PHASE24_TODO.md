@@ -124,3 +124,54 @@ now excludes return-path statuses while the order is still on the forward path.
 Test-only fixes: two checks read the page before React re-rendered (they now wait
 for the element), and one toast check matched the page's "Order cancelled: …"
 banner too (now scoped to the toast).
+
+## Production release + verification (2026-09-27)
+
+Pushed `f53141c` + `f6d905c` to `origin/main` at 16:28. No schema change, so no
+migration.
+
+**Deployment confirmed:**
+
+- **Vercel:** live bundle `index-ESog9Mnh.js` contains "Correction (move back)" at
+  16:28:59.
+- **Render:** check P1 below. The first request was Rule C itself; the old
+  backend would have accepted the skips.
+
+**Production test on dedicated test orders only.** The same script passed 19/19
+as a local dry run first, as an Employee with `delivery:update` and no
+`order:cancel`.
+
+- **Account:** `test@gmail.com` (EMPLOYEE).
+- **Test customer:** **#153 "TEST Phase24 — delete me"** (phone 9000022024).
+- **4 orders** of 1 × FEED SAMPLE 500G (#36): **ORD-2026-000172 (#174) … ORD-2026-000175 (#177)**.
+- **Browser saves** were allowed only for these order ids.
+- **Stock recorded before any change: 99.**
+
+| # | Check | Result |
+|---|---|---|
+| P1 | Not Dispatched → In Transit / Delivered / Lost all refused (400 "cannot skip ahead"), order unchanged — proves Render runs f6d905c | ✅ |
+| P2 | Not Dispatched menu, table + Order Details | ✅ with a note: the menus showed **Dispatched · Cancel order…**. `/auth/me` shows **`test@gmail.com` now has `order:cancel`** (plus `order:delete`, `customer:delete`) — granted after Phase 23 — so this is the correct behavior for this account. The script expected the old permissions. |
+| P3–P5 | Dispatched / In Transit / Out for Delivery: **all forward choices** in the table, **identical** list in Order Details, no corrections group for an Employee | ✅ (6 checks) |
+| P6 | Dispatched → Out for Delivery directly from the table (skips In Transit) | ✅ |
+| P7 | In Transit → Returned… directly: dialog warns "This also marks the order as Cancelled"; order RETURNED + CANCELLED; stock +1 exactly | ✅ |
+| P8 | Final status (Returned): no table menu, no Change Status in Order Details | ✅ |
+| P9 | Return Pending from the table (confirm-box warning); return-path menu identical in both places | ✅ (3 checks) |
+| P10 | Add Location Update hidden on Not Dispatched, shown on Out for Delivery (new); logs a checkpoint without changing status | ✅ |
+| P11 | Delivered… opens the shared dialog preselected; **Cancelled** — nothing saved | ✅ |
+| G | No browser write outside the test orders | ✅ |
+| CLEAN | Every test order walked back to RETURNED; **stock 99 → 99** | ✅ |
+| — | Cancel order… **hidden** without `order:cancel` | **NOT RUN** on production — no such production account any more; covered locally (M3) |
+| — | Cancel order… positive path (actually cancelling) | Not run on production (as agreed; covered locally X1/X2/Mob) — the option was only seen, never clicked |
+| — | Admin/Manager "Correction (move back)" group | **NOT RUN** on production (no Admin login); covered locally (A1–A4). On production the Employee saw no corrections group. |
+
+No real customer orders were read or modified.
+
+**Heads-up:** `test@gmail.com` now holds `order:cancel`, `order:delete` and
+`customer:delete`. Revoke them if they were granted only for testing.
+
+**Admin cleanup pending:** move ORD-2026-000172 … ORD-2026-000175 and customer
+#153 "TEST Phase24 — delete me" to Trash. (Now that its orders are finished,
+Phase 19 unassigns the test account, so it can no longer reach them itself.)
+
+**Not changed here (separate follow-up):** Order Details' Cancel Order button is
+shown for `order:update`, but the backend requires `order:cancel`.
