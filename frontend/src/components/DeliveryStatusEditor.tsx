@@ -18,24 +18,32 @@ import {
   DIALOG_STATUSES,
   STATUS_FIELD_CONFIG,
   deliveryStatusLabel,
-  inlineNextStatuses,
+  getAllowedDeliveryStatusOptions,
 } from '@/lib/deliveryStatus';
 
 // Phase 23: inline Delivery Status on the Orders table (desktop rows + mobile cards).
 // UI state only, same split as ArticleNumberEditor — the page owns the save and all
-// cache handling. The menu lists only inlineNextStatuses (next step + Return / Lost /
-// Damaged, never the current status or a backward move). Simple statuses go through a
-// small confirm box with an optional location; Delivered / Returned / Lost / Damaged
-// are handed to the page, which opens the shared ChangeDeliveryStatusDialog. The
-// backend still decides whether any transition is allowed.
+// cache handling. The menu shows the current status as a disabled ✓ item, then
+// getAllowedDeliveryStatusOptions (Phase 24: every valid forward step + Return / Lost / Damaged,
+// never a backward move), then — for a Not Dispatched order and a user with
+// order:cancel — "Cancel order…". Simple statuses go through a small confirm box with
+// an optional location; Cancel order… through the same box with a required reason;
+// Delivered / Returned / Lost / Damaged are handed to the page, which opens the
+// shared ChangeDeliveryStatusDialog. The backend still decides whether any
+// transition is allowed.
+
+// Menu value for the order-level cancel action (not a delivery status).
+const CANCEL_ORDER = '__cancel_order__';
 export default function DeliveryStatusEditor({
   orderNumber,
   deliveryStatus,
   orderStatus,
   canEdit,
+  canCancel = false,
   badge,
   onSave,
   onOpenDialog,
+  onCancelOrder,
 }: {
   orderNumber: string;
   deliveryStatus: string;
@@ -44,14 +52,19 @@ export default function DeliveryStatusEditor({
   badge: ReactNode;
   onSave: (deliveryStatus: string, location: string | undefined) => Promise<unknown>;
   onOpenDialog: (deliveryStatus: string) => void;
+  canCancel?: boolean;
+  onCancelOrder?: (reason: string) => Promise<unknown>;
 }) {
   const [pending, setPending] = useState<string | null>(null);
   const [location, setLocation] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const options = canEdit ? inlineNextStatuses(deliveryStatus, orderStatus) : [];
-  if (options.length === 0) return <>{badge}</>;
+  const options = canEdit ? getAllowedDeliveryStatusOptions(deliveryStatus, orderStatus) : [];
+  const offerCancel =
+    canCancel && !!onCancelOrder && deliveryStatus === 'NOT_DISPATCHED' && orderStatus !== 'CANCELLED';
+  if (options.length === 0 && !offerCancel) return <>{badge}</>;
+  const isCancel = pending === CANCEL_ORDER;
 
   function choose(next: string) {
     if (DIALOG_STATUSES.includes(next)) {
@@ -71,13 +84,20 @@ export default function DeliveryStatusEditor({
 
   async function confirm() {
     if (!pending || saving) return;
+    // The cancel reason is required (POST /:id/cancel rejects an empty one).
+    if (isCancel && !location.trim()) {
+      setError('A reason is required to cancel the order.');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      await onSave(pending, location.trim() || undefined);
+      if (isCancel) await onCancelOrder!(location.trim());
+      else await onSave(pending, location.trim() || undefined);
       setPending(null);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Failed to update delivery status');
+      const fallback = isCancel ? 'Failed to cancel the order' : 'Failed to update delivery status';
+      setError(err instanceof ApiError ? err.message : fallback);
     } finally {
       setSaving(false);
     }
@@ -102,21 +122,35 @@ export default function DeliveryStatusEditor({
           {badge}
         </SelectTrigger>
         <SelectContent>
+          <SelectItem value={`__current__${deliveryStatus}`} disabled>
+            ✓ {deliveryStatusLabel(deliveryStatus)}
+          </SelectItem>
           {options.map((s) => (
             <SelectItem key={s} value={s}>
               {deliveryStatusLabel(s)}
               {DIALOG_STATUSES.includes(s) ? '…' : ''}
             </SelectItem>
           ))}
+          {offerCancel && (
+            <SelectItem value={CANCEL_ORDER} className="text-destructive">
+              Cancel order…
+            </SelectItem>
+          )}
         </SelectContent>
       </Select>
 
       <Dialog open={pending !== null} onOpenChange={(next) => !next && close()}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Mark as {pending ? deliveryStatusLabel(pending) : ''}?</DialogTitle>
+            <DialogTitle>
+              {isCancel
+                ? `Cancel ${orderNumber}?`
+                : `Mark as ${pending ? deliveryStatusLabel(pending) : ''}?`}
+            </DialogTitle>
             <DialogDescription>
-              {orderNumber} · currently {deliveryStatusLabel(deliveryStatus)}
+              {isCancel
+                ? 'Never dispatched, so its stock goes back immediately.'
+                : `${orderNumber} · currently ${deliveryStatusLabel(deliveryStatus)}`}
             </DialogDescription>
           </DialogHeader>
           {willCancel && (
@@ -126,8 +160,12 @@ export default function DeliveryStatusEditor({
           )}
           <div className="space-y-1 text-sm">
             <label className="font-medium" htmlFor="inline-delivery-location">
-              {(pending && STATUS_FIELD_CONFIG[pending]?.locationLabel) || 'Location'}{' '}
-              <span className="font-normal text-muted-foreground">(optional)</span>
+              {isCancel
+                ? 'Reason'
+                : (pending && STATUS_FIELD_CONFIG[pending]?.locationLabel) || 'Location'}{' '}
+              <span className="font-normal text-muted-foreground">
+                {isCancel ? '(required)' : '(optional)'}
+              </span>
             </label>
             <Input
               id="inline-delivery-location"
@@ -145,11 +183,15 @@ export default function DeliveryStatusEditor({
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={close} disabled={saving}>
-              Cancel
+              {isCancel ? 'Keep order' : 'Cancel'}
             </Button>
-            <Button onClick={() => void confirm()} disabled={saving}>
+            <Button
+              variant={isCancel ? 'destructive' : 'default'}
+              onClick={() => void confirm()}
+              disabled={saving || (isCancel && !location.trim())}
+            >
               {saving && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
-              Confirm
+              {isCancel ? 'Cancel order' : 'Confirm'}
             </Button>
           </DialogFooter>
         </DialogContent>

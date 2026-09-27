@@ -26,52 +26,60 @@ export const DELIVERY_STATUS_OPTIONS = [
 export const DELIVERY_RETURN_SEQUENCE = ['RETURN_PENDING', 'RETURN_IN_TRANSIT', 'RETURNED'] as const;
 export const DELIVERY_TERMINAL_STATUSES = ['DELIVERED', 'RETURNED', 'LOST', 'DAMAGED'];
 
-const isReturnStatus = (s: string) => (DELIVERY_RETURN_SEQUENCE as readonly string[]).includes(s);
+export const isReturnStatus = (s: string) => (DELIVERY_RETURN_SEQUENCE as readonly string[]).includes(s);
 
-// canOverride = Admin/Manager: any direction — except into the return path from
-// NOT_DISPATCHED, which the backend refuses for every role (nothing left to return).
-export function isDeliveryOptionAllowed(current: string, next: string, canOverride = false): boolean {
-  if (current === 'NOT_DISPATCHED' && isReturnStatus(next)) return false;
-  if (canOverride) return true;
-  if (DELIVERY_TERMINAL_STATUSES.includes(current)) return next === current;
-  if (next === 'LOST' || next === 'DAMAGED' || next === current) return true;
-  const forwardCurrent = DELIVERY_STEPS.indexOf(current as (typeof DELIVERY_STEPS)[number]);
-  const forwardNext = DELIVERY_STEPS.indexOf(next as (typeof DELIVERY_STEPS)[number]);
-  if (forwardCurrent !== -1 && forwardNext !== -1) return forwardNext >= forwardCurrent;
-  const returnCurrent = DELIVERY_RETURN_SEQUENCE.indexOf(
-    current as (typeof DELIVERY_RETURN_SEQUENCE)[number]
-  );
-  const returnNext = DELIVERY_RETURN_SEQUENCE.indexOf(
-    next as (typeof DELIVERY_RETURN_SEQUENCE)[number]
-  );
-  if (returnCurrent !== -1 && returnNext !== -1) return returnNext >= returnCurrent;
-  return true; // crossing branches (e.g. forward -> return-pending) is always allowed
-}
-
-// Phase 23: what the Orders table's inline menu offers — only the next step plus
-// Return / Lost / Damaged, never the current status and never a backward move
-// (corrections stay in Order Details). Every entry is a forward move, so it's valid
-// for Employee, Manager and Admin alike. See PHASE23_TODO.md "Next-step menu".
-export function inlineNextStatuses(deliveryStatus: string, orderStatus: string): string[] {
+// THE shared forward-option rule (Phase 24) — used by both the Orders table's inline
+// menu and Order Details' Change Status dialog, so the two always offer the same
+// choices. Every valid *forward* status from the current one (e.g. In Transit →
+// Delivered directly) plus the return / Lost / Damaged options. Never the current
+// status and never a backward move (those are getCorrectionOptions, Admin/Manager
+// only). Every entry is a move the backend accepts from any role with
+// delivery:update. See PHASE24_TODO.md "Menu".
+export function getAllowedDeliveryStatusOptions(deliveryStatus: string, orderStatus: string): string[] {
   if (DELIVERY_TERMINAL_STATUSES.includes(deliveryStatus)) return [];
-  const exceptions = ['LOST', 'DAMAGED'];
+  const cancelled = orderStatus === 'CANCELLED';
   switch (deliveryStatus) {
     case 'NOT_DISPATCHED':
-      return orderStatus === 'CANCELLED' ? [] : ['DISPATCHED'];
+      return cancelled ? [] : ['DISPATCHED'];
     case 'DISPATCHED':
     case 'IN_TRANSIT':
     case 'OUT_FOR_DELIVERY': {
-      if (orderStatus === 'CANCELLED') return ['RETURN_PENDING', ...exceptions];
-      const next = DELIVERY_STEPS[DELIVERY_STEPS.indexOf(deliveryStatus) + 1];
-      return [next, 'RETURN_PENDING', ...exceptions];
+      // A cancelled order on a forward stage (only reachable via an Admin correction)
+      // gets no forward options — Delivered would silently un-cancel it.
+      const ahead = cancelled
+        ? []
+        : DELIVERY_STEPS.slice(DELIVERY_STEPS.indexOf(deliveryStatus) + 1);
+      return [...ahead, 'RETURN_PENDING', 'LOST', 'DAMAGED', 'RETURNED'];
     }
     case 'RETURN_PENDING':
-      return ['RETURN_IN_TRANSIT', ...exceptions];
+      return ['RETURN_IN_TRANSIT', 'LOST', 'DAMAGED', 'RETURNED'];
     case 'RETURN_IN_TRANSIT':
-      return ['RETURNED', ...exceptions];
+      return ['RETURNED', 'LOST', 'DAMAGED'];
     default:
       return [];
   }
+}
+
+// Admin/Manager corrections (Phase 24) — shown separately from the forward options,
+// in Order Details' dialog only, never in the table. Everything that isn't the current
+// status, isn't a forward option, and isn't *ahead* of the current status — a later
+// forward step, or (while still on the forward path) any return-path status, e.g.
+// Dispatched → Return In Transit is a forward move the menu deliberately omits, not a
+// correction. None out of NOT_DISPATCHED (backend rule), and never back to
+// NOT_DISPATCHED for a cancelled order (it could then neither be returned nor
+// cancelled, so its stock would never come back).
+export function getCorrectionOptions(deliveryStatus: string, orderStatus: string): string[] {
+  if (deliveryStatus === 'NOT_DISPATCHED') return [];
+  const forward = getAllowedDeliveryStatusOptions(deliveryStatus, orderStatus);
+  const currentIndex = DELIVERY_STEPS.indexOf(deliveryStatus as (typeof DELIVERY_STEPS)[number]);
+  return DELIVERY_STATUS_OPTIONS.filter((s) => {
+    if (s === deliveryStatus || forward.includes(s)) return false;
+    const index = DELIVERY_STEPS.indexOf(s as (typeof DELIVERY_STEPS)[number]);
+    if (currentIndex !== -1 && index > currentIndex) return false;
+    if (currentIndex !== -1 && isReturnStatus(s)) return false;
+    if (s === 'NOT_DISPATCHED' && orderStatus === 'CANCELLED') return false;
+    return true;
+  });
 }
 
 // Statuses whose side effects (payment collection, received-by, stock restore,

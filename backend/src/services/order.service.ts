@@ -1026,6 +1026,20 @@ export const orderService = {
     ) {
       throw new HttpError(400, 'This order was never dispatched — there is nothing to return.');
     }
+    // Phase 24: a Not Dispatched order's only next delivery step is Dispatched — for
+    // every role, Admin/Manager corrections included (they go via Dispatched first).
+    // Cancelling is the separate POST /:id/cancel. Re-selecting Not Dispatched itself
+    // stays allowed, same as re-logging any current status.
+    if (
+      existing.deliveryStatus === 'NOT_DISPATCHED' &&
+      data.deliveryStatus !== 'NOT_DISPATCHED' &&
+      data.deliveryStatus !== 'DISPATCHED'
+    ) {
+      throw new HttpError(
+        400,
+        'A Not Dispatched order can only be marked Dispatched (or cancelled) — it cannot skip ahead.'
+      );
+    }
     assertNotBackwardDelivery(existing.deliveryStatus, data.deliveryStatus, actingUser);
     // Recording a payment here needs the same authority as the dedicated payments
     // endpoint would — delivery:update alone (e.g. a rider confirming drop-off)

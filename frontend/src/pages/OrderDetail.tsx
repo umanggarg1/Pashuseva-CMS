@@ -45,6 +45,14 @@ import ArticleNumberEditor from '@/components/ArticleNumberEditor';
 import ChangeDeliveryStatusDialog from '@/components/ChangeDeliveryStatusDialog';
 import { DELIVERY_STEPS } from '@/lib/deliveryStatus';
 
+const LOCATION_UPDATE_STATUSES = [
+  'DISPATCHED',
+  'IN_TRANSIT',
+  'OUT_FOR_DELIVERY',
+  'RETURN_PENDING',
+  'RETURN_IN_TRANSIT',
+];
+
 // Full lifecycle, for the visual status strip — Out for Delivery/Delivered are
 // reached automatically via the delivery-status sync, not manually, but they're
 // still real steps in the order's life and shown here.
@@ -618,6 +626,7 @@ export default function OrderDetail() {
         canEditOrderFields={canEditOrder}
         canOverrideStatus={canOverrideStatus}
         canAddPayment={canAddPayment}
+        canCancel={hasPermission(currentUser, 'order:cancel')}
         remaining={paymentsQuery.data?.remaining}
         onSaveExpectedDelivery={(expectedDelivery) =>
           updateOrderFields.mutate({ expectedDelivery })
@@ -802,6 +811,7 @@ function DeliveryCard({
   canEditOrderFields,
   canOverrideStatus,
   canAddPayment,
+  canCancel,
   remaining,
   onSaveExpectedDelivery,
   onSaveArticleNumber,
@@ -819,6 +829,8 @@ function DeliveryCard({
   canEditOrderFields: boolean;
   canOverrideStatus: boolean;
   canAddPayment: boolean;
+  // Phase 24: "Cancel order…" in the Change Status dialog — POST /:id/cancel's permission.
+  canCancel: boolean;
   remaining: number | undefined;
   onSaveExpectedDelivery: (date: string) => void;
   onSaveArticleNumber: (value: string) => Promise<unknown>;
@@ -872,8 +884,10 @@ function DeliveryCard({
           </div>
           {canChangeStatus && (
             <div className="flex items-center gap-2">
-              {(order.deliveryStatus === 'IN_TRANSIT' ||
-                order.deliveryStatus === 'RETURN_IN_TRANSIT') && (
+              {/* Phase 24: the Change Status dialog now lists only forward moves (the
+                  shared table rules), so logging a new location at the current status
+                  lives here, for every in-progress status — not just the two transit ones. */}
+              {LOCATION_UPDATE_STATUSES.includes(order.deliveryStatus) && (
                 <AddLocationUpdateDialog
                   orderId={order.id}
                   currentStatus={order.deliveryStatus}
@@ -886,6 +900,7 @@ function DeliveryCard({
                 canAddPayment={canAddPayment}
                 remaining={remaining}
                 onSuccess={onStatusChanged}
+                canCancel={canCancel}
               />
             </div>
           )}

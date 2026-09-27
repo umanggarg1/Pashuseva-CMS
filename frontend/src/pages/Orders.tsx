@@ -206,6 +206,9 @@ export default function Orders() {
   const canOverrideStatus = currentUser?.role === 'ADMIN' || currentUser?.role === 'MANAGER';
   const canAddPayment = hasPermission(currentUser, 'payment:create');
   const canViewPayments = hasPermission(currentUser, 'payment:view');
+  // Phase 24: "Cancel order…" in a Not Dispatched row's menu — same permission as
+  // POST /orders/:id/cancel.
+  const canCancelOrder = hasPermission(currentUser, 'order:cancel');
   // Delivered / Returned / Lost / Damaged picked from a row → the shared dialog.
   const [dialogTarget, setDialogTarget] = useState<{ order: OrderListItem; status: string } | null>(
     null
@@ -342,6 +345,20 @@ export default function Orders() {
     onSuccess: (saved, { order }) => {
       applySavedRow(order, saved);
       toast.success(`${order.orderNumber} → ${deliveryStatusLabel(saved.deliveryStatus)}`);
+    },
+  });
+
+  // Phase 24: order-level cancel from a Not Dispatched row (reason required) — the
+  // existing endpoint, which puts stock back immediately for a never-dispatched order.
+  const cancelOrder = useMutation({
+    mutationFn: ({ order, reason }: { order: OrderListItem; reason: string }) =>
+      apiFetch<SavedDeliveryOrder>(`/orders/${order.id}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: (saved, { order }) => {
+      applySavedRow(order, saved);
+      toast.success(`${order.orderNumber} cancelled`);
     },
   });
 
@@ -549,6 +566,8 @@ export default function Orders() {
                         saveDeliveryStatus.mutateAsync({ order, deliveryStatus: next, location })
                       }
                       onOpenDialog={(next) => setDialogTarget({ order, status: next })}
+                      canCancel={canCancelOrder}
+                      onCancelOrder={(reason) => cancelOrder.mutateAsync({ order, reason })}
                     />
                   </TableCell>
                 </TableRow>
@@ -616,6 +635,8 @@ export default function Orders() {
                       saveDeliveryStatus.mutateAsync({ order, deliveryStatus: next, location })
                     }
                     onOpenDialog={(next) => setDialogTarget({ order, status: next })}
+                    canCancel={canCancelOrder}
+                    onCancelOrder={(reason) => cancelOrder.mutateAsync({ order, reason })}
                   />
                 </div>
               </Link>

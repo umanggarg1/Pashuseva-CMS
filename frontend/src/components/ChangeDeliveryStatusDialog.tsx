@@ -16,17 +16,21 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
 import { apiFetch, ApiError } from '@/lib/api';
 import {
-  DELIVERY_STATUS_OPTIONS,
   STATUS_FIELD_CONFIG,
   deliveryStatusLabel,
   formatOrderAddress,
-  isDeliveryOptionAllowed,
+  getAllowedDeliveryStatusOptions,
+  getCorrectionOptions,
+  isReturnStatus,
   type DeliveryAddress,
 } from '@/lib/deliveryStatus';
 
@@ -38,6 +42,8 @@ export interface DeliveryDialogOrder {
   paymentStatus: string;
   customer: { name: string };
   address?: DeliveryAddress | null;
+  // Phase 24: lets the dialog warn that a return status also cancels the order.
+  orderStatus?: string;
 }
 
 // The order as PATCH /orders/:id/delivery-status returns it — callers merge these
@@ -56,6 +62,16 @@ export interface SavedDeliveryOrder {
 // every open) or opened by the caller with a preselected status (`open` /
 // `onOpenChange` / `initialStatus`); a caller-opened dialog is mounted fresh for
 // each opening, so its starting values come straight from the props below.
+//
+// Phase 24: the status list is the SAME shared rule as the Orders table
+// (getAllowedDeliveryStatusOptions) — forward moves only. Admin/Manager corrections
+// (getCorrectionOptions) sit in their own labelled group with a warning, never mixed
+// in with the forward options. A Not Dispatched order also offers "Cancel order…"
+// (order:cancel, reason required). Logging a new location at the current status is
+// Add Location Update's job now, not this dialog's.
+
+// Select value for the order-level cancel action (not a delivery status).
+const CANCEL_ORDER = '__cancel_order__';
 export default function ChangeDeliveryStatusDialog({
   order,
   canOverrideStatus,
@@ -66,6 +82,7 @@ export default function ChangeDeliveryStatusDialog({
   onOpenChange,
   initialStatus,
   showTrigger = true,
+  canCancel = false,
 }: {
   order: DeliveryDialogOrder;
   canOverrideStatus: boolean;
@@ -76,11 +93,18 @@ export default function ChangeDeliveryStatusDialog({
   onOpenChange?: (open: boolean) => void;
   initialStatus?: string;
   showTrigger?: boolean;
+  canCancel?: boolean;
 }) {
   const currentStatus = order.deliveryStatus;
+  const orderStatus = order.orderStatus ?? '';
+  const forwardOptions = getAllowedDeliveryStatusOptions(currentStatus, orderStatus);
+  const correctionOptions = canOverrideStatus ? getCorrectionOptions(currentStatus, orderStatus) : [];
+  const offerCancel = canCancel && currentStatus === 'NOT_DISPATCHED' && orderStatus !== 'CANCELLED';
   const [internalOpen, setInternalOpen] = useState(false);
   const open = controlledOpen ?? internalOpen;
-  const [status, setStatus] = useState(initialStatus ?? currentStatus);
+  // No preselection unless the caller passes one — the user picks a move explicitly.
+  const [status, setStatus] = useState(initialStatus ?? '');
+  const [reason, setReason] = useState('');
   // Opened straight at Delivered (Orders table) → pre-fill Delivered At the same way
   // picking Delivered in the dropdown does (handleStatusChange below).
   const [location, setLocation] = useState(() =>
@@ -96,6 +120,8 @@ export default function ChangeDeliveryStatusDialog({
   const [paymentStatusChoice, setPaymentStatusChoice] = useState<'UNPAID' | 'PAID'>('UNPAID');
   const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'ONLINE'>('CASH');
 
+  const isCancel = status === CANCEL_ORDER;
+  const isCorrection = correctionOptions.includes(status);
   const isDelivered = status === 'DELIVERED';
   const showPaymentSection = isDelivered && canAddPayment && order.paymentStatus !== 'PAID';
   const receivedBy = receivedByOption === 'customer' ? order.customer.name : receivedByOther;
@@ -104,6 +130,7 @@ export default function ChangeDeliveryStatusDialog({
 
   function resetFields(nextStatus: string) {
     setStatus(nextStatus);
+    setReason('');
     setLocation('');
     setNote('');
     setReceivedByOption('customer');
@@ -113,8 +140,8 @@ export default function ChangeDeliveryStatusDialog({
   }
 
   function setOpen(next: boolean) {
-    // Self-contained mode: start clean from the current status on every open.
-    if (next && controlledOpen === undefined) resetFields(currentStatus);
+    // Self-contained mode: start clean (nothing picked) on every open.
+    if (next && controlledOpen === undefined) resetFields('');
     if (controlledOpen === undefined) setInternalOpen(next);
     onOpenChange?.(next);
   }
@@ -131,7 +158,12 @@ export default function ChangeDeliveryStatusDialog({
 
   const updateStatus = useMutation({
     mutationFn: () =>
-      apiFetch<SavedDeliveryOrder>(`/orders/${order.id}/delivery-status`, {
+      isCancel
+        ? apiFetch<SavedDeliveryOrder>(`/orders/${order.id}/cancel`, {
+            method: 'POST',
+            body: JSON.stringify({ reason: reason.trim() }),
+          })
+        : apiFetch<SavedDeliveryOrder>(`/orders/${order.id}/delivery-status`, {
         method: 'PATCH',
         body: JSON.stringify({
           deliveryStatus: status,
@@ -146,13 +178,19 @@ export default function ChangeDeliveryStatusDialog({
         }),
       }),
     onSuccess: (saved) => {
-      toast.success('Delivery status updated');
+      toast.success(isCancel ? 'Order cancelled' : 'Delivery status updated');
       onSuccess(saved);
       setOpen(false);
     },
     onError: (err) =>
       toast.error(err instanceof ApiError ? err.message : 'Failed to update delivery status'),
   });
+
+  // Nothing this user can do from here (final status for an Employee, a cancelled
+  // Not Dispatched order, …) → no "Change Status" button at all.
+  if (showTrigger && forwardOptions.length === 0 && correctionOptions.length === 0 && !offerCancel) {
+    return null;
+  }
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -172,29 +210,70 @@ export default function ChangeDeliveryStatusDialog({
           <div>
             <label className="text-sm font-medium">New Status</label>
             <Select value={status} onValueChange={handleStatusChange}>
-              <SelectTrigger>
-                <SelectValue />
+              <SelectTrigger aria-label="New status">
+                <SelectValue placeholder="Choose…" />
               </SelectTrigger>
               <SelectContent>
-                {DELIVERY_STATUS_OPTIONS.filter((s) =>
-                  isDeliveryOptionAllowed(currentStatus, s, canOverrideStatus)
-                ).map((s) => (
+                {forwardOptions.map((s) => (
                   <SelectItem key={s} value={s}>
                     {deliveryStatusLabel(s)}
                   </SelectItem>
                 ))}
+                {offerCancel && (
+                  <SelectItem value={CANCEL_ORDER} className="text-destructive">
+                    Cancel order…
+                  </SelectItem>
+                )}
+                {correctionOptions.length > 0 && (
+                  <>
+                    <SelectSeparator />
+                    <SelectGroup>
+                      <SelectLabel>Correction (move back)</SelectLabel>
+                      {correctionOptions.map((s) => (
+                        <SelectItem key={s} value={s}>
+                          {deliveryStatusLabel(s)}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </>
+                )}
               </SelectContent>
             </Select>
             <p className="mt-1 text-xs text-muted-foreground">
+              Only forward moves are listed.
               {canOverrideStatus
-                ? 'You can pick any stage, including going back, or re-selecting the current one again to log a new location.'
-                : 'You can move forward (including starting a return, or marking Lost/Damaged), or re-select the current status again to log a new location — a Manager/Admin can move a status backward if needed.'}
+                ? ' Corrections are listed separately.'
+                : ' A Manager/Admin can correct a status backward if needed.'}{' '}
+              To log a new location without changing the status, use Add Location Update.
             </p>
           </div>
-          <div>
-            <label className="text-sm font-medium">{config.locationLabel}</label>
-            <Input value={location} onChange={(e) => setLocation(e.target.value)} />
-          </div>
+          {isCorrection && (
+            <p className="rounded-md bg-amber-50 p-2 text-sm text-amber-700">
+              Correction — this moves the status back. Use it only to fix a mistake.
+            </p>
+          )}
+          {isCancel && (
+            <div>
+              <label className="text-sm font-medium">
+                Reason <span className="font-normal text-muted-foreground">(required)</span>
+              </label>
+              <Input value={reason} onChange={(e) => setReason(e.target.value)} />
+              <p className="mt-1 text-xs text-muted-foreground">
+                Never dispatched, so its stock goes back immediately.
+              </p>
+            </div>
+          )}
+          {!isCancel && isReturnStatus(status) && order.orderStatus !== undefined && order.orderStatus !== 'CANCELLED' && (
+            <p className="rounded-md bg-amber-50 p-2 text-sm text-amber-700">
+              This also marks the order as Cancelled.
+            </p>
+          )}
+          {!isCancel && (
+            <div>
+              <label className="text-sm font-medium">{config.locationLabel}</label>
+              <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+            </div>
+          )}
           {(status === 'DELIVERED' || status === 'RETURNED') && (
             <div className="space-y-2">
               <label className="text-sm font-medium">Received By</label>
@@ -263,24 +342,29 @@ export default function ChangeDeliveryStatusDialog({
               )}
             </div>
           )}
-          <div>
-            <label className="text-sm font-medium">Note</label>
-            <Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional note" />
-          </div>
+          {!isCancel && (
+            <div>
+              <label className="text-sm font-medium">Note</label>
+              <Textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="Optional note" />
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>
             Cancel
           </Button>
           <Button
-            disabled={updateStatus.isPending}
+            variant={isCancel ? 'destructive' : 'default'}
+            disabled={!status || (isCancel && !reason.trim()) || updateStatus.isPending}
             onClick={() => updateStatus.mutate()}
           >
             {updateStatus.isPending
               ? 'Updating…'
-              : status === 'DELIVERED'
-                ? 'Mark as Delivered'
-                : 'Update Status'}
+              : isCancel
+                ? 'Cancel order'
+                : status === 'DELIVERED'
+                  ? 'Mark as Delivered'
+                  : 'Update Status'}
           </Button>
         </DialogFooter>
       </DialogContent>
