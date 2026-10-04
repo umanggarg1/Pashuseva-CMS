@@ -115,9 +115,12 @@ export default function ChangeDeliveryStatusDialog({
   const [receivedByOther, setReceivedByOther] = useState('');
   // Bundling a payment collected at the point of delivery into this same action
   // (COD, or confirming an online payment already made) — only relevant once
-  // there's something left to pay. Defaults to Unpaid: recording a payment is an
-  // explicit choice, never assumed just because the parcel was delivered.
-  const [paymentStatusChoice, setPaymentStatusChoice] = useState<'UNPAID' | 'PAID'>('UNPAID');
+  // there's something left to pay. Phase 25: defaults to Paid + COD (the usual case —
+  // cash collected on delivery), replacing the earlier "default Unpaid" rule; staff can
+  // still switch to Unpaid or Online. Only sent when the payment section is shown
+  // (payment:create + order not already Paid), and the backend records just the
+  // remaining balance, never more.
+  const [paymentStatusChoice, setPaymentStatusChoice] = useState<'UNPAID' | 'PAID'>('PAID');
   const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'ONLINE'>('CASH');
 
   const isCancel = status === CANCEL_ORDER;
@@ -135,7 +138,7 @@ export default function ChangeDeliveryStatusDialog({
     setNote('');
     setReceivedByOption('customer');
     setReceivedByOther('');
-    setPaymentStatusChoice('UNPAID');
+    setPaymentStatusChoice('PAID');
     setPaymentMethod('CASH');
   }
 
