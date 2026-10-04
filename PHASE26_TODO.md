@@ -50,3 +50,38 @@ RETURNED
   - [x] Other… Received By "Ramesh" sent and saved (location still Kanina) — R3
   - [x] Order Details: Returned → both defaults; → Delivered → customer + address (no Received Back At); → Returned → defaults again; saved — R4
   - [x] Delivered unchanged: Received By = customer (customer + Other…), Delivered At = address — R5
+
+## Production release + test (2026-10-04)
+
+Pushed `a7dde2b` + `1f199b4` to `origin/main` at 19:15. Frontend-only. Vercel served
+the new bundle **`index-BNd2Oy45.js`** (contains "Akash Enterprises") at 19:16:25.
+
+**Test: the cleanup's final Returned step done through the real dialog.** The same
+script passed 6/6 as a local dry run first. Browser saves were allowed only for the
+two test orders' delivery status.
+
+- **Account:** `test@gmail.com`.
+- **Test customer:** **#193 "TEST Phase26 — delete me"** (phone 9000022026).
+- **Orders**, 1 × FEED SAMPLE 500G (#36) each:
+  - **ORD-2026-000219 (#221)** — the one tested.
+  - **ORD-2026-000220 (#222)** — kept open so the account could still read the
+    tracking row after the first one reached Returned (Phase 19 unassigns at the
+    last finished order); returned via the API at the end.
+- **Stock: 99 before.**
+
+| # | Check | Result |
+|---|---|---|
+| P1 | Returned dialog on production: **Received Back At = Kanina, Received By = Akash Enterprises** | ✅ |
+| P2 | One click → exactly one PATCH with `location: "Kanina"`, `receivedBy: "Akash Enterprises"` | ✅ |
+| P3 | Tracking row: RETURNED, location **"Kanina"**, receivedBy **"Akash Enterprises"** | ✅ |
+| P4 | Stock restored by exactly 1 for that order (97 → 98) | ✅ |
+| G | No browser write outside the test orders | ✅ |
+| CLEAN | Second order walked to RETURNED too; **stock 99 → 99** | ✅ |
+
+**Acceptance criterion met:** Returned → one-click save → tracking row contains
+Kanina + Akash Enterprises, and stock is restored.
+
+No real customer orders were read or modified.
+
+**Admin cleanup pending:** move ORD-2026-000219, ORD-2026-000220 and customer
+#193 "TEST Phase26 — delete me" to Trash.
