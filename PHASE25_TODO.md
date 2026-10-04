@@ -61,3 +61,35 @@ payment, which must then be reversed by someone with `payment:edit`.
   - [x] Already Paid → no Payment Details; no `paymentCollected` sent; no extra payment — D5
   - [x] Employee without `payment:create` → no Payment Details; no `paymentCollected` sent; no payment — D6
   - [x] Order Details' own Change Status → Delivered also defaults to Paid + COD — D7
+
+## Production release + smoke test (2026-10-04)
+
+Pushed `0720148` + `4fe8736` to `origin/main` at 19:06. Frontend-only (backend
+unchanged), so deployment was confirmed by Vercel serving a **new bundle,
+`index-CLpC-3Ie.js`** (was `index-ESog9Mnh.js`) at 19:06:46. The check below
+then proved the new default is live.
+
+**Smoke test on one dedicated test order.** The same script passed 6/6 as a local
+dry run first. The browser was blocked from **any** write; Delivered was never
+saved.
+
+- **Account:** `test@gmail.com` (has `payment:create`, so the payment section shows).
+- **Test customer:** **#192 "TEST Phase25 — delete me"** (phone 9000022025).
+- **Order:** **ORD-2026-000218 (#220)**, 1 × FEED SAMPLE 500G (#36).
+- **Stock recorded before: 99.**
+
+| # | Check | Result |
+|---|---|---|
+| S1 | Test order moved to Out for Delivery (API) | ✅ |
+| S2 | **Delivered… dialog on production: Paid selected, COD selected** (Unpaid / Online not); balance ₹50 and address shown | ✅ |
+| S3 | **Cancel: no request attempted, no payment created**, still Out for Delivery + Unpaid | ✅ |
+| CLEAN | No payment on the test order; walked Return Pending → Return In Transit → Returned; **stock 99 → 99** | ✅ |
+| G | The browser attempted no write at all | ✅ |
+
+**Acceptance criterion met:** opening the Delivered dialog → Paid selected → COD
+selected → Cancel creates no payment.
+
+No real customer orders were read or modified.
+
+**Admin cleanup pending:** move ORD-2026-000218 and customer #192 "TEST Phase25 —
+delete me" to Trash.
