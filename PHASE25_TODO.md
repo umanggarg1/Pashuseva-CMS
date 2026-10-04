@@ -1,7 +1,7 @@
 # Phase 25 — Delivered: payment defaults to Paid + COD
 
-**Status: implemented and verified locally 2026-10-04 (frontend only).
-Never run against production. Not committed.**
+**Status: released and smoke-tested on production 2026-10-04 (see "Production
+release + smoke test" at the end). Test data cleaned up.**
 
 - **Browser: 9/9** on a throwaway Docker Postgres (`crm-phase25-test`, `localhost:55432`),
   with the actual request bodies captured.
@@ -91,5 +91,8 @@ selected → Cancel creates no payment.
 
 No real customer orders were read or modified.
 
-**Admin cleanup pending:** move ORD-2026-000218 and customer #192 "TEST Phase25 —
-delete me" to Trash.
+**Admin cleanup: done (2026-10-04).** ORD-2026-000218 and customer #192
+"TEST Phase25 — delete me" were moved to Trash. On the first check the customer
+still returned 403 (not yet trashed) and was then trashed. Verified read-only from
+`test@gmail.com`: `/orders/220` → 404 "Order not found"; `/customers/192` → 404
+"Customer not found"; FEED SAMPLE 500G stock still 99.
