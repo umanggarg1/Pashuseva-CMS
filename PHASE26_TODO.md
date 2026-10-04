@@ -1,7 +1,7 @@
 # Phase 26 — Returned: default "Received Back At = Kanina" and "Received By = Akash Enterprises"
 
-**Status: implemented and verified locally 2026-10-04 (frontend only).
-Never run against production. Not committed.**
+**Status: released and tested on production 2026-10-04 (see "Production release +
+test" at the end). Test data cleaned up.**
 
 - **Browser: 6/6** on a throwaway Docker Postgres (`crm-phase26-test`, `localhost:55432`),
   with request bodies and tracking rows checked.
@@ -83,5 +83,7 @@ Kanina + Akash Enterprises, and stock is restored.
 
 No real customer orders were read or modified.
 
-**Admin cleanup pending:** move ORD-2026-000219, ORD-2026-000220 and customer
-#193 "TEST Phase26 — delete me" to Trash.
+**Admin cleanup: done (2026-10-04).** ORD-2026-000219, ORD-2026-000220 and
+customer #193 "TEST Phase26 — delete me" were moved to Trash. Verified read-only
+from `test@gmail.com`: `/orders/221` and `/222` → 404 "Order not found";
+`/customers/193` → 404 "Customer not found"; FEED SAMPLE 500G stock still 99.
