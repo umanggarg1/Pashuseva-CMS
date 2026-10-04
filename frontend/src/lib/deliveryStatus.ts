@@ -90,6 +90,11 @@ export function deliveryStatusLabel(status: string) {
   return status.replace(/_/g, ' ');
 }
 
+// Phase 26: where a returned parcel comes back and who takes it in — the defaults the
+// Change Status dialog pre-selects for RETURNED (staff can still pick "Other…").
+export const RETURN_RECEIVED_AT = 'Kanina';
+export const RETURN_RECEIVED_BY = 'Akash Enterprises';
+
 export const STATUS_FIELD_CONFIG: Record<string, { locationLabel: string }> = {
   DISPATCHED: { locationLabel: 'Dispatch Location' },
   IN_TRANSIT: { locationLabel: 'Current Location' },

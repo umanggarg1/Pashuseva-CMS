@@ -25,6 +25,8 @@ import {
 } from '@/components/ui/select';
 import { apiFetch, ApiError } from '@/lib/api';
 import {
+  RETURN_RECEIVED_AT,
+  RETURN_RECEIVED_BY,
   STATUS_FIELD_CONFIG,
   deliveryStatusLabel,
   formatOrderAddress,
@@ -111,8 +113,15 @@ export default function ChangeDeliveryStatusDialog({
     initialStatus === 'DELIVERED' ? formatOrderAddress(order.address) : ''
   );
   const [note, setNote] = useState('');
-  const [receivedByOption, setReceivedByOption] = useState<'customer' | 'other'>('customer');
+  // Phase 26: Received By defaults to the customer for Delivered, but to the business
+  // (RETURN_RECEIVED_BY) for Returned — a returned parcel comes back to the store.
+  const [receivedByOption, setReceivedByOption] = useState<'customer' | 'business' | 'other'>(
+    initialStatus === 'RETURNED' ? 'business' : 'customer'
+  );
   const [receivedByOther, setReceivedByOther] = useState('');
+  // Phase 26: Returned's "Received Back At" is a choice — RETURN_RECEIVED_AT (default)
+  // or Other… (free text in `location`). Other statuses keep the plain text field.
+  const [returnLocationChoice, setReturnLocationChoice] = useState<'default' | 'other'>('default');
   // Bundling a payment collected at the point of delivery into this same action
   // (COD, or confirming an online payment already made) — only relevant once
   // there's something left to pay. Phase 25: defaults to Paid + COD (the usual case —
@@ -127,7 +136,15 @@ export default function ChangeDeliveryStatusDialog({
   const isCorrection = correctionOptions.includes(status);
   const isDelivered = status === 'DELIVERED';
   const showPaymentSection = isDelivered && canAddPayment && order.paymentStatus !== 'PAID';
-  const receivedBy = receivedByOption === 'customer' ? order.customer.name : receivedByOther;
+  const isReturned = status === 'RETURNED';
+  const receivedBy =
+    receivedByOption === 'customer'
+      ? order.customer.name
+      : receivedByOption === 'business'
+        ? RETURN_RECEIVED_BY
+        : receivedByOther;
+  const effectiveLocation =
+    isReturned && returnLocationChoice === 'default' ? RETURN_RECEIVED_AT : location;
 
   const config = STATUS_FIELD_CONFIG[status] ?? { locationLabel: 'Location' };
 
@@ -138,6 +155,7 @@ export default function ChangeDeliveryStatusDialog({
     setNote('');
     setReceivedByOption('customer');
     setReceivedByOther('');
+    setReturnLocationChoice('default');
     setPaymentStatusChoice('PAID');
     setPaymentMethod('CASH');
   }
@@ -154,8 +172,14 @@ export default function ChangeDeliveryStatusDialog({
   // scratch, but can still edit or clear it.
   function handleStatusChange(next: string) {
     setStatus(next);
-    if (next === 'DELIVERED' && !location) {
-      setLocation(formatOrderAddress(order.address));
+    if (next === 'DELIVERED') {
+      setReceivedByOption('customer');
+      if (!location) setLocation(formatOrderAddress(order.address));
+    }
+    // Phase 26: Returned → Received Back At = Kanina, Received By = Akash Enterprises.
+    if (next === 'RETURNED') {
+      setReceivedByOption('business');
+      setReturnLocationChoice('default');
     }
   }
 
@@ -170,7 +194,7 @@ export default function ChangeDeliveryStatusDialog({
         method: 'PATCH',
         body: JSON.stringify({
           deliveryStatus: status,
-          location: location || undefined,
+          location: effectiveLocation || undefined,
           note: note || undefined,
           receivedBy:
             status === 'DELIVERED' || status === 'RETURNED' ? receivedBy || undefined : undefined,
@@ -271,10 +295,34 @@ export default function ChangeDeliveryStatusDialog({
               This also marks the order as Cancelled.
             </p>
           )}
-          {!isCancel && (
+          {!isCancel && !isReturned && (
             <div>
               <label className="text-sm font-medium">{config.locationLabel}</label>
               <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+            </div>
+          )}
+          {isReturned && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium">{config.locationLabel}</label>
+              <Select
+                value={returnLocationChoice}
+                onValueChange={(v) => setReturnLocationChoice(v as 'default' | 'other')}
+              >
+                <SelectTrigger aria-label={config.locationLabel}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">{RETURN_RECEIVED_AT}</SelectItem>
+                  <SelectItem value="other">Other…</SelectItem>
+                </SelectContent>
+              </Select>
+              {returnLocationChoice === 'other' && (
+                <Input
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                  placeholder="e.g. Mahendragarh"
+                />
+              )}
             </div>
           )}
           {(status === 'DELIVERED' || status === 'RETURNED') && (
@@ -282,13 +330,17 @@ export default function ChangeDeliveryStatusDialog({
               <label className="text-sm font-medium">Received By</label>
               <Select
                 value={receivedByOption}
-                onValueChange={(v) => setReceivedByOption(v as 'customer' | 'other')}
+                onValueChange={(v) => setReceivedByOption(v as 'customer' | 'business' | 'other')}
               >
-                <SelectTrigger>
+                <SelectTrigger aria-label="Received By">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="customer">{order.customer.name}</SelectItem>
+                  {isReturned ? (
+                    <SelectItem value="business">{RETURN_RECEIVED_BY}</SelectItem>
+                  ) : (
+                    <SelectItem value="customer">{order.customer.name}</SelectItem>
+                  )}
                   <SelectItem value="other">Other…</SelectItem>
                 </SelectContent>
               </Select>
