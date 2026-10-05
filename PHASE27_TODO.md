@@ -1,8 +1,7 @@
 # Phase 27 — Trash Detail: open any trashed item (Admin-only)
 
-**Status: released 2026-10-05; verified locally. Production check NOT RUN — Trash is
-Admin-only and no production Admin login was available (see "Production release" at
-the end).**
+**Status: released and verified on production 2026-10-05 — the Admin check was done
+by the user from an Admin account (see "Production release" at the end).**
 
 - On a throwaway Docker Postgres (`localhost:55432`):
   - **Backend: 21/21.**
@@ -181,3 +180,9 @@ the frontend is.
 page shows the TRASHED badge, deletion info and the sections → Restore → you land
 on the normal page. Or provide an Admin login and the same scripted check can run
 on one dedicated test customer.
+
+**Production check — DONE (2026-10-05), by the user from an Admin account:**
+opened a trashed item from Trash; the Trash Detail page opened with the TRASHED
+badge and the item's details, and works correctly. This also confirms the Render
+backend is serving the new `GET /api/trash/:type/:id` (the old backend had no such
+route).
