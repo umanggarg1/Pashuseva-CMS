@@ -3,7 +3,7 @@ import { productRepository } from '../repositories/product.repository';
 import { categoryRepository } from '../repositories/category.repository';
 import { auditLogRepository } from '../repositories/auditLog.repository';
 import { HttpError, NotFoundError } from '../utils/httpError';
-import { computeDeletionExpiry } from '../utils/trash';
+import { computeDeletionExpiry, TRASH_RETENTION_DAYS } from '../utils/trash';
 import type {
   CreateProductInput,
   UpdateProductInput,
@@ -287,7 +287,7 @@ export const productService = {
       meta: {
         productId: id,
         productName: existing.name,
-        reason: actingUserId ? 'Admin action' : '10-day trash period expired',
+        reason: actingUserId ? 'Admin action' : `${TRASH_RETENTION_DAYS}-day trash period expired`,
       },
     });
   },

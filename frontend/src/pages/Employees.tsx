@@ -46,6 +46,7 @@ import PageHeader from '@/components/PageHeader';
 import PermissionPicker from '@/components/PermissionPicker';
 import { apiFetch, ApiError } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
+import { TRASH_RETENTION_DAYS } from '@/lib/trash';
 import {
   PERMISSION_PRESETS,
   EMPLOYEE_MANAGE_PERMISSIONS_GRANT,
@@ -986,7 +987,7 @@ function DeleteEmployeeDialog({
               </>
             ) : (
               <p className="text-sm text-muted-foreground">
-                {user.name} will be moved to Trash. You can restore it within 10 days.
+                {user.name} will be moved to Trash. You can restore it within {TRASH_RETENTION_DAYS} days.
               </p>
             )}
           </div>

@@ -9,7 +9,7 @@ import { auditLogRepository } from '../repositories/auditLog.repository';
 import { HttpError, NotFoundError } from '../utils/httpError';
 import { hasPermission } from '../utils/permissions';
 import { orderDataWhere, hasCustomerDataAccess, hasOrderDataAccess } from '../utils/dataScope';
-import { computeDeletionExpiry } from '../utils/trash';
+import { computeDeletionExpiry, TRASH_RETENTION_DAYS } from '../utils/trash';
 import { recalculateCustomerState } from '../utils/customerAutomation';
 import { DEFAULT_DISPATCH_LOCATION, INDIA_POST_ARTICLE_NUMBER_REGEX } from '../constants/delivery';
 import type { Role, OrderStatus, DeliveryStatus, PaymentStatus, DataScope } from '../generated/prisma/enums';
@@ -1404,7 +1404,7 @@ export const orderService = {
       meta: {
         orderId: id,
         orderNumber: existing.orderNumber,
-        reason: actingUser ? 'Admin action' : '10-day trash period expired',
+        reason: actingUser ? 'Admin action' : `${TRASH_RETENTION_DAYS}-day trash period expired`,
       },
     });
     return order;

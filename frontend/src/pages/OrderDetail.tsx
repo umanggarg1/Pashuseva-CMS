@@ -44,6 +44,7 @@ import { packagingUnitLabel } from '@/lib/productUnits';
 import ArticleNumberEditor from '@/components/ArticleNumberEditor';
 import ChangeDeliveryStatusDialog from '@/components/ChangeDeliveryStatusDialog';
 import { DELIVERY_STEPS } from '@/lib/deliveryStatus';
+import { TRASH_RETENTION_DAYS } from '@/lib/trash';
 
 const LOCATION_UPDATE_STATUSES = [
   'DISPATCHED',
@@ -312,7 +313,7 @@ export default function OrderDetail() {
   });
 
   // Trash (Phase 3 addendum) — distinct from Cancel: this hides the order entirely,
-  // recoverable from Trash for 10 days. Its own Payment ledger/line items are
+  // recoverable from Trash for TRASH_RETENTION_DAYS days. Its own Payment ledger/line items are
   // untouched, same as everything else about the order.
   const deleteOrder = useMutation({
     mutationFn: () => apiFetch(`/orders/${id}`, { method: 'DELETE' }),
@@ -457,7 +458,7 @@ export default function OrderDetail() {
             <ConfirmDialog
               trigger={<Button variant="destructive">Delete</Button>}
               title="Delete Order?"
-              description="This order will be moved to Trash. You can restore it within 10 days."
+              description={`This order will be moved to Trash. You can restore it within ${TRASH_RETENTION_DAYS} days.`}
               confirmLabel="Move to Trash"
               isPending={deleteOrder.isPending}
               onConfirm={() => deleteOrder.mutate()}

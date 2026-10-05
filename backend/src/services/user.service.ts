@@ -4,7 +4,7 @@ import { permissionRepository } from '../repositories/permission.repository';
 import { auditLogRepository } from '../repositories/auditLog.repository';
 import { authService } from './auth.service';
 import { HttpError, NotFoundError } from '../utils/httpError';
-import { computeDeletionExpiry } from '../utils/trash';
+import { computeDeletionExpiry, TRASH_RETENTION_DAYS } from '../utils/trash';
 import { hasFullBusinessAccess } from '../utils/dataScope';
 import {
   DEFAULT_EMPLOYEE_PERMISSIONS,
@@ -453,7 +453,7 @@ export const userService = {
       meta: {
         userId: id,
         name: existing.name,
-        reason: actingUser ? 'Admin action' : '10-day trash period expired',
+        reason: actingUser ? 'Admin action' : `${TRASH_RETENTION_DAYS}-day trash period expired`,
       },
     });
     return sanitizeUser(user);

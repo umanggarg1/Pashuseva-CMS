@@ -19,6 +19,7 @@ import PageHeader from '@/components/PageHeader';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import PermanentDeleteDialog from '@/components/trash/PermanentDeleteDialog';
 import { apiFetch, ApiError } from '@/lib/api';
+import { TRASH_RETENTION_DAYS } from '@/lib/trash';
 
 type TrashType = 'customer' | 'order' | 'product' | 'employee';
 
@@ -109,7 +110,7 @@ export default function Trash() {
       {query.data && query.data.total > 0 && (
         <p className="text-sm text-muted-foreground">
           {query.data.total} item{query.data.total === 1 ? '' : 's'} will be permanently deleted
-          within the next 10 days unless restored.
+          within the next {TRASH_RETENTION_DAYS} days unless restored.
         </p>
       )}
 

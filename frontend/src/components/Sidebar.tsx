@@ -34,7 +34,7 @@ export function NavLinks({
   const isAdmin = user?.role === 'ADMIN';
 
   // Trash is Admin-only, no exceptions (Phase 3 addendum) — the badge count gives a
-  // passive, ambient nudge to notice an accidental delete before its 10-day recovery
+  // passive, ambient nudge to notice an accidental delete before its recovery
   // window runs out, without the Admin having to think to check.
   const trashCountQuery = useQuery({
     queryKey: ['trash', 'count'],

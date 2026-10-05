@@ -9,7 +9,7 @@ export const trashItemParamSchema = z.object({
   id: z.coerce.number().int().positive(),
 });
 
-// Skips the 10-day recovery window entirely — the spec's own explicit ask for a
+// Skips the recovery window entirely — the spec's own explicit ask for a
 // stronger-than-usual confirmation than a normal Cancel/Confirm dialog.
 export const permanentDeleteConfirmSchema = z.object({
   confirm: z.literal('DELETE', { errorMap: () => ({ message: 'Type DELETE to confirm' }) }),

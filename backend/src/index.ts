@@ -8,7 +8,7 @@ const port = process.env.PORT || 4000;
 
 app.listen(port, () => {
   console.log(`CRM backend (TypeScript) listening on ${port}`);
-  // Hourly sweep for Trash items past their 10-day recovery window — see
+  // Hourly sweep for Trash items past their recovery window (TRASH_RETENTION_DAYS) — see
   // PHASE16_TODO.md for why this is an in-process interval, not a real cron.
   startTrashPurgeScheduler();
 });

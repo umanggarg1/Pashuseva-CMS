@@ -6,7 +6,7 @@ import { auditLogRepository } from '../repositories/auditLog.repository';
 import { HttpError, NotFoundError } from '../utils/httpError';
 import { customerDataWhere, hasCustomerDataAccess } from '../utils/dataScope';
 import { hasPermission } from '../utils/permissions';
-import { computeDeletionExpiry } from '../utils/trash';
+import { computeDeletionExpiry, TRASH_RETENTION_DAYS } from '../utils/trash';
 import type { Role, DataScope } from '../generated/prisma/enums';
 import type {
   CreateCustomerInput,
@@ -482,7 +482,7 @@ export const customerService = {
       meta: {
         customerId: id,
         customerName: existing.name,
-        reason: actingUser ? 'Admin action' : '10-day trash period expired',
+        reason: actingUser ? 'Admin action' : `${TRASH_RETENTION_DAYS}-day trash period expired`,
       },
     });
     return customer;

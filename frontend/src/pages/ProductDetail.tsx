@@ -23,6 +23,7 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 import { apiFetch, ApiError } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { packagingUnitLabel, formatWeight } from '@/lib/productUnits';
+import { TRASH_RETENTION_DAYS } from '@/lib/trash';
 
 interface ProductDetailData {
   id: number;
@@ -100,7 +101,7 @@ export default function ProductDetail() {
   });
 
   // Trash (Phase 3 addendum) — distinct from Deactivate above: this hides the
-  // product entirely, recoverable from Trash for 10 days. Past orders keep their
+  // product entirely, recoverable from Trash for TRASH_RETENTION_DAYS days. Past orders keep their
   // own snapshotted product name/SKU/price regardless.
   const deleteProduct = useMutation({
     mutationFn: () => apiFetch(`/products/${id}`, { method: 'DELETE' }),
@@ -209,7 +210,7 @@ export default function ProductDetail() {
                       </Button>
                     }
                     title="Delete Product?"
-                    description="This product will be moved to Trash. You can restore it within 10 days."
+                    description={`This product will be moved to Trash. You can restore it within ${TRASH_RETENTION_DAYS} days.`}
                     confirmLabel="Move to Trash"
                     isPending={deleteProduct.isPending}
                     onConfirm={() => deleteProduct.mutate()}

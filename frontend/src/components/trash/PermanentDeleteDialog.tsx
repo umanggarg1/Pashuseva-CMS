@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { TRASH_RETENTION_DAYS } from '@/lib/trash';
 import {
   Dialog,
   DialogContent,
@@ -12,7 +13,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 
-// Skips the 10-day recovery window entirely — the spec's own explicit ask for a
+// Skips the recovery window entirely — the spec's own explicit ask for a
 // stronger confirmation than the usual Cancel/Confirm dialog, requiring the Admin to
 // type DELETE rather than just clicking a button. Shared by the Trash list and the
 // Trash detail page (Phase 27).
@@ -51,7 +52,7 @@ export default function PermanentDeleteDialog({
           <DialogDescription>{itemLabel}</DialogDescription>
         </DialogHeader>
         <p className="text-sm text-destructive">
-          ⚠ This action cannot be undone. The 10-day recovery period will be skipped.
+          ⚠ This action cannot be undone. The {TRASH_RETENTION_DAYS}-day recovery period will be skipped.
         </p>
         <div className="space-y-2">
           <label className="text-sm font-medium" htmlFor="permanent-delete-confirm">

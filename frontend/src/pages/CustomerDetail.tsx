@@ -34,6 +34,7 @@ import ConfirmDialog from '@/components/ConfirmDialog';
 import EmployeeMultiSelect from '@/components/EmployeeMultiSelect';
 import { apiFetch, ApiError } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
+import { TRASH_RETENTION_DAYS } from '@/lib/trash';
 
 interface Phone {
   id: number;
@@ -143,7 +144,7 @@ export default function CustomerDetail() {
   // anymore; the "Active Customer"/"Inactive Customer" line below just reflects it.
 
   // Trash (Phase 3 addendum) — distinct from Deactivate above: this hides the
-  // customer entirely (not just flags it), recoverable from Trash for 10 days.
+  // customer entirely (not just flags it), recoverable from Trash for TRASH_RETENTION_DAYS days.
   const deleteCustomer = useMutation({
     mutationFn: () => apiFetch(`/customers/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
@@ -224,7 +225,7 @@ export default function CustomerDetail() {
                 </Button>
               }
               title="Delete Customer?"
-              description="This customer will be moved to Trash. You can restore it within 10 days."
+              description={`This customer will be moved to Trash. You can restore it within ${TRASH_RETENTION_DAYS} days.`}
               confirmLabel="Move to Trash"
               isPending={deleteCustomer.isPending}
               onConfirm={() => deleteCustomer.mutate()}
