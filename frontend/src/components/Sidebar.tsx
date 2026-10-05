@@ -90,7 +90,10 @@ export function NavLinks({
 
 export default function Sidebar() {
   return (
-    <aside className="print-hide hidden w-64 shrink-0 border-r bg-card p-4 md:block">
+    // Phase 28: pinned on desktop while the page scrolls — sticky + exactly one screen
+    // tall (self-start so the flex row doesn't stretch it to the page's full height,
+    // which would defeat sticky), with its own scroll if the menu ever outgrows it.
+    <aside className="print-hide hidden w-64 shrink-0 border-r bg-card p-4 md:sticky md:top-0 md:block md:h-screen md:self-start md:overflow-y-auto">
       <NavLinks />
     </aside>
   );

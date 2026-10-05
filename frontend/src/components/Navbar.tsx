@@ -19,7 +19,10 @@ export default function Navbar({ onOpenSearch }: { onOpenSearch: () => void }) {
   const navigate = useNavigate();
 
   return (
-    <div className="print-hide flex items-center justify-between gap-4 border-b bg-card p-4">
+    // Phase 28: stays pinned to the top of the content column on desktop while the page
+    // scrolls (the window still scrolls, so Back's scroll restore and printing keep
+    // working). z-30 keeps it above page content but below dialogs/menus (z-50).
+    <div className="print-hide flex items-center justify-between gap-4 border-b bg-card p-4 md:sticky md:top-0 md:z-30">
       <div className="flex items-center gap-4">
         <Sheet open={open} onOpenChange={setOpen}>
           <SheetTrigger asChild>
