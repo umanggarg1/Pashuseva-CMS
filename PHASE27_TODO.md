@@ -2,16 +2,19 @@
 
 **Status: both parts released and verified on production 2026-10-05.**
 
-This document combines two Trash changes. Phase 29 was merged into this file; its
-old `PHASE29_TODO.md` no longer exists.
+This document combines two Trash changes. The 30-day change was first numbered
+Phase 29 and merged into this file as Part B. The number Phase 29 has since been
+reused for a different change (`PHASE29_TODO.md`: Prisma migrations over Neon's
+direct connection).
 
 | Part | What | Commits | Production |
 |---|---|---|---|
 | **A — Trash Detail** (original Phase 27) | Open any trashed item from Trash in an Admin-only detail page; Restore / Delete Permanently from it; restore / permanent-delete now refuse already-purged records | `b173cbc` docs, `f447c24` code | ✅ Verified by the user from an Admin account |
 | **B — 30-day window** (formerly Phase 29) | Trash recovery window 10 → 30 days, including items already in Trash (data migration) | `dac5bea` docs, `6e26507` code + migration | ✅ Live after one failed first deploy (Prisma lock timeout); texts + Admin spot-check verified |
 
-Code comments and the migration `20261005120000_trash_retention_30_days` still say
-"Phase 29" — that name now refers to **Part B** below. (The applied migration file
+The migration `20261005120000_trash_retention_30_days` still says "Phase 29" in its
+comment — there it means **Part B** below. (The two code comments that said the
+same now say "Phase 27 Part B".) (The applied migration file
 must never be edited: Prisma checksums applied migrations.)
 
 ---
