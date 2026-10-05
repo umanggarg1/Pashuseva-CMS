@@ -1,8 +1,8 @@
 # Phase 29 — Trash recovery window: 10 days → 30 days
 
-**Status: released 2026-10-05 — backend live on Render (after one failed first deploy,
-see below), migration applied, 30-day texts verified on production. Admin Trash
-spot-check still open.**
+**Status: released and fully verified on production 2026-10-05 — backend live on
+Render (after one failed first deploy, see below), migration applied, 30-day texts
+verified, Admin Trash spot-check confirmed by the user.**
 
 - On a throwaway Docker Postgres (`crm-phase29-test`, `localhost:55432`):
   - **Migration + behaviour: 9/9.**
@@ -66,7 +66,7 @@ explicitly after the push: Render's deploy log should show
   - [x] P1 the hourly sweep purges only the truly expired item (a 9-day-old product survives); reason "30-day trash period expired"
   - [x] P2 the Trash list shows the 5 remaining items
 - [x] Regression: Phase 27 Trash suite 21/21
-- [x] Release + production check (see below; Admin Trash spot-check still open)
+- [x] Release + production check (see below), incl. the Admin Trash spot-check
 
 ## Production release (2026-10-05)
 
@@ -103,7 +103,7 @@ and that succeeds only when every migration in the folder is applied — so this
 | F2 | Order "Move to Trash" confirmation: "…You can restore it within **30 days**." — Cancelled | ✅ |
 | G | No write attempted | ✅ |
 | M | Migration applied in production | ✅ (deploy live with the migration present; see above) |
-| A | Admin spot-check in Trash: each item's expiry ≈ deletion date + 30 days (e.g. deleted 5 days ago → 25 days left) | **Open** — needs an Admin |
+| A | Admin spot-check in Trash: each item's expiry ≈ deletion date + 30 days (e.g. deleted 5 days ago → 25 days left) | ✅ Confirmed by the user from an Admin account (2026-10-05) |
 
 **Follow-up (recommended, separate change):** run migrations over Neon's **direct**
 (non-pooled) connection so this lock problem can't recur. Add a `DIRECT_URL`
