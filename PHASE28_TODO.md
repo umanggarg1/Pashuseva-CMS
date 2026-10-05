@@ -6,7 +6,7 @@ at the end).**
 - **Browser: 6/6** on a throwaway Docker Postgres (`crm-phase28-test`, `localhost:55432`).
 - `tsc` and ESLint clean.
 
-(Phase 27 — Trash Detail — is planned separately and still waiting for the go-ahead.)
+(Phase 27 — Trash Detail — was developed separately and shipped in the same release.)
 
 ## The request, as given
 
