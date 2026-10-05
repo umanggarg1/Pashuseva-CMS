@@ -1,7 +1,8 @@
 # Phase 27 — Trash Detail: open any trashed item (Admin-only)
 
-**Status: implemented and verified locally 2026-10-05. Never run against production.
-Not committed.**
+**Status: released 2026-10-05; verified locally. Production check NOT RUN — Trash is
+Admin-only and no production Admin login was available (see "Production release" at
+the end).**
 
 - On a throwaway Docker Postgres (`localhost:55432`):
   - **Backend: 21/21.**
@@ -155,3 +156,28 @@ Per-type `record` contents:
 (`managerId`), so T7 creates one first; "Deleted Employee" appears both as the
 heading and as an audit-log row, so the selector targets the heading. The local
 login limiter was reset by restarting the local backend between runs.
+
+## Production release (2026-10-05)
+
+Pushed with Phase 28: `b173cbc` (docs) + `f447c24` (code), at 22:44. Vercel served the
+new bundle `index-D7RaHtjw.js` (contains the Trash detail page) at 22:44:37.
+
+**Pre-push review (re-confirmed):**
+- `GET /api/trash/:type/:id` sits behind the router-wide
+  `requireRole('ADMIN')`; Manager / Employee get 403 (backend S, browser T9).
+- Normal detail APIs still 404 trashed records (backend S).
+- Restore / permanent-delete 404 on purged records (backend P).
+- The employee detail uses an explicit select without `passwordHash`, and the
+  response was checked for it (backend D).
+
+**Production check: NOT RUN.** Trash is Admin-only, and the only production account
+available here (`test@gmail.com`) is an Employee. The Admin-only restriction was not
+weakened to test it, and an Employee check can't distinguish the old backend from
+the new one (both 403). The local backend 21/21 and browser 9/9 runs cover the
+workflow. **Render deployment of `f447c24` is therefore not confirmed from here** —
+the frontend is.
+
+**To verify on production** (Admin): Trash → click a row (or View) → the detail
+page shows the TRASHED badge, deletion info and the sections → Restore → you land
+on the normal page. Or provide an Admin login and the same scripted check can run
+on one dedicated test customer.

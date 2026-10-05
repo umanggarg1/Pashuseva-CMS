@@ -1,7 +1,7 @@
 # Phase 28 — Desktop: sidebar and navbar stay fixed while the page scrolls
 
-**Status: implemented and verified locally 2026-10-05 (frontend only).
-Never run against production. Not committed.**
+**Status: released and verified on production 2026-10-05 (see "Production release"
+at the end).**
 
 - **Browser: 6/6** on a throwaway Docker Postgres (`crm-phase28-test`, `localhost:55432`).
 - `tsc` and ESLint clean.
@@ -52,3 +52,22 @@ scrolls with the page, as before.
   - [x] Dropdown options and the search dialog render above the pinned navbar — L3
   - [x] Orders list scrolled → open an order → Back: scroll position restored — L4
   - [x] Mobile 390px unchanged: no sidebar column, navbar scrolls away, slide-out menu works — L5
+
+## Production release (2026-10-05)
+
+Pushed with Phase 27: `f06ba17` (docs) + `f4b63f2` (code), at 22:44. Vercel served
+the new bundle `index-D7RaHtjw.js` at 22:44:37.
+
+**Pre-push print check (local):** under print media the sidebar and navbar are
+hidden as before, no scroll box clips the printed content, and the PDF renders —
+desktop and mobile.
+
+**Production check: read-only**, as `test@gmail.com` (Employee), with all writes
+blocked in the browser. No test data was created.
+
+| # | Check | Result |
+|---|---|---|
+| Q1 | Desktop 1366×768, Products scrolled to the bottom (1189px): sidebar pinned (top 0, full height), navbar pinned | ✅ |
+| Q2 | Sidebar navigation works while scrolled | ✅ |
+| Q3 | Mobile 390px unchanged: no sidebar column, navbar scrolls away | ✅ |
+| G | No write attempted | ✅ |
