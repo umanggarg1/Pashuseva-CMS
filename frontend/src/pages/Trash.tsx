@@ -1,9 +1,9 @@
 import { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import {
   Table,
   TableBody,
@@ -12,20 +12,12 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import ErrorState from '@/components/ErrorState';
 import EmptyState from '@/components/EmptyState';
 import PageHeader from '@/components/PageHeader';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import PermanentDeleteDialog from '@/components/trash/PermanentDeleteDialog';
 import { apiFetch, ApiError } from '@/lib/api';
 
 type TrashType = 'customer' | 'order' | 'product' | 'employee';
@@ -57,6 +49,7 @@ const TYPE_LABEL: Record<TrashType, string> = {
 export default function Trash() {
   const [tab, setTab] = useState<TrashType | 'all'>('all');
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
 
   const query = useQuery({
     queryKey: ['trash', tab],
@@ -156,13 +149,26 @@ export default function Trash() {
             </TableHeader>
             <TableBody>
               {query.data.data.map((item) => (
-                <TableRow key={`${item.type}-${item.id}`}>
+                // Phase 27: the whole row opens the item's Trash detail page.
+                <TableRow
+                  key={`${item.type}-${item.id}`}
+                  className="cursor-pointer"
+                  onClick={() => navigate(`/trash/${item.type}/${item.id}`)}
+                >
                   <TableCell className="font-medium">{item.label}</TableCell>
                   <TableCell>{TYPE_LABEL[item.type]}</TableCell>
                   <TableCell>{item.deletedBy?.name ?? '—'}</TableCell>
                   <TableCell>{new Date(item.deletedAt).toLocaleDateString()}</TableCell>
                   <TableCell>{new Date(item.deletionExpiresAt).toLocaleDateString()}</TableCell>
-                  <TableCell className="flex flex-wrap justify-end gap-2">
+                  {/* Clicks here (and inside the portalled dialogs, whose React events
+                      still bubble through this cell) must not open the row. */}
+                  <TableCell
+                    className="flex flex-wrap justify-end gap-2"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Button variant="ghost" size="sm" asChild>
+                      <Link to={`/trash/${item.type}/${item.id}`}>View</Link>
+                    </Button>
                     <ConfirmDialog
                       trigger={
                         <Button variant="outline" size="sm">
@@ -176,7 +182,8 @@ export default function Trash() {
                       onConfirm={() => restore.mutate(item)}
                     />
                     <PermanentDeleteDialog
-                      item={item}
+                      typeLabel={TYPE_LABEL[item.type]}
+                      itemLabel={item.label}
                       isPending={permanentDelete.isPending}
                       onConfirm={() => permanentDelete.mutate(item)}
                     />
@@ -195,73 +202,5 @@ export default function Trash() {
         </>
       )}
     </div>
-  );
-}
-
-// Skips the 10-day recovery window entirely — the spec's own explicit ask for a
-// stronger confirmation than the usual Cancel/Confirm dialog, requiring the Admin to
-// type DELETE rather than just clicking a button.
-function PermanentDeleteDialog({
-  item,
-  isPending,
-  onConfirm,
-}: {
-  item: TrashItem;
-  isPending?: boolean;
-  onConfirm: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [confirmText, setConfirmText] = useState('');
-
-  return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) setConfirmText('');
-      }}
-    >
-      <DialogTrigger asChild>
-        <Button variant="destructive" size="sm">
-          Delete Permanently
-        </Button>
-      </DialogTrigger>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Permanently Delete {TYPE_LABEL[item.type]}?</DialogTitle>
-          <DialogDescription>{item.label}</DialogDescription>
-        </DialogHeader>
-        <p className="text-sm text-destructive">
-          ⚠ This action cannot be undone. The 10-day recovery period will be skipped.
-        </p>
-        <div className="space-y-2">
-          <label className="text-sm font-medium" htmlFor="permanent-delete-confirm">
-            Type DELETE to confirm
-          </label>
-          <Input
-            id="permanent-delete-confirm"
-            value={confirmText}
-            onChange={(e) => setConfirmText(e.target.value)}
-            autoComplete="off"
-          />
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
-            Cancel
-          </Button>
-          <Button
-            variant="destructive"
-            disabled={confirmText !== 'DELETE' || isPending}
-            onClick={() => {
-              setOpen(false);
-              setConfirmText('');
-              onConfirm();
-            }}
-          >
-            Delete Permanently
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }

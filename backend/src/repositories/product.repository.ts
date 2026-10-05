@@ -207,6 +207,25 @@ export const productRepository = {
     return prisma.product.findFirst({ where: { id, deletedAt: { not: null } } });
   },
 
+  // Phase 27: everything the Admin-only Trash detail view shows for a trashed product.
+  // No purgedAt on Product — purging deletes the row, so "not found" already covers it.
+  findTrashedDetail(id: number) {
+    return prisma.product.findFirst({
+      where: { id, deletedAt: { not: null } },
+      include: {
+        category: { select: { id: true, name: true } },
+        createdBy: { select: { id: true, name: true } },
+        deletedBy: { select: { id: true, name: true } },
+        stockHistory: {
+          include: { createdBy: { select: { id: true, name: true } }, order: { select: { orderNumber: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: 100,
+        },
+        activities: { include: { createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 100 },
+      },
+    });
+  },
+
   findTrashed() {
     return prisma.product.findMany({
       where: { deletedAt: { not: null } },

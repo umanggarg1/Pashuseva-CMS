@@ -23,6 +23,12 @@ export const trashController = {
     res.json({ data: items, total: items.length });
   },
 
+  // Phase 27: Admin-only detail view of one trashed item.
+  async detail(req: Request, res: Response) {
+    const { type, id } = trashItemParamSchema.parse(req.params);
+    res.json(await trashService.getTrashDetail(type, id));
+  },
+
   async restore(req: Request, res: Response) {
     const { type, id } = trashItemParamSchema.parse(req.params);
     const actingUser = requireActingUser(req);

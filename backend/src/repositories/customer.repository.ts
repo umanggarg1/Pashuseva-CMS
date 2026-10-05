@@ -389,8 +389,41 @@ export const customerRepository = {
   // Trash (Phase 3 addendum) — a separate, deliberately narrow set of queries/writes
   // that only ever touch already-trashed rows, mirroring findMany/findById above but
   // with the opposite deletedAt filter.
+  // Phase 27: purgedAt: null too — see order.repository's findTrashedById.
   findTrashedById(id: number) {
-    return prisma.customer.findFirst({ where: { id, deletedAt: { not: null } } });
+    return prisma.customer.findFirst({ where: { id, deletedAt: { not: null }, purgedAt: null } });
+  },
+
+  // Phase 27: everything the Admin-only Trash detail view shows for a trashed customer,
+  // including all of its (non-purged) orders — trashing a customer never touches them.
+  findTrashedDetail(id: number) {
+    return prisma.customer.findFirst({
+      where: { id, deletedAt: { not: null }, purgedAt: null },
+      include: {
+        phones: { orderBy: { isPrimary: 'desc' } },
+        addresses: true,
+        customerNotes: { include: { createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' } },
+        activities: { include: { createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' }, take: 100 },
+        assignedEmployees: { include: { employee: { select: { id: true, name: true } } } },
+        assignedManager: { select: { id: true, name: true } },
+        createdBy: { select: { id: true, name: true } },
+        deletedBy: { select: { id: true, name: true } },
+        orders: {
+          where: { purgedAt: null },
+          select: {
+            id: true,
+            orderNumber: true,
+            orderDate: true,
+            total: true,
+            orderStatus: true,
+            deliveryStatus: true,
+            paymentStatus: true,
+            deletedAt: true,
+          },
+          orderBy: { orderDate: 'desc' },
+        },
+      },
+    });
   },
 
   findTrashed() {

@@ -11,6 +11,8 @@ const router = Router();
 router.use(authenticate, requireRole('ADMIN'));
 
 router.get('/', asyncHandler(trashController.list));
+// Phase 27: open any trashed item (still Admin-only via the router.use above).
+router.get('/:type/:id', asyncHandler(trashController.detail));
 router.post('/:type/:id/restore', asyncHandler(trashController.restore));
 router.post('/:type/:id/permanent-delete', asyncHandler(trashController.permanentDelete));
 

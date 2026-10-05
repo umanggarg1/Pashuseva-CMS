@@ -17,6 +17,7 @@ import Orders from './pages/Orders';
 import CreateOrder from './pages/CreateOrder';
 import OrderDetail from './pages/OrderDetail';
 import Trash from './pages/Trash';
+import TrashDetail from './pages/TrashDetail';
 import StaticInfoPage from './pages/StaticInfoPage';
 import Sidebar from './components/Sidebar';
 import Navbar from './components/Navbar';
@@ -93,6 +94,7 @@ export default function App() {
           {/* Trash is Admin-only, no exceptions (Phase 3 addendum). */}
           <Route element={<RequireRole roles={['ADMIN']} />}>
             <Route path="/trash" element={<Trash />} />
+            <Route path="/trash/:type/:id" element={<TrashDetail />} />
           </Route>
         </Route>
       </Route>

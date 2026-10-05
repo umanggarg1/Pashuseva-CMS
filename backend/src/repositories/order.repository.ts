@@ -464,8 +464,39 @@ export const orderRepository = {
   },
 
   // Trash (Phase 3 addendum).
+  // Phase 27: purgedAt: null too — a purged order is gone from Trash, so restore /
+  // permanent-delete / the Trash detail view must 404 on it (previously a direct API
+  // call could still act on an already-purged order).
   findTrashedById(id: number) {
-    return prisma.order.findFirst({ where: { id, deletedAt: { not: null } } });
+    return prisma.order.findFirst({ where: { id, deletedAt: { not: null }, purgedAt: null } });
+  },
+
+  // Phase 27: everything the Admin-only Trash detail view shows for a trashed order.
+  findTrashedDetail(id: number) {
+    return prisma.order.findFirst({
+      where: { id, deletedAt: { not: null }, purgedAt: null },
+      include: {
+        customer: {
+          select: {
+            id: true,
+            name: true,
+            deletedAt: true,
+            purgedAt: true,
+            phones: { orderBy: { isPrimary: 'desc' } },
+          },
+        },
+        items: true,
+        address: true,
+        payments: { include: { createdBy: { select: { id: true, name: true } } }, orderBy: { paymentDate: 'asc' } },
+        tracking: { include: { updatedBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'asc' } },
+        activities: { include: { createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' } },
+        orderNotes: { include: { createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: 'desc' } },
+        assignedEmployees: { include: { employee: { select: { id: true, name: true } } } },
+        createdBy: { select: { id: true, name: true } },
+        cancelledBy: { select: { id: true, name: true } },
+        deletedBy: { select: { id: true, name: true } },
+      },
+    });
   },
 
   findTrashed() {

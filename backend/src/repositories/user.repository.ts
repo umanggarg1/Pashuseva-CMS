@@ -151,8 +151,46 @@ export const userRepository = {
 
   // Trash (Phase 3 addendum) — Employee/Manager only, never Admin (enforced in the
   // service layer, not here).
+  // Phase 27: purgedAt: null too — see order.repository's findTrashedById.
   findTrashedById(id: number) {
-    return prisma.user.findFirst({ where: { id, deletedAt: { not: null } } });
+    return prisma.user.findFirst({ where: { id, deletedAt: { not: null }, purgedAt: null } });
+  },
+
+  // Phase 27: the Admin-only Trash detail view for a trashed Employee/Manager. An
+  // explicit select — never passwordHash or reset tokens.
+  findTrashedDetail(id: number) {
+    return prisma.user.findFirst({
+      where: { id, deletedAt: { not: null }, purgedAt: null },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        status: true,
+        customerDataScope: true,
+        orderDataScope: true,
+        lastLoginAt: true,
+        createdAt: true,
+        deletedAt: true,
+        deletionExpiresAt: true,
+        deletedBy: { select: { id: true, name: true } },
+        managedBy: { include: { manager: { select: { id: true, name: true } } } },
+        managing: { include: { employee: { select: { id: true, name: true, deletedAt: true } } } },
+        _count: { select: { assignedCustomersAsEmployee: true, assignedOrders: true } },
+      },
+    });
+  },
+
+  // Audit-log entries *about* a user (deleted / restored / role changes …), which log
+  // the target as meta.userId — users have no activity table of their own.
+  findAuditAbout(userId: number) {
+    return prisma.auditLog.findMany({
+      where: { meta: { path: ['userId'], equals: userId } },
+      include: { user: { select: { id: true, name: true } } },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
   },
 
   findTrashed() {

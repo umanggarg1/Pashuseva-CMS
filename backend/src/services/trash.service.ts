@@ -7,6 +7,7 @@ import { orderService } from './order.service';
 import { productService } from './product.service';
 import { userService } from './user.service';
 import { logger } from '../logger';
+import { NotFoundError } from '../utils/httpError';
 
 export type TrashItemType = 'customer' | 'order' | 'product' | 'employee';
 
@@ -54,6 +55,49 @@ export const trashService = {
       ),
     ];
     return items.sort((a, b) => b.deletedAt.getTime() - a.deletedAt.getTime());
+  },
+
+  // Phase 27: the Admin-only Trash detail view. Bypasses the normal "deletedAt: null"
+  // reads on purpose (those 404 a trashed record everywhere else in the app); each
+  // findTrashedDetail requires the record to be in Trash and not purged — anything
+  // else (active, purged, missing) is the same 404. Wrapped as { type, record, trash }
+  // so the frontend handles all four types the same way.
+  async getTrashDetail(type: TrashItemType, id: number) {
+    const record =
+      type === 'customer'
+        ? await customerRepository.findTrashedDetail(id)
+        : type === 'order'
+          ? await orderRepository.findTrashedDetail(id)
+          : type === 'product'
+            ? await productRepository.findTrashedDetail(id)
+            : await userRepository.findTrashedDetail(id);
+    if (!record) {
+      throw new NotFoundError(
+        'This item is no longer in Trash — it may have been restored or permanently deleted.'
+      );
+    }
+
+    let detail: Record<string, unknown> = record;
+    if (type === 'order') {
+      const order = record as NonNullable<Awaited<ReturnType<typeof orderRepository.findTrashedDetail>>>;
+      const paid = order.payments.reduce((sum, p) => sum + p.amount, 0);
+      detail = { ...order, paid, remaining: order.total - paid };
+    }
+    if (type === 'employee') {
+      detail = { ...record, auditLog: await userRepository.findAuditAbout(id) };
+    }
+
+    const deletedAt = record.deletedAt as Date;
+    const deletionExpiresAt = record.deletionExpiresAt as Date;
+    const daysRemaining = Math.max(
+      0,
+      Math.ceil((deletionExpiresAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000))
+    );
+    return {
+      type,
+      record: detail,
+      trash: { deletedAt, deletedBy: record.deletedBy, deletionExpiresAt, daysRemaining },
+    };
   },
 
   async count() {
