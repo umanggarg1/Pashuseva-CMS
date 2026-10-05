@@ -1,7 +1,8 @@
 # Phase 29 — Trash recovery window: 10 days → 30 days
 
-**Status: implemented and verified locally 2026-10-05. Never run against production.
-Not committed.**
+**Status: released 2026-10-05 — backend live on Render (after one failed first deploy,
+see below), migration applied, 30-day texts verified on production. Admin Trash
+spot-check still open.**
 
 - On a throwaway Docker Postgres (`crm-phase29-test`, `localhost:55432`):
   - **Migration + behaviour: 9/9.**
@@ -65,4 +66,46 @@ explicitly after the push: Render's deploy log should show
   - [x] P1 the hourly sweep purges only the truly expired item (a 9-day-old product survives); reason "30-day trash period expired"
   - [x] P2 the Trash list shows the 5 remaining items
 - [x] Regression: Phase 27 Trash suite 21/21
-- [ ] Release + production check
+- [x] Release + production check (see below; Admin Trash spot-check still open)
+
+## Production release (2026-10-05)
+
+Pushed `dac5bea` (docs) + `6e26507` (code + migration) at 23:05 IST.
+
+**Frontend (Vercel):** new bundle `index-CZ7QClDT.js` served at 23:05:51; its
+"Move to Trash" texts use the 30-day constant.
+
+**Backend (Render), first deploy FAILED** (23:07 IST, "Exited with status 1"):
+
+- `prisma migrate deploy` (the start command's first step) failed every retry with
+  **P1002 — timed out acquiring a Postgres advisory lock**
+  (`SELECT pg_advisory_lock(72707369)`, 10 s). The server never started, and Render
+  kept the previous backend.
+- **Cause:** `DATABASE_URL` uses Neon's **pooled** host (`…-pooler…`). Prisma's
+  migration lock is a session-level Postgres advisory lock, which is unreliable
+  through a connection pooler. Most likely an earlier attempt applied the migration
+  and its lock stayed held on a pooled connection, so the retries couldn't acquire it.
+- **Evidence the migration was already applied:** in the same logs, a later run of
+  the new code (`29 migrations found`) reported **"No pending migrations to apply."**
+- **In between:** the old backend was live — new deletions briefly still got 10
+  days while the screens said 30.
+
+**Backend redeployed manually: LIVE at 23:12 IST** ("Deploy live for 6e26507").
+The start command only starts the server after `prisma migrate deploy` succeeds,
+and that succeeds only when every migration in the folder is applied — so this
+**confirms `20261005120000_trash_retention_30_days` is applied in production.**
+
+**Production checks (read-only, `test@gmail.com`, all writes blocked; nothing deleted):**
+
+| # | Check | Result |
+|---|---|---|
+| F1 | Customer "Move to Trash" confirmation: "…You can restore it within **30 days**." — Cancelled | ✅ |
+| F2 | Order "Move to Trash" confirmation: "…You can restore it within **30 days**." — Cancelled | ✅ |
+| G | No write attempted | ✅ |
+| M | Migration applied in production | ✅ (deploy live with the migration present; see above) |
+| A | Admin spot-check in Trash: each item's expiry ≈ deletion date + 30 days (e.g. deleted 5 days ago → 25 days left) | **Open** — needs an Admin |
+
+**Follow-up (recommended, separate change):** run migrations over Neon's **direct**
+(non-pooled) connection so this lock problem can't recur. Add a `DIRECT_URL`
+environment variable in Render (Neon's connection string **without** `-pooler`), and
+point `prisma.config.ts`'s migrate datasource at it; the app keeps the pooled URL.
