@@ -1,7 +1,7 @@
 # Phase 29 — Prisma migrations over Neon's direct connection (`DIRECT_URL`)
 
-**Status: implemented and verified locally 2026-10-05. Production pending (needs
-`DIRECT_URL` added in Render). Not yet released.**
+**Status: released 2026-10-06 — live on Render at 00:15 IST with `DIRECT_URL` set;
+migrations now run over Neon's direct connection.**
 
 > Numbering: this is the **new** Phase 29. The earlier change once numbered Phase 29
 > (Trash window 10 → 30 days) was merged into `PHASE27_TODO.md` as **Part B**; the
@@ -62,6 +62,39 @@ e.g. `ep-<endpoint>-pooler.<region>.aws.neon.tech` → `ep-<endpoint>.<region>.a
   - [x] **L2b** no `DIRECT_URL` + broken `DATABASE_URL` → P1001, proving the fallback really uses `DATABASE_URL`
   - [x] **L3** app started with a **broken `DIRECT_URL`** → `/api/health` 200, and a login (DB query)
         returns the normal 401 "Invalid email or password" — the app ignores `DIRECT_URL`
-- [ ] User adds `DIRECT_URL` in Render
-- [ ] Production: after the deploy, the Render log line `Datasource "db": … at "<host>"`
-      shows the host **without** `-pooler`; deploy goes live; app healthy. No data change.
+- [x] User added `DIRECT_URL` in Render
+- [x] Production: the Render log shows migrations connecting to the host **without**
+      `-pooler`; deploy live; app healthy. No data change (see below).
+
+## Production release (2026-10-05 / 06)
+
+Pushed `f05b1c8` (docs) + `20430b3` (code) at 23:29 IST, 2026-10-05.
+
+**First deploy FAILED (23:39 IST)** — but the log proved the change works:
+`Datasource "db": PostgreSQL database "neondb", schema "public" at
+"ep-…​.c-5.us-east-2.aws.neon.tech"` — the **direct** host, no `-pooler` — then
+**P1002, timed out acquiring the migration advisory lock** (`pg_advisory_lock(72707369)`).
+
+**Cause: a lock left behind by the previous, pooled deploy.** Prisma takes a
+session-level advisory lock before migrating. Through Neon's pooler, the unlock can
+run on a different pooled server connection than the lock, so the lock stays held
+by an idle pooled connection. The 23:12 deploy of `6e26507` — still migrating
+through the pooler — most likely left it held. So even the direct connection had to
+wait for it.
+
+Meanwhile the previous backend (`6e26507`) kept serving; no data changed (no
+pending migrations).
+
+**Second deploy LIVE at 00:15 IST, 2026-10-06** ("Deploy live for 20430b3"), once the
+held lock was gone. Production health check: backend `/api/health` 200, frontend 200.
+
+**From now on:** migrations connect directly. When the migrate process exits, its
+session ends and Postgres releases the advisory lock with it, so a deploy can no
+longer leave a lock behind for the next one. If a deploy ever times out on this lock
+again, the Neon SQL Editor query to find the holder is:
+
+```sql
+SELECT l.pid, a.state, a.backend_start, a.application_name
+FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+WHERE l.locktype = 'advisory' AND l.objid = 72707369;
+```
