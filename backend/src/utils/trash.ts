@@ -1,4 +1,4 @@
-// Phase 29: was 10 days. Items already in Trash were extended by the
+// Phase 27 Part B (formerly numbered Phase 29): was 10 days. Items already in Trash were extended by the
 // 20261005120000_trash_retention_30_days migration (expiry = deletedAt + 30 days).
 export const TRASH_RETENTION_DAYS = 30;
 
