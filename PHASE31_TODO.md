@@ -1,6 +1,6 @@
 # Phase 31 — Free (₹0) products, and editing an order's discount
 
-**Status: IMPLEMENTED + verified locally (2026-10-13) — committed and pushed to `main`; production check pending.**
+**Status: IMPLEMENTED + verified locally (2026-10-13) — committed and pushed to `main` (`221f373`); production check and cleanup complete.**
 
 ## Decisions (user, 2026-10-13)
 
@@ -159,5 +159,40 @@ stays 0; see question 2).
   through discount = subtotal) stay `PENDING` / "Unpaid" until edited. To check whether
   any exist, run this in the Neon SQL editor (read-only):
   `SELECT "orderNumber", total, "paymentStatus" FROM "Order" WHERE total <= 0 AND "paymentStatus" <> 'PAID';`
-- Production check after push (needs your approval): one ₹0 test product + one test
-  order (place → Edit Pricing → cancel → Admin trashes the order and product).
+
+## Production check (2026-10-13, after push of `221f373`, user-approved)
+
+- Vercel bundle had "Edit Pricing". `/api/health` was OK on Vercel and Render.
+- Test records, created as `test@gmail.com` (Employee; it was granted `product:create`
+  during the check):
+  - product **`P31-TEST-FREE`** (id 43, ₹0, stock 1)
+  - customer **"P31 TEST Customer"** (id 253, approved as a third record)
+  - order **ORD-2026-000284** (id 286)
+- ₹0 product created (201). That proves Render was on the new backend: the old code
+  rejects price 0. Negative price → 400.
+- UI (browser limited to GET requests): product detail shows FREE with no ₹0;
+  Create Order picker shows FREE.
+- ₹0 order: total 0, stored `paymentStatus: PAID`; stock 1 → 0; parcel summary 200.
+  UI shows "Free" on the order page and in the orders list; the item price shows FREE.
+- Edit Pricing:
+  - ₹10 discount → 400 "cannot exceed the subtotal"; the dialog shows the error and
+    disables Save
+  - delivery ₹50 → total 50, PENDING
+  - back to ₹0 → PAID
+  - activity rows "Delivery charge updated" and "Payment status updated (total
+    changed)" written
+- Permissions: the button shows for `order:update` on a Not Dispatched order. After
+  cancel, Edit Pricing and Edit Items are hidden and the API refuses the edit. It
+  returns 403, not 400, because Phase 19 unassigns the Employee once the order is final.
+  The route is guarded by `authorize('order:update')`. A user without `order:update`
+  wasn't available to test live.
+- Cancel → stock back to 1.
+- Not covered on production (no payment recorded, to keep the ledger clean): blocking an
+  edit below the amount paid. That is covered by the local tests.
+- **Cleanup — done (2026-10-13):** the Admin moved order 286, product 43 and customer
+  253 to Trash. Verified with GET requests only:
+  - none of the three appears in the live order, product or customer lists (searched
+    by order number, SKU, name and phone)
+  - all three detail endpoints return 404. The order returned 403 before the trash,
+    so the 404 confirms it was moved to Trash, not just hidden.
+- Production check **complete**.
