@@ -41,6 +41,7 @@ import {
 } from '@/components/ui/form';
 import { Skeleton } from '@/components/ui/skeleton';
 import ErrorState from '@/components/ErrorState';
+import ConfirmDialog from '@/components/ConfirmDialog';
 import EmptyState from '@/components/EmptyState';
 import PageHeader from '@/components/PageHeader';
 import PermissionPicker from '@/components/PermissionPicker';
@@ -250,24 +251,46 @@ export default function Employees() {
                       Permissions
                     </Button>
                   )}
-                  {manageable && (
+                  {/* Deactivate and Suspend both sign the user out immediately
+                      (authenticate rejects every non-ACTIVE status), so they get a
+                      confirmation step; Activate/Reactivate only restore access and
+                      stay one click. Delete has its own dialog (DeleteEmployeeDialog). */}
+                  {manageable && user.status === 'ACTIVE' && (
+                    <ConfirmDialog
+                      trigger={
+                        <Button variant="outline" size="sm">
+                          Deactivate
+                        </Button>
+                      }
+                      title={`Deactivate ${user.name}?`}
+                      description={`${user.name} will be signed out right away and won't be able to log in until the account is activated again. Their customers, orders and history are not affected.`}
+                      confirmLabel="Deactivate"
+                      isPending={toggleStatus.isPending}
+                      onConfirm={() => toggleStatus.mutate({ id: user.id, status: 'INACTIVE' })}
+                    />
+                  )}
+                  {manageable && user.status !== 'ACTIVE' && (
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() =>
-                        toggleStatus.mutate({
-                          id: user.id,
-                          status: user.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE',
-                        })
-                      }
+                      onClick={() => toggleStatus.mutate({ id: user.id, status: 'ACTIVE' })}
                     >
-                      {user.status === 'ACTIVE' ? 'Deactivate' : 'Activate'}
+                      Activate
                     </Button>
                   )}
                   {manageable && user.status === 'ACTIVE' && (
-                    <Button variant="outline" size="sm" onClick={() => suspend.mutate(user.id)}>
-                      Suspend Access
-                    </Button>
+                    <ConfirmDialog
+                      trigger={
+                        <Button variant="outline" size="sm">
+                          Suspend Access
+                        </Button>
+                      }
+                      title={`Suspend access for ${user.name}?`}
+                      description={`${user.name} will be signed out right away and won't be able to log in until their access is reactivated. Their customers, orders and history are not affected.`}
+                      confirmLabel="Suspend Access"
+                      isPending={suspend.isPending}
+                      onConfirm={() => suspend.mutate(user.id)}
+                    />
                   )}
                   {manageable && user.status === 'SUSPENDED' && (
                     <Button variant="outline" size="sm" onClick={() => reactivate.mutate(user.id)}>
