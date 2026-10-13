@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 
 import { InfoGrid, MiniTable, Section, TrashedTag } from './parts';
 import { fmtDate, fmtDateTime, label, money, who, type UserRef } from './format';
+import { paymentStatusLabel } from '@/lib/pricing';
 
 export interface TrashCustomer {
   id: number;
@@ -89,7 +90,7 @@ export default function CustomerTrashDetail({ c }: { c: TrashCustomer }) {
             money(o.total),
             label(o.orderStatus),
             label(o.deliveryStatus),
-            label(o.paymentStatus),
+            paymentStatusLabel(o.paymentStatus, o.total),
           ])}
         />
       </Section>

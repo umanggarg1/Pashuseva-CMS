@@ -177,7 +177,8 @@ export async function generateOrdersExcel(rows: OrderExportRow[], summary: Expor
         ? row.items.map((i) => `${i.name} × ${i.quantity}`).join('\n')
         : '—',
       total: row.total,
-      paymentLabel: PAYMENT_LABEL_FULL[row.paymentStatus],
+      // Phase 31: a ₹0 order is stored as PAID but shown as Free everywhere.
+      paymentLabel: row.total <= 0 ? 'Free' : PAYMENT_LABEL_FULL[row.paymentStatus],
       deliveryLabel: DELIVERY_LABEL_FULL[row.deliveryStatus],
     });
     excelRow.getCell('orderDate').numFmt = 'dd/mm/yyyy';
@@ -417,7 +418,7 @@ export function generateOrdersPdf(rows: OrderExportRow[], summary: ExportSummary
       doc.fontSize(FONT_SIZE);
       drawItems(doc, row.items, columnX(5), y, PDF_COLUMNS[5].width);
       drawCentered(doc, `Rs. ${row.total.toLocaleString('en-IN')}`, columnX(6), y, PDF_COLUMNS[6].width, rowHeight);
-      drawCentered(doc, PAYMENT_CODE[row.paymentStatus], columnX(7), y, PDF_COLUMNS[7].width, rowHeight);
+      drawCentered(doc, row.total <= 0 ? 'FREE' : PAYMENT_CODE[row.paymentStatus], columnX(7), y, PDF_COLUMNS[7].width, rowHeight);
       drawCentered(doc, DELIVERY_CODE[row.deliveryStatus], columnX(8), y, PDF_COLUMNS[8].width, rowHeight);
 
       doc

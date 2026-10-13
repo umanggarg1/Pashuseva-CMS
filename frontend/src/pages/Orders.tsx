@@ -36,6 +36,7 @@ import ChangeDeliveryStatusDialog, {
   type SavedDeliveryOrder,
 } from '@/components/ChangeDeliveryStatusDialog';
 import { deliveryStatusLabel } from '@/lib/deliveryStatus';
+import { paymentStatusLabel } from '@/lib/pricing';
 
 interface OrderListItem {
   id: number;
@@ -103,15 +104,8 @@ function orderStatusTone(status: string) {
 }
 
 // Phase 13: PENDING/PARTIAL/PAID/REFUNDED are the stored enum values (unchanged, now
-// computed from the payment ledger instead of set manually) — displayed with the
-// friendlier labels used everywhere else payment status shows up.
-const PAYMENT_STATUS_LABEL: Record<string, string> = {
-  PENDING: 'Unpaid',
-  PARTIAL: 'Partially Paid',
-  PAID: 'Paid',
-  REFUNDED: 'Refunded',
-};
-
+// computed from the payment ledger instead of set manually) — the friendlier labels
+// (and Phase 31's "Free" for ₹0 orders) come from paymentStatusLabel.
 function paymentStatusTone(status: string) {
   if (status === 'PAID') return 'success' as const;
   if (status === 'REFUNDED') return 'destructive' as const;
@@ -531,7 +525,7 @@ export default function Orders() {
                   <TableCell>₹{order.total.toLocaleString()}</TableCell>
                   <TableCell>
                     <StatusBadge
-                      value={PAYMENT_STATUS_LABEL[order.paymentStatus] ?? order.paymentStatus}
+                      value={paymentStatusLabel(order.paymentStatus, order.total)}
                       tone={paymentStatusTone(order.paymentStatus)}
                     />
                   </TableCell>

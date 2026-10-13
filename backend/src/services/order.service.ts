@@ -397,6 +397,17 @@ interface ResolvedItem {
   totalPrice: number;
 }
 
+// Phase 31: a discount larger than the (server-computed) subtotal would make the
+// total negative — checked on create and on any edit that changes either side.
+function assertDiscountWithinSubtotal(discount: number, subtotal: number) {
+  if (discount > subtotal) {
+    throw new HttpError(
+      400,
+      `Discount (₹${discount}) cannot exceed the subtotal (₹${subtotal})`
+    );
+  }
+}
+
 // The one function in this file that enforces the "never trust the frontend price"
 // rule (phases.md §42-43): it only ever takes { productId, quantity } and looks up the
 // live Product row for price/name/SKU/unit/stock — the request body's price, if a
@@ -560,6 +571,7 @@ export const orderService = {
       }
 
       const { resolved, subtotal } = await resolveOrderItems(input.items, tx);
+      assertDiscountWithinSubtotal(input.discount, subtotal);
       const total = subtotal - input.discount + input.deliveryCharge;
 
       const primaryAddress = addresses[0];
@@ -666,6 +678,13 @@ export const orderService = {
           tx
         );
         created.paymentStatus = newStatus;
+      } else if (total <= 0) {
+        // Phase 31: nothing is owed on a ₹0 order (free items only), so it's settled
+        // from the start — shown as "Free" in the UI, PAID underneath so every
+        // paid/unpaid filter, report and parcel label treats it as nothing due.
+        const newStatus = orderService.paidStatusFor(0, total);
+        await orderRepository.setPaymentStatus(created.id, newStatus, tx);
+        created.paymentStatus = newStatus;
       }
 
       return created;
@@ -758,7 +777,33 @@ export const orderService = {
 
       const discount = input.discount ?? existing.discount;
       const shipping = input.deliveryCharge ?? existing.shipping;
+      if (input.items !== undefined || input.discount !== undefined) {
+        assertDiscountWithinSubtotal(discount, subtotal);
+      }
       const total = subtotal - discount + shipping;
+
+      // Phase 31: paymentStatus is derived from the payment ledger against the total
+      // (Phase 13), so a total change has to re-derive it — and can never drop the
+      // total below what's already been collected (that would silently overpay it).
+      let newPaymentStatus: PaymentStatus | undefined;
+      if (total !== existing.total) {
+        const paidSoFar = await paymentRepository.sumForOrder(id, tx);
+        if (total < paidSoFar) {
+          throw new HttpError(
+            400,
+            `₹${paidSoFar} has already been paid; the new total ₹${total} would be less than that. Reverse a payment first.`
+          );
+        }
+        const derived = orderService.paidStatusFor(paidSoFar, total);
+        if (derived !== existing.paymentStatus) {
+          newPaymentStatus = derived;
+          activities.push({
+            action: 'Payment status updated (total changed)',
+            oldValue: existing.paymentStatus,
+            newValue: derived,
+          });
+        }
+      }
 
       if (input.discount !== undefined && input.discount !== existing.discount) {
         activities.push({
@@ -840,6 +885,10 @@ export const orderService = {
         },
         tx
       );
+      if (newPaymentStatus) {
+        await orderRepository.setPaymentStatus(id, newPaymentStatus, tx);
+        order.paymentStatus = newPaymentStatus;
+      }
 
       await Promise.all(
         activities.map((a) =>
@@ -893,6 +942,8 @@ export const orderService = {
   // paid >= total (REFUNDED is reachable only by whatever future flow needs it; this
   // computation never produces it on its own).
   paidStatusFor(paid: number, total: number): PaymentStatus {
+    // Phase 31: a ₹0 order (free items only) owes nothing — settled, not Unpaid.
+    if (total <= 0) return 'PAID';
     if (paid <= 0) return 'PENDING';
     if (paid >= total) return 'PAID';
     return 'PARTIAL';

@@ -56,7 +56,10 @@ export async function generateParcelSummaryPdf(order: OrderWithDetails): Promise
   // branch on that rather than re-deriving Paid/Partial/Unpaid from `due` here.
   let paymentLine: string;
   let amountLine: string | null = null;
-  if (order.paymentStatus === 'PAID') {
+  if (order.total <= 0) {
+    // Phase 31: a ₹0 order (free items only) — stored as PAID, labelled FREE.
+    paymentLine = 'FREE';
+  } else if (order.paymentStatus === 'PAID') {
     paymentLine = 'PAID';
   } else if (order.paymentStatus === 'PARTIAL') {
     paymentLine = 'PARTIALLY PAID';

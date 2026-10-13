@@ -24,6 +24,7 @@ import { apiFetch, ApiError } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { packagingUnitLabel, formatWeight } from '@/lib/productUnits';
 import { TRASH_RETENTION_DAYS } from '@/lib/trash';
+import { formatPrice } from '@/lib/pricing';
 
 interface ProductDetailData {
   id: number;
@@ -165,7 +166,7 @@ export default function ProductDetail() {
               )}
             </p>
             <p className="mt-2 text-lg font-medium">
-              ₹{product.price.toLocaleString()}
+              {formatPrice(product.price)}
               {packagingUnitLabel(product.unit) && (
                 <span className="text-sm text-muted-foreground">
                   {' '}

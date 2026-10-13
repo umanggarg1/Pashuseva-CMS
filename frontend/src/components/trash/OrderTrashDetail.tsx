@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 
 import { InfoGrid, MiniTable, Section, TrashedTag } from './parts';
 import { fmtDate, fmtDateTime, label, money, who, type UserRef } from './format';
+import { paymentStatusLabel } from '@/lib/pricing';
 
 export interface TrashOrder {
   id: number;
@@ -155,7 +156,7 @@ export default function OrderTrashDetail({ o }: { o: TrashOrder }) {
       <Section title="Payment">
         <InfoGrid
           rows={[
-            ['Status', label(o.paymentStatus)],
+            ['Status', paymentStatusLabel(o.paymentStatus, o.total)],
             ['Method', label(o.paymentMethod)],
             ['Paid', money(o.paid)],
             ['Remaining', money(o.remaining)],

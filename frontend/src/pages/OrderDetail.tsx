@@ -45,6 +45,7 @@ import ArticleNumberEditor from '@/components/ArticleNumberEditor';
 import ChangeDeliveryStatusDialog from '@/components/ChangeDeliveryStatusDialog';
 import { DELIVERY_STEPS } from '@/lib/deliveryStatus';
 import { TRASH_RETENTION_DAYS } from '@/lib/trash';
+import { formatPrice, paymentStatusLabel } from '@/lib/pricing';
 
 const LOCATION_UPDATE_STATUSES = [
   'DISPATCHED',
@@ -159,13 +160,6 @@ interface PaymentsResponse {
   paid: number;
   remaining: number;
 }
-
-const PAYMENT_STATUS_LABEL: Record<string, string> = {
-  PENDING: 'Unpaid',
-  PARTIAL: 'Partially Paid',
-  PAID: 'Paid',
-  REFUNDED: 'Refunded',
-};
 
 interface EmployeeOption {
   id: number;
@@ -564,8 +558,18 @@ export default function OrderDetail() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="text-base">Order Items</CardTitle>
-          {canEditOrder && canEditOrCancel && (
-            <EditOrderItemsDialog orderId={id} currentItems={order.items} onSuccess={invalidateOrder} />
+          {canEditOrder && canEditOrCancel && order.orderStatus !== 'CANCELLED' && (
+            <div className="flex gap-2">
+              <EditPricingDialog
+                orderId={id}
+                subtotal={order.subtotal}
+                discount={order.discount}
+                shipping={order.shipping}
+                paid={paymentsQuery.data?.paid}
+                onSuccess={invalidatePayments}
+              />
+              <EditOrderItemsDialog orderId={id} currentItems={order.items} onSuccess={invalidateOrder} />
+            </div>
           )}
         </CardHeader>
         <CardContent>
@@ -591,9 +595,9 @@ export default function OrderDetail() {
                     )}
                   </TableCell>
                   <TableCell>{item.quantity}</TableCell>
-                  <TableCell>₹{item.unitPrice.toLocaleString()}</TableCell>
+                  <TableCell>{formatPrice(item.unitPrice)}</TableCell>
                   <TableCell>₹{item.discount.toLocaleString()}</TableCell>
-                  <TableCell className="font-medium">₹{item.totalPrice.toLocaleString()}</TableCell>
+                  <TableCell className="font-medium">{formatPrice(item.totalPrice)}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -1111,7 +1115,7 @@ function PaymentCard({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="font-medium">
-                  {PAYMENT_STATUS_LABEL[order.paymentStatus] ?? order.paymentStatus}
+                  {paymentStatusLabel(order.paymentStatus, order.total)}
                 </p>
                 <p className="text-muted-foreground">
                   Paid ₹{data.paid.toLocaleString()} · Remaining ₹{data.remaining.toLocaleString()}
@@ -1499,6 +1503,158 @@ interface EditableLineItem {
   quantity: number;
 }
 
+// Phase 31: the order-level discount/delivery charge edit. PATCH /orders/:id has
+// always accepted both (recomputing the total, logging activity) — this is the
+// missing frontend half, behind the same pre-dispatch gate as Edit Items. The
+// server re-checks everything: discount ≤ subtotal, and the new total can't drop
+// below what's already been paid (payment status is re-derived from it).
+function EditPricingDialog({
+  orderId,
+  subtotal,
+  discount,
+  shipping,
+  paid,
+  onSuccess,
+}: {
+  orderId: number;
+  subtotal: number;
+  discount: number;
+  shipping: number;
+  // undefined when the user can't view payments — the server still enforces it.
+  paid: number | undefined;
+  onSuccess: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [discountValue, setDiscountValue] = useState('');
+  const [shippingValue, setShippingValue] = useState('');
+
+  const newDiscount = Number(discountValue) || 0;
+  const newShipping = Number(shippingValue) || 0;
+  const newTotal = subtotal - newDiscount + newShipping;
+  const discountError =
+    newDiscount < 0
+      ? 'Discount cannot be negative'
+      : newDiscount > subtotal
+        ? `Discount cannot exceed the subtotal (₹${subtotal.toLocaleString()})`
+        : null;
+  const totalError =
+    paid !== undefined && newTotal < paid
+      ? `₹${paid.toLocaleString()} has already been paid — the new total can't be less than that. Reverse a payment first.`
+      : null;
+  const unchanged = newDiscount === discount && newShipping === shipping;
+
+  const savePricing = useMutation({
+    mutationFn: () =>
+      apiFetch(`/orders/${orderId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ discount: newDiscount, deliveryCharge: newShipping }),
+      }),
+    onSuccess: () => {
+      toast.success('Pricing updated');
+      onSuccess();
+      setOpen(false);
+    },
+    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to update pricing'),
+  });
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next);
+        if (next) {
+          setDiscountValue(String(discount));
+          setShippingValue(String(shipping));
+        }
+      }}
+    >
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline">
+          <Pencil className="h-4 w-4" /> Edit Pricing
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit Pricing</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 text-sm">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label htmlFor="edit-pricing-discount" className="text-sm font-medium">
+                Discount (₹)
+              </label>
+              <Input
+                id="edit-pricing-discount"
+                type="number"
+                min={0}
+                step="0.01"
+                value={discountValue}
+                onChange={(e) => setDiscountValue(e.target.value)}
+              />
+            </div>
+            <div>
+              <label htmlFor="edit-pricing-delivery" className="text-sm font-medium">
+                Delivery Charge (₹)
+              </label>
+              <Input
+                id="edit-pricing-delivery"
+                type="number"
+                min={0}
+                step="0.01"
+                value={shippingValue}
+                onChange={(e) => setShippingValue(e.target.value)}
+              />
+            </div>
+          </div>
+          <div className="space-y-1 border-t pt-3">
+            <div className="flex justify-between text-muted-foreground">
+              <span>Subtotal</span>
+              <span>₹{subtotal.toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between text-muted-foreground">
+              <span>Discount</span>
+              <span>-₹{newDiscount.toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between text-muted-foreground">
+              <span>Delivery</span>
+              <span>₹{newShipping.toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between text-base font-semibold">
+              <span>New Total</span>
+              <span>₹{newTotal.toLocaleString()}</span>
+            </div>
+            {paid !== undefined && (
+              <p className="text-xs text-muted-foreground">Paid so far: ₹{paid.toLocaleString()}</p>
+            )}
+          </div>
+          {(discountError || totalError || newShipping < 0) && (
+            <p className="text-xs text-destructive">
+              {discountError ?? totalError ?? 'Delivery charge cannot be negative'}
+            </p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            disabled={
+              unchanged ||
+              !!discountError ||
+              !!totalError ||
+              newShipping < 0 ||
+              savePricing.isPending
+            }
+            onClick={() => savePricing.mutate()}
+          >
+            {savePricing.isPending ? 'Saving…' : 'Save Pricing'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // Phase 11 §7/§9 — the line-item edit UI that's been an open item since Phase 6:
 // server-side support (PATCH /orders/:id re-resolving current prices/stock) has
 // existed all along, this dialog is the missing frontend half. Only reachable
@@ -1627,7 +1783,7 @@ function EditOrderItemsDialog({
                     {p.name} <span className="text-xs text-muted-foreground">SKU: {p.sku}</span>
                   </span>
                   <span className="shrink-0 text-muted-foreground">
-                    ₹{p.price}
+                    {formatPrice(p.price)}
                     {packagingUnitLabel(p.unit) && ` / ${packagingUnitLabel(p.unit)}`} · Stock:{' '}
                     {p.availableQty}
                   </span>
@@ -1663,8 +1819,8 @@ function EditOrderItemsDialog({
                         className="w-20"
                       />
                     </TableCell>
-                    <TableCell>₹{item.price.toLocaleString()}</TableCell>
-                    <TableCell>₹{(item.price * item.quantity).toLocaleString()}</TableCell>
+                    <TableCell>{formatPrice(item.price)}</TableCell>
+                    <TableCell>{formatPrice(item.price * item.quantity)}</TableCell>
                     <TableCell>
                       <Button variant="ghost" size="icon" onClick={() => removeItem(item.productId)}>
                         <Trash2 className="h-4 w-4" />

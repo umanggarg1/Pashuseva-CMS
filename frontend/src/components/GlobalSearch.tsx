@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
+import { formatPrice } from '@/lib/pricing';
 
 interface SearchCustomer {
   id: number;
@@ -231,7 +232,7 @@ export default function GlobalSearch({
                       onClick={() => go(item.path)}
                       onMouseEnter={() => setActiveIndex(index)}
                       title={p.name}
-                      subtitle={`${p.sku} · ₹${p.price.toLocaleString()}`}
+                      subtitle={`${p.sku} · ${formatPrice(p.price)}`}
                     />
                   );
                 })}

@@ -32,7 +32,8 @@ export const createProductSchema = z
     description: z.string().optional(),
     categoryId: z.coerce.number().int().positive().optional(),
     sku: z.string().min(1),
-    price: z.coerce.number().positive(),
+    // Phase 31: ₹0 is allowed — free products (samples, gifts) are real stock items.
+    price: z.coerce.number().min(0),
     weightValue: z.coerce.number().positive().optional(),
     weightUnit: weightUnitSchema.optional(),
     unit: packagingUnitSchema.optional(),
@@ -48,7 +49,7 @@ export const updateProductSchema = z
     description: z.string().optional(),
     categoryId: z.coerce.number().int().positive().nullable().optional(),
     sku: z.string().min(1).optional(),
-    price: z.coerce.number().positive().optional(),
+    price: z.coerce.number().min(0).optional(),
     weightValue: z.coerce.number().positive().nullable().optional(),
     weightUnit: weightUnitSchema.nullable().optional(),
     unit: packagingUnitSchema.nullable().optional(),

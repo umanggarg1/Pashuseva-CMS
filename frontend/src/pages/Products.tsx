@@ -367,7 +367,14 @@ const productFormSchema = z.object({
   sku: z.string().min(1, 'SKU is required'),
   categoryId: z.string().optional(),
   description: z.string().optional(),
-  price: z.coerce.number().positive('Price must be positive'),
+  // Phase 31: ₹0 is a valid price (free products), so an empty field must not
+  // silently coerce to 0 — it's required, and 0 has to be typed on purpose.
+  price: z.preprocess(
+    (v) => (v === '' || v === undefined ? undefined : v),
+    z.coerce
+      .number({ error: 'Price is required' })
+      .min(0, 'Price cannot be negative')
+  ),
   // Kept as plain strings (not z.coerce.number()) so an empty field means "no
   // weight" rather than coercing to 0 — converted to a real number only at submit,
   // same pattern as every other optional field in this form.
@@ -401,7 +408,7 @@ function AddProductDialog({
       sku: '',
       categoryId: undefined,
       description: '',
-      price: 0,
+      price: '',
       weightValue: '',
       weightUnit: 'KG',
       unit: '',
@@ -569,7 +576,7 @@ function AddProductDialog({
                   <FormItem>
                     <FormLabel>Price (₹)</FormLabel>
                     <FormControl>
-                      <Input type="number" step="0.01" {...field} value={field.value as number} />
+                      <Input type="number" step="0.01" min={0} {...field} value={field.value as number} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -843,7 +850,7 @@ function EditProductDialog({
                   <FormItem>
                     <FormLabel>Price (₹)</FormLabel>
                     <FormControl>
-                      <Input type="number" step="0.01" {...field} value={field.value as number} />
+                      <Input type="number" step="0.01" min={0} {...field} value={field.value as number} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

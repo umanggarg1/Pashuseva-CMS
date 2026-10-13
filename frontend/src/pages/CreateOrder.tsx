@@ -30,6 +30,7 @@ import { apiFetch, ApiError } from '@/lib/api';
 import { useCurrentUser } from '@/lib/auth';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
 import { packagingUnitLabel } from '@/lib/productUnits';
+import { formatPrice } from '@/lib/pricing';
 
 interface EmployeeOption {
   id: number;
@@ -180,6 +181,9 @@ export default function CreateOrder() {
 
   const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
   const total = subtotal - discount + deliveryCharge;
+  // Phase 31: mirrors the server's cap — a discount larger than the subtotal would
+  // make the total negative.
+  const discountValid = discount >= 0 && discount <= subtotal;
 
   const amountPaid =
     paymentStatusChoice === 'PAID'
@@ -250,7 +254,7 @@ export default function CreateOrder() {
   });
 
   const canSubmit =
-    selectedCustomer && items.length > 0 && items.every((i) => i.quantity > 0) && partialAmountValid;
+    selectedCustomer && items.length > 0 && items.every((i) => i.quantity > 0) && partialAmountValid && discountValid;
 
   return (
     <div className="space-y-6">
@@ -305,7 +309,7 @@ export default function CreateOrder() {
                     {p.name} <span className="text-xs text-muted-foreground">SKU: {p.sku}</span>
                   </span>
                   <span className="shrink-0 text-muted-foreground">
-                    ₹{p.price}
+                    {formatPrice(p.price)}
                     {packagingUnitLabel(p.unit) && ` / ${packagingUnitLabel(p.unit)}`} · Stock:{' '}
                     {p.availableQty}
                   </span>
@@ -348,8 +352,8 @@ export default function CreateOrder() {
                         className="w-20"
                       />
                     </TableCell>
-                    <TableCell>₹{item.price.toLocaleString()}</TableCell>
-                    <TableCell>₹{(item.price * item.quantity).toLocaleString()}</TableCell>
+                    <TableCell>{formatPrice(item.price)}</TableCell>
+                    <TableCell>{formatPrice(item.price * item.quantity)}</TableCell>
                     <TableCell>
                       <Button
                         variant="ghost"
@@ -426,6 +430,11 @@ export default function CreateOrder() {
                 value={discount}
                 onChange={(e) => setDiscount(Number(e.target.value))}
               />
+              {!discountValid && (
+                <p className="mt-1 text-xs text-destructive">
+                  Discount cannot exceed the subtotal (₹{subtotal.toLocaleString()})
+                </p>
+              )}
             </div>
             <div>
               <label className="text-sm font-medium">Delivery Charge (₹)</label>
