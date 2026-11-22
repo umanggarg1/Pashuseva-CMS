@@ -354,7 +354,6 @@ export interface OrderExportRow {
   // own line within the cell, but each formats/wraps it independently rather
   // than one dictating a shared pre-joined string to the other.
   phones: string[];
-  area: string;
   pincode: string;
   articleNumber: string;
   items: { name: string; quantity: number }[];
@@ -375,7 +374,6 @@ async function getExportRows(
     orderDate: order.orderDate,
     customerName: order.customer.name,
     phones: order.customer.phones.map((p) => p.phone),
-    area: order.customer.addresses[0]?.district?.trim() || '—',
     pincode: order.customer.addresses[0]?.pincode?.trim() || '—',
     articleNumber: order.articleNumber ?? '—',
     items: order.items.map((i) => ({ name: i.productName, quantity: i.quantity })),

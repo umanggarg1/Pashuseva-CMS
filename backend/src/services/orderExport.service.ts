@@ -84,7 +84,7 @@ const EXCEL_COLUMNS = [
   { header: 'Date', key: 'orderDate', width: 12 },
   { header: 'Customer', key: 'customerName', width: 22 },
   { header: 'Phone No.', key: 'phone', width: 15 },
-  { header: 'Area / PIN Code', key: 'areaPin', width: 16 },
+  { header: 'PIN Code', key: 'pincode', width: 11 },
   { header: 'Article No.', key: 'articleNumber', width: 16 },
   { header: 'Order Items', key: 'items', width: 32 },
   { header: 'Amount', key: 'total', width: 12 },
@@ -108,7 +108,7 @@ const EXCEL_LEFT_COLUMNS = new Set(['customerName', 'items']);
 // Dispatched/Transit/Out for Delivery/Undispatched/Undelivered) rather than
 // the PDF's abbreviated codes — self-explanatory for filtering/sorting
 // without a legend, unlike the PDF where space is the binding constraint.
-// Order Number and Area/PIN Code are kept (unlike the PDF) since they're
+// Order Number is kept (unlike the PDF) since it's
 // genuinely useful for finding/filtering a specific order later, which is
 // Excel's whole purpose.
 export async function generateOrdersExcel(rows: OrderExportRow[], summary: ExportSummary): Promise<Buffer> {
@@ -171,7 +171,7 @@ export async function generateOrdersExcel(rows: OrderExportRow[], summary: Expor
       orderDate: row.orderDate,
       customerName: row.customerName,
       phone: row.phones.join('\n') || '—',
-      areaPin: row.pincode && row.pincode !== '—' ? `${row.area}\n${row.pincode}` : row.area,
+      pincode: row.pincode,
       articleNumber: row.articleNumber,
       items: row.items.length
         ? row.items.map((i) => `${i.name} × ${i.quantity}`).join('\n')
@@ -185,7 +185,7 @@ export async function generateOrdersExcel(rows: OrderExportRow[], summary: Expor
     excelRow.getCell('total').numFmt = '"₹"#,##0.00';
     // PIN must never be read as a number (would silently drop a leading
     // zero, however rare that is for a real Indian PIN) — force text format.
-    excelRow.getCell('areaPin').numFmt = '@';
+    excelRow.getCell('pincode').numFmt = '@';
     excelRow.eachCell((cell, colNumber) => {
       const key = EXCEL_COLUMNS[colNumber - 1]?.key;
       cell.alignment = {
@@ -210,19 +210,21 @@ export async function generateOrdersExcel(rows: OrderExportRow[], summary: Expor
 }
 
 // PDF, later revision (superseding the "Order Name" + fixed-2-line-row design
-// this section originally had): no Order Number/Area columns — a running
+// this section originally had): no Order Number column — a running
 // S.No. (1, 2, 3…, reset per report, never the DB id) replaces Order Number
 // as the row identifier, and Items is no longer capped at 2 lines with a "+N"
 // marker — every item prints, one per line, so row height is now *per-row
 // variable* (driven by whichever of Customer(≤2)/Phone(≤2)/Items(uncapped)
 // needs the most lines) rather than fixed. Excel (above) keeps Order Number
-// and Area/PIN Code — genuinely useful for finding/filtering a specific order
-// later, which is Excel's whole purpose, unlike this print-only report.
+// — genuinely useful for finding/filtering a specific order later, which is
+// Excel's whole purpose, unlike this print-only report. Both formats show
+// PIN Code only (no area/district or state).
 const PDF_COLUMN_LABELS = [
   'S.No.',
   'Date',
   'Customer',
   'Phone No.',
+  'PIN Code',
   'Article No.',
   'Order Items',
   'Amount',
@@ -242,8 +244,9 @@ const PDF_COLUMNS = [
   { key: 'orderDate', width: 50 },
   { key: 'customerName', width: 130 },
   { key: 'phone', width: 75 },
+  { key: 'pincode', width: 50 },
   { key: 'articleNumber', width: 78 },
-  { key: 'items', width: 200 },
+  { key: 'items', width: 195 },
   { key: 'total', width: 55 },
   { key: 'paymentLabel', width: 55 },
   { key: 'deliveryLabel', width: 60 },
@@ -411,15 +414,16 @@ export function generateOrdersPdf(rows: OrderExportRow[], summary: ExportSummary
       drawCentered(doc, formatDateDDMMYYYY(row.orderDate), columnX(1), y, PDF_COLUMNS[1].width, rowHeight);
       drawWrapped(doc, row.customerName, columnX(2), y, PDF_COLUMNS[2].width, 2);
       drawPhoneCentered(doc, row.phones, columnX(3), y, PDF_COLUMNS[3].width, rowHeight);
+      drawCentered(doc, row.pincode, columnX(4), y, PDF_COLUMNS[4].width, rowHeight);
       // Article No. — kept to one line at a slightly smaller font rather than
       // wrapped, per the request: it's a tracking identifier, most useful intact.
       doc.fontSize(8);
-      drawCentered(doc, row.articleNumber, columnX(4), y, PDF_COLUMNS[4].width, rowHeight);
+      drawCentered(doc, row.articleNumber, columnX(5), y, PDF_COLUMNS[5].width, rowHeight);
       doc.fontSize(FONT_SIZE);
-      drawItems(doc, row.items, columnX(5), y, PDF_COLUMNS[5].width);
-      drawCentered(doc, `Rs. ${row.total.toLocaleString('en-IN')}`, columnX(6), y, PDF_COLUMNS[6].width, rowHeight);
-      drawCentered(doc, row.total <= 0 ? 'FREE' : PAYMENT_CODE[row.paymentStatus], columnX(7), y, PDF_COLUMNS[7].width, rowHeight);
-      drawCentered(doc, DELIVERY_CODE[row.deliveryStatus], columnX(8), y, PDF_COLUMNS[8].width, rowHeight);
+      drawItems(doc, row.items, columnX(6), y, PDF_COLUMNS[6].width);
+      drawCentered(doc, `Rs. ${row.total.toLocaleString('en-IN')}`, columnX(7), y, PDF_COLUMNS[7].width, rowHeight);
+      drawCentered(doc, row.total <= 0 ? 'FREE' : PAYMENT_CODE[row.paymentStatus], columnX(8), y, PDF_COLUMNS[8].width, rowHeight);
+      drawCentered(doc, DELIVERY_CODE[row.deliveryStatus], columnX(9), y, PDF_COLUMNS[9].width, rowHeight);
 
       doc
         .strokeColor('#dddddd')

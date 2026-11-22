@@ -86,7 +86,7 @@ export const orderRepository = {
           select: {
             name: true,
             phones: { orderBy: { isPrimary: 'desc' } },
-            addresses: { select: { district: true, pincode: true }, take: 1 },
+            addresses: { select: { pincode: true }, take: 1 },
           },
         },
         items: { select: { productName: true, quantity: true } },
