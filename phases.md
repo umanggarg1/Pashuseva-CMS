@@ -3797,6 +3797,28 @@ it, to what, and when — reusing the existing (already-defined, currently unuse
 
 ---
 
+## Phase 32 — WhatsApp Automation (Approved plan)
+
+Full structure, rules, setup guide and TODO: **`PHASE32_TODO.md`**.
+
+1. **Order confirmation (automatic)** when an order is created. A short message: name, order number, product names. No prices or payment details.
+2. **Dispatch notification (automatic)** only on the real Not Dispatched → Dispatched change. A detailed message: products, quantities, prices, total, payment method/status, amount paid or to pay, tracking number, and an estimated 5–7 day delivery (an estimate, not a promise).
+3. **Message tracking** for both types: Queued, Processing, Retry wait, Sent, Delivered, Read, Failed, Unknown, Skipped. Each message can be re-sent by hand, with a reason, a confirmation, and a new record kept for every resend.
+4. **English + Hindi** approved templates, chosen by each customer's language setting.
+5. **Customer phones:** any primary or alternate phone can be marked as the WhatsApp number (at most one per customer). **WhatsApp Consent** is YES (customer agreed) / NO (customer declined), recorded by staff with no OTP, SMS or IVR. Only YES allows messages.
+
+**Safety rules:**
+- One event creates only one message; the database enforces this.
+- An unclear send result is never retried automatically.
+- Retries are limited, and old messages expire.
+- Only one worker can pick up a message at a time.
+- Consent and the recipient number are re-checked before every send.
+- Message content is copied from the order when it's queued, so later edits don't change it.
+- Delivery updates from WhatsApp are signature-checked, deduplicated, and never move a message's status backwards.
+- Sending pauses automatically on setup or account errors, and an Admin can switch the whole feature off.
+
+---
+
 ## 🚀 What to actually build first
 
 Don't start with all 14 phases. The first usable version (MVP) is:
