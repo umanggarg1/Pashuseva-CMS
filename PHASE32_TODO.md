@@ -1,6 +1,6 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Progress: A0 · A1 · A2 · A3 done (all local; nothing pushed, no deploy). Pending decision: wrap the migration in BEGIN/COMMIT (A3 finding). Then backend implementation (B/C) + tests before A4; the migration must not be pushed before A4.**
+**Progress: A0 · A1 · A2 · A3 done (all local; nothing pushed, no deploy). Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
 
 **Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
@@ -1033,8 +1033,17 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     identical to BEFORE). With the migration wrapped in `BEGIN; … COMMIT;`, the same
     failure leaves **nothing** behind and recovery is just resolve + redeploy (also
     proven, data identical).
-    **Recommended before A4: wrap the real migration in `BEGIN; … COMMIT;`**
-    (awaiting the user's decision).
+    **Wrapping the migration in `BEGIN; … COMMIT;` was approved and done → see A3-R.**
+  - **A3-R, revised migration (user-approved 2026-11-24), DONE, all PASS.** The
+    migration was wrapped in `BEGIN; … COMMIT;` (+11 lines, no SQL statement changed,
+    all statements transaction-safe). The local DB was rebuilt from the original
+    backup (fingerprint identical to the original BEFORE), the revised migration was
+    applied, and the before/after fingerprints show all 24 business tables
+    identical. A deliberate failure placed just before `COMMIT;` left **zero**
+    Phase 32 objects (0 enums/tables/columns/indexes/FKs). Recovery was just
+    `migrate resolve --rolled-back` + redeploy, and the data was identical to BEFORE.
+    The results are appended to `A3-REPORT.md` (the original A3 text is kept), with
+    new `a3r-*` fingerprint files.
   - Original A3 scope: before/after the migration,
   compare
   - row counts for every existing table (customers, phones, addresses, products,

@@ -5,6 +5,16 @@
 -- defaults (whatsappConsent NO, isWhatsapp false, preferredLanguage EN) do not
 -- rewrite the table on PostgreSQL 11+. Existing customers are moved to consent YES
 -- by the separate, audited one-time backfill (A5), NOT by this migration.
+--
+-- ALL-OR-NOTHING: wrapped in one transaction (decided after the A3 recovery drill).
+-- Prisma does not wrap migrations itself; without this, a failure half-way left the
+-- new enums/columns behind and every later deploy stopped with P3009. With it, a
+-- failure leaves the database exactly as it was, and recovery is just
+-- `prisma migrate resolve --rolled-back <name>` + a corrected redeploy.
+-- Every statement below is transaction-safe on PostgreSQL (no CREATE INDEX
+-- CONCURRENTLY, no ALTER TYPE … ADD VALUE, no VACUUM).
+
+BEGIN;
 
 -- CreateEnum
 CREATE TYPE "MessageLanguage" AS ENUM ('EN', 'HI');
@@ -191,3 +201,4 @@ ALTER TABLE "OutboundMessage" ADD CONSTRAINT "OutboundMessage_resolvedById_fkey"
 -- AddForeignKey
 ALTER TABLE "MessageStatusEvent" ADD CONSTRAINT "MessageStatusEvent_messageId_fkey" FOREIGN KEY ("messageId") REFERENCES "OutboundMessage"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
+COMMIT;
