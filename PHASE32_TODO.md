@@ -1,5 +1,7 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
+**Progress: A0 done (2026-11-24, read-only; findings in §18 A0). Next: A1, after the user reviews the A0 findings.**
+
 **Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
 **Existing database is preserved (user, 2026-11-24).** Phase 32 only **adds** to the
@@ -334,9 +336,8 @@ model CustomerPhone {
   // … existing fields
   isWhatsapp Boolean @default(false)          // independent of isPrimary
 }
-// + DATABASE-LEVEL RULE (raw SQL in the migration, §19.1):
-//   CREATE UNIQUE INDEX "CustomerPhone_one_whatsapp_per_customer"
-//     ON "CustomerPhone" ("customerId") WHERE "isWhatsapp" = true;
+//   @@unique([customerId], map: "CustomerPhone_one_whatsapp_per_customer", where: { isWhatsapp: true })
+//   → native Prisma partial index (generator previewFeatures = ["partialIndexes"], verified in A0)
 
 model Customer {
   // … existing fields
@@ -366,7 +367,7 @@ model OutboundMessage {
 
   // snapshot taken at enqueue — never recomputed
   toPhone            String?                    // 91XXXXXXXXXX
-  toPhoneId          Int?                       // CustomerPhone row it came from
+  toPhoneId          Int?                       // CustomerPhone row it came from: plain Int, NO foreign key (A0: phone rows are deleted on edit)
   language           MessageLanguage
   fallbackFromLanguage MessageLanguage?
   templateName       String?
@@ -889,14 +890,67 @@ production, no DROP or RENAME of existing tables/columns. Every local command se
 production Neon). Every generated migration SQL file is **reviewed before it's
 applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
 
-- [ ] A0. **Inspect the existing database (read-only, no changes):** current
-  `schema.prisma` (models, relations, enums, indexes, unique constraints,
-  `onDelete` rules), the migration history (count, latest), the Postgres version
-  (production Neon vs local Docker `postgres:18`), current row counts per table on
-  local, and existing duplicates that could break the new rules (e.g. customers
-  whose phones would normalize identically). Also confirm whether Prisma 7.9
-  supports partial indexes in `schema.prisma`; if not, the one-WhatsApp-number index
-  goes in as raw SQL in the migration (§19.1). **Report the findings before A1.**
+- [x] A0. **Inspect the existing database (read-only), DONE 2026-11-24.** Done on a
+  local Docker `postgres:18` copy restored from the verified full backup
+  `pashuseva-full-2026-11-24_2234.dump`; production was not touched. Findings:
+
+  **Schema and migrations**
+  - **No drift.** `prisma migrate diff` (local copy → `schema.prisma`) is empty, and
+    `migrate status` reports "29 migrations, up to date". Latest:
+    `20261005120000_trash_retention_30_days`.
+  - Production and local are both **PostgreSQL 18** (prod 18.7). Prisma CLI/client
+    7.9.1. The schema has 24 models and 10 enums.
+  - **Partial unique index is supported natively** by Prisma 7.9.1 via
+    `previewFeatures = ["partialIndexes"]` +
+    `@@unique([customerId], where: { isWhatsapp: true })`, which generates exactly
+    `CREATE UNIQUE INDEX … WHERE ("isWhatsapp" = true)`. **No raw SQL is needed** and
+    there's no risk of a future migration dropping it. Turning the flag on changes
+    nothing in the existing schema (the diff stays empty).
+  - FK convention: Customer/Order references are `RESTRICT`; User references
+    (`createdById` etc.) are `SET NULL`. Phase 32 follows the same convention (A1).
+  - `CustomerActivity` = `activity` text + `metadata` jsonb + nullable
+    `createdById`. Consent audit entries fit as-is: metadata
+    `{ field, from, to, source }`, `createdById` null for STOP/backfill.
+
+  **Data (468 customers, 515 orders)**
+  - Customers: **429 active**, 0 trashed, 39 purged. Every active customer has
+    **exactly 1 primary phone** (351 have 1 phone, 78 have 2).
+  - **Backfill preview (A5):** **429 → consent YES**. **427 primary phones flagged
+    WhatsApp**. **2 not flagged** (only 9 digits, genuinely invalid).
+  - **6 phones contain a non-breaking space (U+00A0)**, typical of numbers pasted
+    from WhatsApp or the web. `toWhatsappNumber` must strip **all Unicode whitespace
+    incl. U+00A0** (then require ASCII `[0-9]`). With that, 3 of the 4 affected
+    primaries are valid.
+  - 1 customer has the same number twice (no impact: only the primary is flagged).
+    4 numbers are shared between different customers (allowed; each customer has its
+    own phone row).
+  - Orders now: 84 NOT_DISPATCHED, 159 DISPATCHED, 162 DELIVERED, 31 RETURNED,
+    8 RETURN_PENDING (non-trashed); 76 cancelled. **All existing orders are
+    pre-go-live → never messaged (Q16).**
+  - Payments: `paymentStatus` matches `SUM(payments)` for **every** order;
+    **0 overpaid**; 3 reversals; status PENDING 338 / PAID 176 / PARTIAL 1; REFUNDED
+    never used.
+  - **Order-item units:** PACKET 229, PIECE 182, BAG 147, null 18, plus **legacy
+    free-text units** "10 kg" (9), "Packet" (2), "Bag" (1), found only in
+    ORD-2026-000001…000012, before units became an enum. Rendering rule (B4): match
+    the enum names case-insensitively → English singular/plural; any other text →
+    shown as stored in brackets (`× 2 (10 kg)`); null → `× 2`.
+  - Message size: max **5 items per order**, longest item line ~207 chars, well
+    inside the limits. One product name contains an en dash (U+2013), which is fine.
+  - Users: 1 Admin, 16 Managers, 28 Employees (all statuses), 2 rejected; **no
+    `message:*` permissions exist**. Permissions are per-user grants, so Q9's
+    defaults need a **grant backfill for existing users**, like the earlier
+    `20260910100000_backfill_order_export_permission` (C5).
+
+  **Corrections applied to the plan from A0:**
+  - The partial index is in `schema.prisma` (preview feature), not raw SQL.
+  - `OutboundMessage.toPhoneId` is a **plain Int with no foreign key**. Phone rows
+    are deleted when a number is edited, and a `RESTRICT` FK would block that edit.
+    The pre-send recipient check handles a missing row.
+  - Phone normalization strips U+00A0.
+  - The unit-rendering fallback is defined.
+  - `message:resend` gets a grant backfill for existing users.
+
 - [ ] A1. **Prepare the schema changes (additive):** everything from §5:
   `CustomerPhone.isWhatsapp` + the partial unique index;
   `Customer.preferredLanguage`, `whatsappConsent` (enum `{ YES NO }`, column default
@@ -949,10 +1003,10 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
 
 ### B. Backend — messaging core (`src/services/messaging/`)
 - [ ] B0. `services/orderPayment.ts` `getOrderPaymentSummary(orderId, tx?)` → `{ total, paid, due, overpaid, kind: UNPAID|PARTIAL|PAID|FREE|REFUNDED }` (§19.6); refactor `parcelSummary.service.ts` to use it (output must stay identical, checked by a before/after PDF text diff)
-- [ ] B1. `utils/phone.ts` `toWhatsappNumber()` + test cases (§19.1: spaces, `+91`, `0091`, `091`, leading 0, 12-digit `91…` edge cases, too short/long, **non-ASCII digits rejected**, ASCII `[0-9]` only)
+- [ ] B1. `utils/phone.ts` `toWhatsappNumber()` + test cases (§19.1: spaces **incl. non-breaking space U+00A0 and any Unicode whitespace** (found in 6 real phones, A0), `+91`, `0091`, `091`, leading 0, 12-digit `91…` edge cases, too short/long, **non-ASCII digits rejected**, ASCII `[0-9]` only)
 - [ ] B2. `providers/types.ts` (`sendTemplate` → `{ ok, providerMessageId } | { errorKind, code, message, retryAfter? }`), `providers/metaCloud.ts` (fetch, 10 s timeout, `biz_opaque_callback_data`), `providers/dryRun.ts`
 - [ ] B3. `metaErrors.ts`: code → errorKind table (unknown → PERMANENT); timeout/reset/no-body → AMBIGUOUS
-- [ ] B4. {{5}} payment-method strings exactly as decided in §4.2 (Q12); **Names, products, units, order numbers and amounts are inserted exactly as stored, never translated or transliterated, in both languages (§4.3)**; `templates/units.ts` (PackagingUnit → English singular/plural); `templates/confirmation.ts`, `templates/dispatched.ts`, `templates/sanitize.ts` (NFC normalize; strip control chars, newline, tab; **keep ZWJ/ZWNJ**, needed for Devanagari; collapse spaces; truncate on **grapheme** boundaries via `Intl.Segmenter`, never mid-conjunct), `templates/i18n.ts` (EN/HI strings for payment wording), template-availability + English fallback
+- [ ] B4. {{5}} payment-method strings exactly as decided in §4.2 (Q12); **Names, products, units, order numbers and amounts are inserted exactly as stored, never translated or transliterated, in both languages (§4.3)**; `templates/units.ts` (PackagingUnit names matched case-insensitively → English singular/plural; any other stored text → `× qty (text)`; null → `× qty`, A0); `templates/confirmation.ts`, `templates/dispatched.ts`, `templates/sanitize.ts` (NFC normalize; strip control chars, newline, tab; **keep ZWJ/ZWNJ**, needed for Devanagari; collapse spaces; truncate on **grapheme** boundaries via `Intl.Segmenter`, never mid-conjunct), `templates/i18n.ts` (EN/HI strings for payment wording), template-availability + English fallback
 - [ ] B5. `snapshot.ts`: build the confirmation/dispatch snapshot from `OrderItem` + `getOrderPaymentSummary` (§4.2 table)
 - [ ] B6. Hindi template text draft + Hindi strings for {{6}}/{{7}}/{{8}} → **user approves the wording** before Meta submission ({{5}} already decided, Q12)
 - [ ] B7. `message.service.ts`: `enqueue(tx, {type, orderId, actingUserId})` (ON CONFLICT DO NOTHING; SKIPPED rows for disabled/no number/consent NO/invalid), `listForOrder`, `preview`, `resend` (all §13 rules), `resolveUnknown`
@@ -968,7 +1022,7 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
 - [ ] C2. `orderService.create` + reorder: response includes `whatsapp: { status, skipReason }` for the post-save toast (§0.1); `Idempotency-Key` + `idempotencyHash` (§19.2: same key + same hash → the existing order, 200; same key + different hash or different user → 422 with the existing order number; concurrent same key → the unique violation is caught → the existing order, or 409 "still being created"); `enqueue(tx, ORDER_CONFIRMATION)` inside the transaction; after commit `void dispatcher.dispatch(id)`
 - [ ] C3. `applyDeliveryStatusChange`: on the NOT_DISPATCHED → DISPATCHED transition only → `enqueue(tx, ORDER_DISPATCHED)` (an order created before go-live → SKIPPED "Order created before WhatsApp go-live", no send, §7.1); the caller dispatches after commit (both `updateDeliveryStatus` and `updateArticleNumber` paths); the re-dispatch activity note (Q5)
 - [ ] C4. Order activity: "WhatsApp order confirmation sent / delivered / failed: <reason> / skipped: <reason>", the same for dispatch, resend with the user + reason
-- [ ] C5. Permissions `message:resend`, `message:manage` in `permission.schema.ts` + defaults (Q9) + permissions UI labels
+- [ ] C5. Permissions `message:resend`, `message:manage` in `permission.schema.ts` + defaults (Q9) + permissions UI labels + a **grant backfill migration for existing users** (`message:resend` to existing active Managers/Employees, following `20260910100000_backfill_order_export_permission`; Admin passes all checks already); the exact rule is confirmed against that migration in C5
 - [ ] C6. Routes `/orders/:id/messages*` (**every one** behind `checkOrderAccess` / the order data-scope, same as other order routes), `/messaging/*` (§14)
 - [ ] C7. Webhook router (§12): raw body, HMAC, zod, dedupe, monotonic, reconciliation, STOP → consent NO, rate limit; mounted before `express.json()`
 
@@ -1046,7 +1100,7 @@ The YES/NO consent design was deliberately left out of this review and is unchan
 ### 19.1 Database and phone numbers
 | Scenario | What the code does today | Resolution |
 |---|---|---|
-| Two staff flag different WhatsApp numbers at once | No DB rule; `syncPhones` matches rows **by phone number** and only updates label/isPrimary | **Partial unique index** `("customerId") WHERE "isWhatsapp"`. `syncPhones` also updates on an `isWhatsapp`-only change, clears the old flag before setting the new one, and maps P2002 → 409 (C0, E24) |
+| Two staff flag different WhatsApp numbers at once | No DB rule; `syncPhones` matches rows **by phone number** and only updates label/isPrimary | **Partial unique index** `("customerId") WHERE "isWhatsapp"` (native Prisma `partialIndexes`, A0). `syncPhones` also updates on an `isWhatsapp`-only change, clears the old flag before setting the new one, and maps P2002 → 409 (C0, E24) |
 | Phone deleted after queueing | Removing a number deletes its row | The pre-send check finds no row → SKIPPED (E25) |
 | **Number changed** after queueing | `syncPhones` treats a changed number as **delete + create** (new row id) | The `toPhoneId` check fails → SKIPPED "Recipient changed", so the old message can never reach the new number (E25) |
 | Phone "moved" to another customer | **Not possible in the code**: phone rows are only created under their customer; another customer with the same number has a different row | The pre-send check also verifies `phone.customerId = message.customerId` (defence in depth, E25) |
