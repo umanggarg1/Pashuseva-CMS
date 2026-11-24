@@ -1,6 +1,6 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Progress: A0 done (2026-11-24, read-only; findings in §18 A0). Next: A1, after the user reviews the A0 findings.**
+**Progress: A0 done · A1 done · A2 done (migration generated, applied to the local copy only; committed, NOT pushed, and it must not be pushed before A3 + backend tests + A4). Next: A3, verify existing data is intact.**
 
 **Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
@@ -570,6 +570,33 @@ resent automatically, so the dispatch never waits on a human. Covered by test E4
 
 ## 8. Idempotency for user actions
 
+**Repeat orders are always allowed (user, 2026-11-24, mandatory):** the same customer
+can create unlimited legitimate repeat orders for the same products, quantities and
+combinations. Idempotency only prevents **duplicate processing of the same
+order-creation request**. It must never block a new order based on customer,
+product, quantity or time.
+
+- The key identifies **one order-creation attempt**. It's a random UUID generated
+  when a new Create Order form/session starts, reused only when retrying that same
+  submission, and **regenerated for every genuinely new order**.
+- **Never** derived from customer ID, product ID, quantities, the source order or
+  the date. There's no "same customer + same products within X minutes" check.
+- **After a successful save** the key is cleared and the next order gets a fresh one,
+  even if the form is reused or pre-filled with identical items.
+- **A failed save** (validation error, out of stock, network error before the order
+  was created) creates no order, so the key isn't consumed. Fixing the form and
+  submitting again with the same key creates the order normally. If the details
+  changed after a failure that never created an order, the request is processed as
+  normal; the 422 mismatch applies only when an order already exists for that key.
+- **Reorder:** each click of Reorder starts a new attempt with a new random key
+  (generated when the Reorder confirmation opens), **not** derived from the source
+  order, so reordering the same past order next week is a new order. Only a
+  double-click or retry of that same Reorder confirmation is de-duplicated.
+- Examples: Ram Lal orders 2 bags today → new order; the same again tomorrow, or after
+  10 days → new order each time; staff accidentally submit today's form twice → one
+  order. Covered by test E26b.
+
+
 | Action | Protection |
 |---|---|
 | **Create Order** double-click / slow network / retried request | Frontend generates a UUID when the Create Order form opens and sends it as `Idempotency-Key`. Backend stores it in `Order.idempotencyKey` (unique). Same key again → returns the **already-created order** (200), no new order, no new message. The button also stays disabled while pending (already true) |
@@ -951,7 +978,11 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   - The unit-rendering fallback is defined.
   - `message:resend` gets a grant backfill for existing users.
 
-- [ ] A1. **Prepare the schema changes (additive):** everything from §5:
+- [x] A1. **DONE 2026-11-24 (schema edited, not yet committed; it's committed together with its migration in A2 so it can never be deployed without it).**
+  - `schema.prisma`: +217 lines, 1 line changed (the generator gains `previewFeatures = ["partialIndexes"]`). Existing lines are untouched; a `prisma format` reflow was deliberately reverted to keep the diff reviewable.
+  - `prisma validate` passes; `prisma generate` + backend `tsc --noEmit` pass, so the current code compiles unchanged against the new schema.
+  - SQL preview against the local copy of production: 7 enums, new columns on `Customer` (5), `CustomerPhone` (1) and `Order` (2), all nullable or with a constant default (no table rewrite on PG 18), 4 new tables, the partial unique index `CustomerPhone_one_whatsapp_per_customer … WHERE ("isWhatsapp" = true)`, and 7 FKs (User refs SET NULL, Customer RESTRICT, Order/self/event refs SET NULL). **No DROP / RENAME / TRUNCATE / DELETE / type change.**
+  - Original A1 scope: everything from §5:
   `CustomerPhone.isWhatsapp` + the partial unique index;
   `Customer.preferredLanguage`, `whatsappConsent` (enum `{ YES NO }`, column default
   NO) + `whatsappConsentAt/ById/Source` (incl. `BACKFILL`), **no opt-out Boolean**;
@@ -960,7 +991,27 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   (incl. `rateLimitedUntil`), `MessageTemplateStatus`; enums; back-relations. All
   new columns are nullable or defaulted, so existing rows stay valid and the
   current code keeps working.
-- [ ] A2. **Backup + local migration:** fresh production backup with the existing
+- [x] A2. **DONE 2026-11-24 (local copy only; production untouched).**
+  - Backup: the verified full backup `pashuseva-full-2026-11-24_2234.dump` (SHA256
+    `4CE00B40…3094`; a test restore matched all 25 table counts) was restored into
+    local Docker `p32-local` (`postgres:18`, port 55432). A4 takes a new same-day
+    backup before production.
+  - Pre-migration fingerprint of all 25 tables (row count + md5 over every existing
+    column) recorded for A3.
+  - Migration `20261124180000_phase32_whatsapp_automation/migration.sql` generated
+    with `migrate diff` (local copy → schema), with a header comment. Scan: **no
+    DROP / RENAME / TRUNCATE / DELETE / UPDATE / ALTER COLUMN / SET NOT NULL** (the
+    only hits were the header text and the FK `ON DELETE SET NULL / ON UPDATE
+    CASCADE` rules). It contains 7 CREATE TYPE, 3 ALTER TABLE ADD COLUMN (8
+    columns), 4 CREATE TABLE, 15 indexes and 7 foreign keys.
+  - Applied with `prisma migrate deploy` behind a guard that refuses any URL other
+    than `localhost:55432` (Prisma confirmed `at "localhost:55432"`): 30 migrations,
+    "up to date", and the schema-vs-DB diff is empty.
+  - Sanity check: all 468 customers consent NO / language EN (database defaults;
+    YES comes from A5); 507 phones `isWhatsapp = false`; 515 orders with a NULL
+    idempotency key; the partial index exists with `WHERE ("isWhatsapp" = true)`;
+    the new tables are empty (**0 messages**).
+  - Original A2 scope: fresh production backup with the existing
   procedure (`pg_dump` via Docker `postgres:18` → `D:\pashuseva\backups`, verified
   readable with `pg_restore --list`) → restore into local Docker PG → generate
   `<ts>_phase32_whatsapp_automation` and apply it **locally only**.
@@ -1061,6 +1112,7 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
 - [ ] E24. Two simultaneous customer saves flagging different phones as WhatsApp → exactly one succeeds, the other gets 409; the DB never holds two (partial unique index)
 - [ ] E25. A queued message whose `toPhoneId` was deleted, renumbered (new row), or is not owned by `customerId` → SKIPPED, no Meta call; a phone with the same number on another customer is never used
 - [ ] E26. Same idempotency key + different order details → 422 (no new order, the original unchanged); same key from a different user → 422; same key concurrently → one order
+- [ ] E26b. **Repeat orders allowed:** the same customer + identical items submitted as a new form session (new key) → a second order is created, then a third the next "day"; after a successful save the form gets a fresh key; Reorder of the same source order twice (two separate confirmations) → two orders; a failed submit (e.g. stock) then fixed and resubmitted with the same key → the order is created; only a true double-submit/retry of one attempt is de-duplicated
 - [ ] E26a. Order transaction fails after enqueue (e.g. stock check) → no order **and** no `OutboundMessage` row
 - [ ] E27. Stale worker: claim → lease expires → recovery → Admin resolves → the late worker's result is not written over the resolved state (only `lateResponseNote` + Admin notification)
 - [ ] E27a. Crash **before** `sendStartedAt` → back to QUEUED and sent once; crash **after** → UNKNOWN

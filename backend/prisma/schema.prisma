@@ -1,6 +1,11 @@
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
+  // Phase 32: native partial unique index for "at most one WhatsApp number per
+  // customer" (CustomerPhone below). Verified in PHASE32_TODO.md A0 against Prisma
+  // 7.9.1: generates exactly `CREATE UNIQUE INDEX … WHERE ("isWhatsapp" = true)` and
+  // changes nothing in the existing schema.
+  previewFeatures = ["partialIndexes"]
 }
 
 datasource db {
@@ -100,6 +105,60 @@ enum PackagingUnit {
   BOTTLE
 }
 
+// ── Phase 32: WhatsApp automation (see PHASE32_TODO.md §5) ─────────────────────
+
+// Per-customer WhatsApp message language. Only picks which approved Meta template
+// is used — names, products, units, numbers are never translated (§4.3).
+enum MessageLanguage {
+  EN
+  HI
+}
+
+// Staff-recorded consent: YES – Customer agreed / NO – Customer declined. The only
+// consent control (frozen decision, §6) — no separate opt-out flag anywhere.
+enum WhatsappConsent {
+  YES
+  NO
+}
+
+// Who/what last set Customer.whatsappConsent.
+enum ConsentSource {
+  STAFF
+  CUSTOMER_STOP_REPLY
+  BACKFILL
+}
+
+enum MessageChannel {
+  WHATSAPP
+}
+
+enum MessageType {
+  ORDER_CONFIRMATION
+  ORDER_DISPATCHED
+}
+
+// §5/§9. PROCESSING and RETRY_WAIT are operational; SENT < DELIVERED < READ are
+// provider-confirmed progress; UNKNOWN = Meta may have accepted it and is never
+// retried automatically.
+enum MessageStatus {
+  QUEUED
+  PROCESSING
+  RETRY_WAIT
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  UNKNOWN
+  SKIPPED
+}
+
+enum MessageErrorKind {
+  TEMPORARY
+  PERMANENT
+  CONFIGURATION
+  AMBIGUOUS
+}
+
 model User {
   id           Int           @id @default(autoincrement())
   email        String        @unique
@@ -173,7 +232,10 @@ model User {
   orderNotes                     OrderNote[]
   stockHistoryEntries             StockHistory[]     @relation("StockHistoryCreatedBy")
   paymentsCreated                 Payment[]          @relation("PaymentCreatedBy")
-
+  // Phase 32
+  whatsappConsentsRecorded    Customer[]                 @relation("CustomerWhatsappConsentBy")
+  outboundMessagesTriggered   OutboundMessage[]          @relation("OutboundMessageTriggeredBy")
+  outboundMessagesResolved    OutboundMessage[]          @relation("OutboundMessageResolvedBy")
 }
 
 // Phase 18: several managers can share an Employee (all see/manage that team
@@ -253,10 +315,23 @@ model Customer {
   deletedAt          DateTime?
   deletionExpiresAt  DateTime?
   purgedAt           DateTime?
+  // Phase 32 (§6). Column default NO is the safe default for any row written
+  // without a value; the API requires an explicit value on create (form preselects
+  // YES), and existing customers are set to YES by the one-time audited backfill
+  // (A5, source BACKFILL) — not by this migration.
+  preferredLanguage     MessageLanguage            @default(EN)
+  whatsappConsent       WhatsappConsent            @default(NO)
+  whatsappConsentAt     DateTime?
+  // Staff member who last set it; null when set by a STOP reply or the backfill.
+  whatsappConsentBy     User?                      @relation("CustomerWhatsappConsentBy", fields: [whatsappConsentById], references: [id])
+  whatsappConsentById   Int?
+  whatsappConsentSource ConsentSource?
+  outboundMessages      OutboundMessage[]
 
   @@index([assignedManagerId])
   @@index([createdById])
   @@index([deletedAt])
+  @@index([whatsappConsentById])
 }
 
 // Phase 19: several employees can share a customer (all see it, one row per
@@ -283,7 +358,12 @@ model CustomerPhone {
   phone      String
   label      String?
   isPrimary  Boolean @default(false)
+  // Phase 32: the number order/dispatch WhatsApp messages go to. Independent of
+  // isPrimary (one row can be both). At most one per customer, enforced by the
+  // database (partial unique index below), not only by validation.
+  isWhatsapp Boolean  @default(false)
 
+  @@unique([customerId], map: "CustomerPhone_one_whatsapp_per_customer", where: { isWhatsapp: true })
   @@index([customerId])
 }
 
@@ -479,6 +559,13 @@ model Order {
   deletedAt           DateTime?
   deletionExpiresAt   DateTime?
   purgedAt            DateTime?
+  // Phase 32 (§8, §19.2): client-supplied Idempotency-Key for POST /orders and
+  // reorder, plus a hash of (acting user + request body) so a reused key with
+  // different order details is rejected instead of returning the wrong order.
+  // Null for every pre-Phase-32 order (Postgres allows many NULLs under UNIQUE).
+  idempotencyKey           String?                 @unique
+  idempotencyHash          String?
+  outboundMessages         OutboundMessage[]
 
   @@index([customerId])
   @@index([createdById])
@@ -635,4 +722,133 @@ model AuditLog {
   createdAt DateTime @default(now())
 
   @@index([userId])
+}
+
+// ── Phase 32: WhatsApp automation (PHASE32_TODO.md §5, §9, §12, §19) ───────────
+
+// One row per WhatsApp message (an outbox / queue row). Created inside the same
+// transaction as the event that causes it (order created / dispatch transition /
+// manual resend), sent afterwards by the dispatcher. `eventKey` is unique, so one
+// logical event can never produce a second message.
+model OutboundMessage {
+  id           Int               @id @default(autoincrement())
+  // ORDER_CREATED:<orderId> / ORDER_DISPATCHED:<orderId> / RESEND:<uuid> (§7)
+  eventKey     String            @unique
+  channel      MessageChannel    @default(WHATSAPP)
+  type         MessageType
+  order        Order?            @relation(fields: [orderId], references: [id])
+  orderId      Int?
+  customer     Customer          @relation(fields: [customerId], references: [id])
+  customerId   Int
+  // A manual resend points at the message it re-sends (§13).
+  resendOf     OutboundMessage?  @relation("OutboundMessageResend", fields: [resendOfId], references: [id])
+  resendOfId   Int?
+  resends      OutboundMessage[] @relation("OutboundMessageResend")
+  resendReason String?
+  // Idempotency-Key of the Resend API request.
+  requestKey   String?           @unique
+
+  // Snapshot taken at enqueue — retries send exactly this, never rebuilt.
+  toPhone              String? // normalized 91XXXXXXXXXX
+  // Plain Int on purpose — NO foreign key: CustomerPhone rows are deleted when a
+  // number is edited, and an FK would block that. The pre-send check re-verifies
+  // the row still exists / belongs to the customer / is still the WhatsApp number.
+  toPhoneId            Int?
+  language             MessageLanguage
+  fallbackFromLanguage MessageLanguage?
+  templateName         String?
+  params               Json?
+  snapshot             Json?
+
+  status     MessageStatus     @default(QUEUED)
+  skipReason String?
+  errorKind  MessageErrorKind?
+  errorCode  String?
+  lastError  String?
+
+  // Queue / worker bookkeeping (§9, §19.3)
+  attempts      Int       @default(0)
+  maxAttempts   Int       @default(5)
+  nextAttemptAt DateTime  @default(now())
+  expiresAt     DateTime
+  lockedAt      DateTime?
+  lockedUntil   DateTime?
+  lockedBy      String?
+  // New uuid on every claim; every later worker write must match it.
+  claimToken    String?
+  // Committed right before the Meta call: set → Meta may have been called (a lost
+  // lease becomes UNKNOWN); null → safe to re-queue.
+  sendStartedAt DateTime?
+  lastAttemptAt DateTime?
+
+  // Provider progress
+  providerMessageId String?   @unique
+  sentAt            DateTime?
+  deliveredAt       DateTime?
+  readAt            DateTime?
+  failedAt          DateTime?
+
+  triggeredBy      User?    @relation("OutboundMessageTriggeredBy", fields: [triggeredById], references: [id])
+  triggeredById    Int?
+  // Admin who resolved an UNKNOWN (mark sent / mark failed and resend).
+  resolvedBy       User?    @relation("OutboundMessageResolvedBy", fields: [resolvedById], references: [id])
+  resolvedById     Int?
+  // A Meta answer that arrived after the worker lost its claim (§19.3).
+  lateResponseNote String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  statusEvents MessageStatusEvent[]
+
+  @@index([status, nextAttemptAt])
+  @@index([status, lockedUntil])
+  @@index([orderId, type])
+  @@index([customerId])
+  @@index([resendOfId])
+  @@index([triggeredById])
+  @@index([resolvedById])
+}
+
+// Webhook status history from Meta + duplicate protection: the unique pair makes a
+// repeated webhook a no-op (§12). messageId is null when the wamid matched nothing.
+model MessageStatusEvent {
+  id                Int              @id @default(autoincrement())
+  providerMessageId String
+  status            String // sent / delivered / read / failed (as Meta sends it)
+  providerTimestamp DateTime
+  errorCode         String?
+  raw               Json
+  message           OutboundMessage? @relation(fields: [messageId], references: [id])
+  messageId         Int?
+  createdAt         DateTime         @default(now())
+
+  @@unique([providerMessageId, status])
+  @@index([messageId])
+}
+
+// Single row (id = 1), created on first use. Global messaging switches that every
+// worker instance must agree on.
+model MessagingState {
+  id               Int       @id
+  // Circuit breaker (§11): set atomically by the first CONFIGURATION error.
+  pausedAt         DateTime?
+  pauseReason      String?
+  pausedBy         String? // "system" or a user id
+  // Shared back-off after a Meta 429 (§19.4).
+  rateLimitedUntil DateTime?
+  // Q16 / §7.1: set ONCE, the first time WhatsApp is enabled in production; orders
+  // created before it never get a WhatsApp message. Never moved afterwards.
+  goLiveAt         DateTime?
+  updatedAt        DateTime  @updatedAt
+}
+
+// Cached Meta template approval status per name + language (§4.4). Meta's own
+// error at send time always wins over this cache.
+model MessageTemplateStatus {
+  name      String
+  language  String
+  status    String // APPROVED / PENDING / REJECTED / PAUSED / DISABLED
+  checkedAt DateTime
+
+  @@id([name, language])
 }
