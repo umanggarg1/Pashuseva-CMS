@@ -1,6 +1,6 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 open. Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
+**Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
 **Existing database is preserved (user, 2026-11-24).** Phase 32 only **adds** to the
 current PashuSeva database. Customers, names, phone numbers, products, inventory,
@@ -17,7 +17,7 @@ changes nothing in production. Production is migrated only in the controlled ste
 - Implement in the order of the §18 checklist: **database and backend tests before
   frontend integration**.
 - **WhatsApp stays disabled in production** (`WHATSAPP_ENABLED=false`) until the full
-  §18 E test suite (E1–E40b) passes **and** the Meta test-number check (E21) passes.
+  §18 E test suite (E1–E41) passes **and** the Meta test-number check (E21) passes.
 
 **Consent decision is frozen:** WhatsApp consent is a single **YES / NO** field on the
 customer, recorded by staff. No OTP, SMS, IVR, customer verification screen or any
@@ -426,6 +426,7 @@ model MessagingState {                           // single row, id = 1
   pauseReason   String?
   pausedBy      String?                          // "system" or user id
   rateLimitedUntil DateTime?                     // shared back-off after a Meta 429, honoured by every worker (§19.4)
+  goLiveAt      DateTime?                        // §7.1 (Q16): set ONCE, the first time WhatsApp is enabled; never changed afterwards
 }
 
 model MessageTemplateStatus {
@@ -531,6 +532,31 @@ What does **not** trigger:
 - Two employees dispatching at the same moment: the second hits either the existing
   transition check or the unique key. Exactly one message.
 
+### 7.1 Go-live rule (Q16 = NO)
+
+- **Go-live** = the first time the app starts with `WHATSAPP_ENABLED=true` (provider
+  `meta`). On that start, `MessagingState.goLiveAt` is set with
+  `UPDATE … SET "goLiveAt" = now() WHERE id = 1 AND "goLiveAt" IS NULL`. It's set
+  **once** and never moved by later restarts or a disable/re-enable. The dry-run
+  provider never sets it.
+- **An order is eligible for WhatsApp only if `order.createdAt >= goLiveAt`**
+  (`goLiveAt` not set → no order is eligible). This applies to:
+  - **Dispatch notification:** on the Not Dispatched → Dispatched transition of an
+    ineligible order, a row is still written as **SKIPPED "Order created before
+    WhatsApp go-live"**, so staff can see why nothing was sent. No Meta call is ever
+    made.
+  - **Order confirmation:** orders created while WhatsApp is disabled (e.g. between
+    the A4 production migration and go-live) are already SKIPPED "WhatsApp
+    disabled". Once `goLiveAt` is set, they're older than it, so they stay ineligible
+    for any later message too.
+  - **Manual Resend:** blocked for ineligible orders ("Order created before WhatsApp
+    go-live"), so no retroactive message can be sent by hand either.
+- Checked at enqueue **and** again in the pre-send checks (§9.2), like every other
+  eligibility rule.
+- **Nothing about existing orders changes:** no order, delivery status, tracking or
+  history row is modified. The backfill (A5) only touches customer consent and phone
+  flags.
+
 Order of messages: the worker does not claim an `ORDER_DISPATCHED` row while that
 order's `ORDER_CONFIRMATION` is still QUEUED/PROCESSING/RETRY_WAIT (waits up to
 10 min, then sends anyway). This stops "dispatched" arriving before "confirmed" when an
@@ -594,6 +620,7 @@ RETURNING *;
    first attempt, **every retry** and **every manual resend**. Example: consent YES →
    order created, message queued → staff set NO → worker claims it → re-check → SKIPPED.
 4. Eligibility, all read fresh:
+   - **go-live (Q16):** `order.createdAt >= MessagingState.goLiveAt` (unset → ineligible) (§7.1)
    - recipient: phone row `toPhoneId` exists, **belongs to `customerId`**, is still
      `isWhatsapp`, and still normalizes to `toPhone` (§6, §19.1)
    - **customer** not in Trash (`deletedAt`) and not purged (`purgedAt`)
@@ -744,6 +771,7 @@ Backoff for TEMPORARY: 1 min → 5 min → 15 min → 1 h. After `maxAttempts` (
   - the customer's WhatsApp consent is NO
   - the number is invalid
   - for dispatch: the order isn't dispatched / has been cancelled
+  - the order was created before WhatsApp go-live (Q16, §7.1)
   - an UNKNOWN exists that isn't resolved yet ("resolve the unknown message first", Admin only)
 - A DELIVERED/READ original **can** be resent, but the dialog warns "Customer already
   received this".
@@ -806,7 +834,7 @@ Only `.env.example` gets placeholders.
 | Q4 | Default language | **English** (switch per customer to Hindi via the "WhatsApp Message Language" dropdown) |
 | Q13 | Names in Hindi messages | **Customer names and product names are never translated or transliterated**; they stay exactly as stored (English) in both languages. Quantities/units/order numbers/amounts are unchanged too. **Frozen** |
 | Q14 | Consent default for new customers | **YES preselected**; staff can switch to NO; existing customers → YES via the backfill (Q3) |
-| Q16 | **Open:** an order created **before** Phase 32 goes live and is still Not Dispatched, then dispatched after go-live: send the dispatch notification? (No confirmation was ever sent for it.) | *Recommended:* **yes, send it**. It's self-contained and the data is correct. The alternative is to skip orders created before the go-live date. *Awaiting decision* |
+| Q16 | Orders created before go-live | **NO (user, 2026-11-24).** Orders created before go-live never get an automatic WhatsApp message, even if dispatched after go-live. Only orders created **after** go-live are eligible. Existing records never trigger retroactive messages. Existing orders and their dispatch history stay unchanged; this is a **notification rule, not a data rule**. Normal consent, phone and pre-send checks still apply to eligible new orders. Go-live definition and enforcement: §7.1 |
 | Q15 | Staff visibility | Post-save toast with order and WhatsApp outcomes shown separately + the WhatsApp messages card on Order Details with status explanations (§0.1) |
 | Q5 | Re-dispatch after an Admin/Manager correction | **No automatic second message**; use Resend |
 | Q6 | Hindi template not approved | **Fall back to English** |
@@ -932,13 +960,13 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
 - [ ] B8a. `applyStatus.ts`: one monotonic status helper used by the send result, the webhook and reconciliation (§19.5); the late-response handler (§19.3)
 - [ ] B9. `sweeper.ts`: 30 s tick: lock recovery → UNKNOWN, claim, send, template-status refresh every 6 h, error-safe; start in `index.ts`, graceful stop on SIGTERM
 - [ ] B10. `circuitBreaker.ts`: **atomic** pause (`UPDATE … WHERE "pausedAt" IS NULL RETURNING`, so only the worker that flips it notifies the Admins) / resume; queue-age alert (oldest QUEUED > 15 min while enabled and not paused → Admin `Notification`, at most once an hour)
-- [ ] B11. `config.ts` `WHATSAPP_*` with conditional requirement; `.env.example`
+- [ ] B11. `config.ts` `WHATSAPP_*` with conditional requirement; `.env.example`; on startup with `ENABLED=true` + provider `meta` → set `MessagingState.goLiveAt` once (`WHERE "goLiveAt" IS NULL`) (§7.1)
 
 ### C. Backend — wiring
 - [ ] C0. `customer.repository` `syncPhones`: also update a row when **only `isWhatsapp`** changed (today it compares only label/isPrimary); **clear the old WhatsApp flag before setting the new one** in the same transaction (so a swap doesn't trip the partial index); map the unique violation (P2002) → 409 "Customer was changed by someone else, reload" (§19.1)
 - [ ] C1. `customer.schema.ts`: `isWhatsapp` (+ valid-number refine, + at-most-one refine), `preferredLanguage`, `whatsappConsent` (enum YES/NO, **required on create**, optional on update; the service stamps `whatsappConsentAt/ById/Source` on every change); customer repository writes them; activity text `9876543210 (primary, WhatsApp)`, consent changes logged with **previous value, new value, employee and timestamp** (STOP logged as "by customer"), language changes logged
 - [ ] C2. `orderService.create` + reorder: response includes `whatsapp: { status, skipReason }` for the post-save toast (§0.1); `Idempotency-Key` + `idempotencyHash` (§19.2: same key + same hash → the existing order, 200; same key + different hash or different user → 422 with the existing order number; concurrent same key → the unique violation is caught → the existing order, or 409 "still being created"); `enqueue(tx, ORDER_CONFIRMATION)` inside the transaction; after commit `void dispatcher.dispatch(id)`
-- [ ] C3. `applyDeliveryStatusChange`: on the NOT_DISPATCHED → DISPATCHED transition only → `enqueue(tx, ORDER_DISPATCHED)`; the caller dispatches after commit (both `updateDeliveryStatus` and `updateArticleNumber` paths); the re-dispatch activity note (Q5)
+- [ ] C3. `applyDeliveryStatusChange`: on the NOT_DISPATCHED → DISPATCHED transition only → `enqueue(tx, ORDER_DISPATCHED)` (an order created before go-live → SKIPPED "Order created before WhatsApp go-live", no send, §7.1); the caller dispatches after commit (both `updateDeliveryStatus` and `updateArticleNumber` paths); the re-dispatch activity note (Q5)
 - [ ] C4. Order activity: "WhatsApp order confirmation sent / delivered / failed: <reason> / skipped: <reason>", the same for dispatch, resend with the user + reason
 - [ ] C5. Permissions `message:resend`, `message:manage` in `permission.schema.ts` + defaults (Q9) + permissions UI labels
 - [ ] C6. Routes `/orders/:id/messages*` (**every one** behind `checkOrderAccess` / the order data-scope, same as other order routes), `/messaging/*` (§14)
@@ -999,6 +1027,7 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
 - [ ] E40. Confirmation FAILED / SKIPPED / UNKNOWN, then dispatch → dispatch sent normally; confirmation still QUEUED → dispatch waits (max 10 min)
 - [ ] E40a. Messaging endpoints respect the order data-scope: an Employee can't list/preview/resend messages of an order outside their scope
 - [ ] E40b. Meta 429 with Retry-After while 3 workers run → all pause until `rateLimitedUntil`, nothing is lost
+- [ ] E41. Go-live rule (Q16): an order created before `goLiveAt` and dispatched after it → SKIPPED "Order created before WhatsApp go-live", **zero Meta calls**; Resend blocked for it; an order created after `goLiveAt` → normal flow; restart / disable → re-enable doesn't move `goLiveAt`; an unset `goLiveAt` → nothing eligible; the existing order's delivery status, tracking and history are unchanged
 - [ ] E21. Real message via the **Meta test number** to your phone (both types, both languages)
 - [ ] E22. Playwright: customer phone toggles, language, consent YES/NO (YES preselected on create), post-save toast lines, status help text, Create Order hint, Messages card, Resend dialog, Admin Messaging page
 - [ ] E23. `tsc` backend + frontend, eslint
@@ -1006,7 +1035,7 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
 ### F. Release
 - [ ] F1. Commit + push. Render runs `migrate deploy` (additive)
 - [ ] F2. Production migration per A4 with `WHATSAPP_ENABLED=false` (**stays false until all of §18 E, including E21, has passed**) → confirm the existing flows are unchanged → backfill A5 dry-run, review the counts with the user, then apply
-- [ ] F3. Only after E1–E40b pass: setup guide steps 11–12 → enable → test order to your own number: confirmation arrives (Sent → Delivered → Read) → dispatch it → dispatch notification arrives with correct amounts → trash the test order (Admin trash, as in earlier phases) → record the results here
+- [ ] F3. Only after E1–E41 pass: setup guide steps 11–12 → enable (this sets `goLiveAt`, §7.1; record its value here) → test order to your own number: confirmation arrives (Sent → Delivered → Read) → dispatch it → dispatch notification arrives with correct amounts → trash the test order (Admin trash, as in earlier phases) → record the results here
 
 ---
 
