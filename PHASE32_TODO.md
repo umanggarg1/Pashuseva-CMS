@@ -832,7 +832,7 @@ Backoff for TEMPORARY: 1 min → 5 min → 15 min → 1 h. After `maxAttempts` (
 ```
 WHATSAPP_ENABLED=false                  # master switch
 WHATSAPP_PROVIDER=meta                  # meta | dryrun
-WHATSAPP_API_VERSION=v21.0              # current Graph API version at build time
+WHATSAPP_API_VERSION=v26.0              # default; v21.0 expires 2027-01-21 (Meta version table, checked 2026-11-24)
 WHATSAPP_PHONE_NUMBER_ID=
 WHATSAPP_BUSINESS_ACCOUNT_ID=
 WHATSAPP_ACCESS_TOKEN=                  # permanent System User token — SECRET
