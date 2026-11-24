@@ -1,6 +1,6 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Progress: A0 done · A1 done · A2 done (migration generated, applied to the local copy only; committed, NOT pushed, and it must not be pushed before A3 + backend tests + A4). Next: A3, verify existing data is intact.**
+**Progress: A0 · A1 · A2 · A3 done (all local; nothing pushed, no deploy). Pending decision: wrap the migration in BEGIN/COMMIT (A3 finding). Then backend implementation (B/C) + tests before A4; the migration must not be pushed before A4.**
 
 **Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
@@ -1015,7 +1015,27 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   procedure (`pg_dump` via Docker `postgres:18` → `D:\pashuseva\backups`, verified
   readable with `pg_restore --list`) → restore into local Docker PG → generate
   `<ts>_phase32_whatsapp_automation` and apply it **locally only**.
-- [ ] A3. **Verify the existing data is intact (local):** before/after the migration,
+- [x] A3. **DONE 2026-11-24, all checks passed (local disposable copies only; full report: `D:\pashusevaackups\phase32-verification\A3-REPORT.md`).**
+  - Before/after fingerprints: all 24 business tables have identical row counts and
+    checksums over every existing column; `_prisma_migrations` is +1 row with its 29
+    existing rows identical; 83 constraints valid, 0 invalid indexes. The fingerprint
+    files are preserved in that folder.
+  - Existing-code workflows: **17/17 with the old code (`e1e7655`)** and **17/17
+    with the new code** on the migrated schema. Covered: create/edit customer,
+    create/dispatch order, inline new customer, payment, parcel label (new and
+    pre-migration order), lists, dashboard. Old-code rows got the safe defaults
+    and 0 message rows, so **rolling back the app after A4 is safe**.
+  - Constraints/relationships: 24/24.
+  - **Recovery drill finding:** Prisma does **not** wrap a migration in a
+    transaction. A failure half-way leaves enums and columns behind, and later
+    deploys stop with P3009 (Render keeps the previous deploy). Recovery was proven
+    (resolve `--rolled-back` + remove the Phase-32-only objects + redeploy → data
+    identical to BEFORE). With the migration wrapped in `BEGIN; … COMMIT;`, the same
+    failure leaves **nothing** behind and recovery is just resolve + redeploy (also
+    proven, data identical).
+    **Recommended before A4: wrap the real migration in `BEGIN; … COMMIT;`**
+    (awaiting the user's decision).
+  - Original A3 scope: before/after the migration,
   compare
   - row counts for every existing table (customers, phones, addresses, products,
     categories, orders, items, order addresses, payments, delivery tracking,
