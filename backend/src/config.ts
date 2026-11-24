@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseWhatsappEnv } from './services/messaging/whatsappConfig';
 
 const envSchema = z.object({
   DATABASE_URL: z.string(),
@@ -23,12 +24,22 @@ if (!parsed.success) {
   process.exit(1);
 }
 
+// Phase 32: WhatsApp settings. All optional and "off / dry-run" by default, so the app
+// starts exactly as before when none are set; but a half-configured real Meta setup
+// (enabled + meta without credentials) refuses to start rather than half-working.
+const whatsapp = parseWhatsappEnv(process.env);
+if (!whatsapp.ok) {
+  console.error('Invalid WhatsApp environment variables:', whatsapp.errors);
+  process.exit(1);
+}
+
 export const config = {
   databaseUrl: parsed.data.DATABASE_URL,
   port: Number(parsed.data.PORT || 4000),
   jwtSecret: parsed.data.JWT_SECRET,
   nodeEnv: parsed.data.NODE_ENV,
   corsOrigin: parsed.data.CORS_ORIGIN || 'http://localhost:5173',
+  whatsapp: whatsapp.config,
 };
 
 export default config;

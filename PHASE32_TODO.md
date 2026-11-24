@@ -1,6 +1,6 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Progress: A0 · A1 · A2 · A3 · B0 · B1 done (all local; nothing pushed, no deploy). Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
+**Progress: A0 · A1 · A2 · A3 · B0 · B1 · B2 · B3 · B4 done (all local; nothing pushed, no deploy; 0 real WhatsApp requests). B6 (Hindi wording) awaits the user's review of PHASE32_TEMPLATES_REVIEW.md. Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
 
 **Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
@@ -1116,11 +1116,66 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   - **Real-data cross-check** (local copy, read-only): 429 active customers →
     **427 valid primaries** (4 of them contain U+00A0) + **2 invalid** (9 digits),
     exactly matching A0. All phones of active customers: 504 valid, 3 invalid.
-- [ ] B2. `providers/types.ts` (`sendTemplate` → `{ ok, providerMessageId } | { errorKind, code, message, retryAfter? }`), `providers/metaCloud.ts` (fetch, 10 s timeout, `biz_opaque_callback_data`), `providers/dryRun.ts`
-- [ ] B3. `metaErrors.ts`: code → errorKind table (unknown → PERMANENT); timeout/reset/no-body → AMBIGUOUS
-- [ ] B4. {{5}} payment-method strings exactly as decided in §4.2 (Q12); **Names, products, units, order numbers and amounts are inserted exactly as stored, never translated or transliterated, in both languages (§4.3)**; `templates/units.ts` (PackagingUnit names matched case-insensitively → English singular/plural; any other stored text → `× qty (text)`; null → `× qty`, A0); `templates/confirmation.ts`, `templates/dispatched.ts`, `templates/sanitize.ts` (NFC normalize; strip control chars, newline, tab; **keep ZWJ/ZWNJ**, needed for Devanagari; collapse spaces; truncate on **grapheme** boundaries via `Intl.Segmenter`, never mid-conjunct), `templates/i18n.ts` (EN/HI strings for payment wording), template-availability + English fallback
+- [x] B2. **DONE 2026-11-24.** `services/messaging/providers/`:
+  - `types.ts`: `sendTemplate` **never throws**. It returns ACCEPTED (valid wamid),
+    REJECTED {TEMPORARY|PERMANENT|CONFIGURATION, code, retryAfter, rateLimited,
+    templateScoped} or AMBIGUOUS.
+  - `dryRun.ts` (**default**): no network at all; still validates the request; fake
+    `wamid.DRYRUN.*` id.
+  - `metaCloud.ts`: request shape per Meta's docs. `biz_opaque_callback_data` = eventKey
+    (Meta's status-webhook reference confirms it's echoed in
+    `statuses[].biz_opaque_callback_data`; the send-side placement is to be confirmed
+    end-to-end at E21). 10 s timeout. Errors are classified by `code`
+    (`error_subcode` is deprecated per Meta).
+  - `index.ts` picks the provider. **Real Meta only when `WHATSAPP_ENABLED=true` +
+    `PROVIDER=meta` + credentials, and outside production also
+    `WHATSAPP_ALLOW_NON_PRODUCTION_SEND=true`** (E21 only). Otherwise dry-run, with
+    the reason logged.
+  - Config (part of B11): `services/messaging/whatsappConfig.ts` (pure, verified) is
+    wired into `config.ts`. No WhatsApp env → app starts as before (disabled,
+    dry-run). Enabled + meta without credentials → refuses to start. API version
+    default **v26.0** (v21.0 expires 2027-01-21 per Meta's version table; re-check at
+    E21/A4). `.env.example` has placeholders only.
+  - `provider.verify.ts`: **50/50**. A fake Meta server on 127.0.0.1 and a global fetch
+    guard that aborts on any non-local host; **0 real WhatsApp requests**.
+- [x] B3. **DONE 2026-11-24.** `providers/metaErrors.ts`:
+  - Codes are taken from Meta's official Cloud API error-code page (read 2026-11-24),
+    with Meta's retry guidance quoted.
+  - TEMPORARY (1, 2, 4, 80007, 130429, 131000, 131016, 131056, 131057, 133004; the
+    rate-limit codes 4/80007/130429 trigger the shared back-off).
+  - PERMANENT (invalid parameters, not on WhatsApp 131026, 131049, 131050, 130403…).
+  - CONFIGURATION (token/permission/account/payment/registration; template
+    132000/132001/132007/132015/132016 template-scoped).
+  - Unknown codes: 5xx → TEMPORARY, else PERMANENT (never loops). An error object never
+    maps to AMBIGUOUS.
+  - Network errors: never connected (refused/DNS/unreachable/connect-timeout) →
+    TEMPORARY. Timeout, reset or body cut off after sending, or a malformed/id-less
+    200, or a 5xx without a Meta error → **AMBIGUOUS (UNKNOWN, never auto-retried)**.
+    All proven in provider.verify.
+- [x] B4. **DONE 2026-11-24.** `services/messaging/templates/`:
+  - `definitions.ts`: the 4 templates as data (header/body/footer). EN = the approved
+    §4.1/§4.2 text. **HI = DRAFT** (B6).
+  - `builders.ts`: snapshot → params. Name, products, order number, units, amounts and
+    Article No. are inserted exactly as stored, identical in EN and HI.
+  - `i18n.ts`: the only translated parameter words. **{{5}} = exact Q12 strings**;
+    HI {{6}}/{{7}}/{{8}}/"+N more" = DRAFT.
+  - `format.ts`: units (enum case-insensitive; legacy "10 kg" → `2 (10 kg)`) and ₹ with
+    en-IN grouping.
+  - `sanitize.ts`: NFC; newline/tab/control → space; keeps ZWJ/ZWNJ; grapheme-safe
+    truncation; never empty.
+  - Item list fits the computed body budget with "+N more items". Bodies are ≤ 1024
+    even for 40 long items or a 3000-char name.
+  - `templates.verify.ts`: **57/57**, incl. Meta structure rules, Q12 exact (EN+HI),
+    E19a (identical non-translated values) and dirty data.
+  - Rendered samples for review: **`PHASE32_TEMPLATES_REVIEW.md`** (regenerate with
+    `--write-review`).
 - [ ] B5. `snapshot.ts`: build the confirmation/dispatch snapshot from `OrderItem` + `getOrderPaymentSummary` (§4.2 table)
-- [ ] B6. Hindi template text draft + Hindi strings for {{6}}/{{7}}/{{8}} → **user approves the wording** before Meta submission ({{5}} already decided, Q12)
+- [ ] B6. **Hindi wording approval (user).** Review `PHASE32_TEMPLATES_REVIEW.md`:
+  - Hindi confirmation + dispatch bodies, headers ("पशुसेवा") and footers
+  - Hindi {{6}} status, {{7}} amount line and {{8}} tracking fallback
+  - the "+N और उत्पाद" suffix
+
+  {{5}} is already final (Q12). Nothing is submitted to Meta before this approval.
 - [ ] B7. `message.service.ts`: `enqueue(tx, {type, orderId, actingUserId})` (ON CONFLICT DO NOTHING; SKIPPED rows for disabled/no number/consent NO/invalid), `listForOrder`, `preview`, `resend` (all §13 rules), `resolveUnknown`
 - [ ] B8. `dispatcher.ts`: claim SQL (§9.1), `claimToken`-guarded writes, `sendStartedAt` write-ahead, the 60 s lease guard, pre-send checks (§9.2), send, classify (§9.4, incl. malformed 200 → UNKNOWN), backoff, expiry, shared `rateLimitedUntil`, the ordering policy (§7), concurrency 3, per-row isolation
 - [ ] B8a. `applyStatus.ts`: one monotonic status helper used by the send result, the webhook and reconciliation (§19.5); the late-response handler (§19.3)
