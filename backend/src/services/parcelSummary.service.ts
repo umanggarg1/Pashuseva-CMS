@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import PDFDocument from 'pdfkit';
-import { paymentRepository } from '../repositories/payment.repository';
+import { getOrderPaymentSummary } from './orderPayment';
 import { PARCEL_SETTINGS } from '../constants/parcelSettings';
 import type { orderRepository } from '../repositories/order.repository';
 
@@ -49,22 +49,25 @@ function hr(doc: PDFKit.PDFDocument) {
 // `order` (see orderRepository.findById) plus the fixed PARCEL_SETTINGS business
 // details — nothing here is manually entered at print time.
 export async function generateParcelSummaryPdf(order: OrderWithDetails): Promise<Buffer> {
-  const paid = await paymentRepository.sumForOrder(order.id);
-  const due = Math.max(order.total - paid, 0);
+  // Phase 32 B0: amounts and the payment kind come from the shared
+  // getOrderPaymentSummary — the same numbers the WhatsApp dispatch message shows.
+  // Output is unchanged (verified byte-for-byte on normalized PDFs for unpaid /
+  // partial / paid / reversed / free / refunded / decimal orders, PHASE32_TODO.md B0).
+  const { due, kind } = await getOrderPaymentSummary(order);
 
-  // paymentStatus is the derived source of truth (never set directly — Phase 13), so
-  // branch on that rather than re-deriving Paid/Partial/Unpaid from `due` here.
   let paymentLine: string;
   let amountLine: string | null = null;
-  if (order.total <= 0) {
+  if (kind === 'FREE') {
     // Phase 31: a ₹0 order (free items only) — stored as PAID, labelled FREE.
     paymentLine = 'FREE';
-  } else if (order.paymentStatus === 'PAID') {
+  } else if (kind === 'PAID') {
     paymentLine = 'PAID';
-  } else if (order.paymentStatus === 'PARTIAL') {
+  } else if (kind === 'PARTIAL') {
     paymentLine = 'PARTIALLY PAID';
     amountLine = `DUE: Rs. ${due.toLocaleString('en-IN')}`;
   } else {
+    // UNPAID — and the defensive REFUNDED, which the label has always printed this
+    // way (kept identical on purpose; no flow produces REFUNDED today).
     paymentLine = 'CASH ON DELIVERY';
     amountLine = `COD AMOUNT: Rs. ${due.toLocaleString('en-IN')}`;
   }

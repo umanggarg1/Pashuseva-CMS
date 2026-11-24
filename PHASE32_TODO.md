@@ -1,6 +1,6 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Progress: A0 · A1 · A2 · A3 done (all local; nothing pushed, no deploy). Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
+**Progress: A0 · A1 · A2 · A3 · B0 · B1 done (all local; nothing pushed, no deploy). Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
 
 **Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
@@ -946,8 +946,9 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     WhatsApp**. **2 not flagged** (only 9 digits, genuinely invalid).
   - **6 phones contain a non-breaking space (U+00A0)**, typical of numbers pasted
     from WhatsApp or the web. `toWhatsappNumber` must strip **all Unicode whitespace
-    incl. U+00A0** (then require ASCII `[0-9]`). With that, 3 of the 4 affected
-    primaries are valid.
+    incl. U+00A0** (then require ASCII `[0-9]`). *(Corrected in B1: **all 4**
+    affected primaries are valid, since the 11-digit one starts with the trunk 0.
+    The 427 total was already right.)*
   - 1 customer has the same number twice (no impact: only the primary is flagged).
     4 numbers are shared between different customers (allowed; each customer has its
     own phone row).
@@ -1082,8 +1083,39 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   and `MessageStatusEvent.raw` for that customer (and any still-pending row → SKIPPED)
 
 ### B. Backend — messaging core (`src/services/messaging/`)
-- [ ] B0. `services/orderPayment.ts` `getOrderPaymentSummary(orderId, tx?)` → `{ total, paid, due, overpaid, kind: UNPAID|PARTIAL|PAID|FREE|REFUNDED }` (§19.6); refactor `parcelSummary.service.ts` to use it (output must stay identical, checked by a before/after PDF text diff)
-- [ ] B1. `utils/phone.ts` `toWhatsappNumber()` + test cases (§19.1: spaces **incl. non-breaking space U+00A0 and any Unicode whitespace** (found in 6 real phones, A0), `+91`, `0091`, `091`, leading 0, 12-digit `91…` edge cases, too short/long, **non-ASCII digits rejected**, ASCII `[0-9]` only)
+- [x] B0. **DONE 2026-11-24.** The one shared payment calculation.
+  - `utils/paymentSummary.ts` → `summarizeOrderPayment(total, paid, paymentStatus)`
+    (pure) returning `{ total, paid, due, overpaid, kind: FREE|UNPAID|PARTIAL|PAID|REFUNDED }`;
+    `due = max(total − paid, 0)`, `overpaid = max(paid − total, 0)`, kind from
+    `paymentStatus` exactly as the parcel label already did; no rounding (formatting is
+    the caller's).
+  - `services/orderPayment.ts` → `getOrderPaymentSummary(order, tx?)` reads
+    `SUM(payments)` (reversals are negative rows) and logs a warning if ever overpaid.
+    *(Signature takes the already-loaded order `{id,total,paymentStatus}`, not just an
+    id, to avoid a second order query.)*
+  - `parcelSummary.service.ts` now uses it; **output unchanged**. Normalized PDFs
+    (date stamps and the time-based `/ID` removed, streams inflated) for 7 cases (unpaid,
+    partial, paid, payment reversed to ₹0, free ₹0, REFUNDED, decimal ₹1234.50) are
+    **7/7 identical** to the old code. The method was first proven stable (same code
+    twice → identical) and sensitive (different cases → different output). Cases were
+    built in a disposable copy `b0_test` (dropped afterwards; two real candidates were
+    in Trash).
+  - `utils/paymentSummary.verify.ts`: **12/12** (incl. overpaid clamp, negative net
+    ledger, REFUNDED, decimals). Run: `npx ts-node src/utils/paymentSummary.verify.ts`.
+- [x] B1. **DONE 2026-11-24.** `utils/phone.ts`:
+  - `toWhatsappNumber(raw)` → `91XXXXXXXXXX` or null. Strips all Unicode whitespace
+    incl. **U+00A0**, zero-width characters (U+200B/C/D, U+2060, U+FEFF) and `- ( ) . +`,
+    then requires **ASCII `[0-9]` only**. Accepts 10 digits, `0`+10, `91`+10, `091`+10,
+    `0091`+10, with the national part starting 6–9.
+  - `isValidWhatsappNumber`, and `maskWhatsappNumber` (`98XXXX3210`, for staff screens
+    and logs).
+  - `utils/phone.verify.ts`: **45/45** (NBSP shapes, zero-width, +91/0091/091, landline,
+    non-mobile, wrong lengths, Devanagari / Arabic-Indic / full-width digits rejected,
+    two numbers in one field rejected, masks). Escapes are kept visible (`\u00A0`
+    etc.), with no literal invisible characters in the source.
+  - **Real-data cross-check** (local copy, read-only): 429 active customers →
+    **427 valid primaries** (4 of them contain U+00A0) + **2 invalid** (9 digits),
+    exactly matching A0. All phones of active customers: 504 valid, 3 invalid.
 - [ ] B2. `providers/types.ts` (`sendTemplate` → `{ ok, providerMessageId } | { errorKind, code, message, retryAfter? }`), `providers/metaCloud.ts` (fetch, 10 s timeout, `biz_opaque_callback_data`), `providers/dryRun.ts`
 - [ ] B3. `metaErrors.ts`: code → errorKind table (unknown → PERMANENT); timeout/reset/no-body → AMBIGUOUS
 - [ ] B4. {{5}} payment-method strings exactly as decided in §4.2 (Q12); **Names, products, units, order numbers and amounts are inserted exactly as stored, never translated or transliterated, in both languages (§4.3)**; `templates/units.ts` (PackagingUnit names matched case-insensitively → English singular/plural; any other stored text → `× qty (text)`; null → `× qty`, A0); `templates/confirmation.ts`, `templates/dispatched.ts`, `templates/sanitize.ts` (NFC normalize; strip control chars, newline, tab; **keep ZWJ/ZWNJ**, needed for Devanagari; collapse spaces; truncate on **grapheme** boundaries via `Intl.Segmenter`, never mid-conjunct), `templates/i18n.ts` (EN/HI strings for payment wording), template-availability + English fallback
