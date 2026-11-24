@@ -1015,7 +1015,7 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   procedure (`pg_dump` via Docker `postgres:18` → `D:\pashuseva\backups`, verified
   readable with `pg_restore --list`) → restore into local Docker PG → generate
   `<ts>_phase32_whatsapp_automation` and apply it **locally only**.
-- [x] A3. **DONE 2026-11-24, all checks passed (local disposable copies only; full report: `D:\pashusevaackups\phase32-verification\A3-REPORT.md`).**
+- [x] A3. **DONE 2026-11-24, all checks passed (local disposable copies only; full report: `D:\pashuseva\backups\phase32-verification\A3-REPORT.md`).**
   - Before/after fingerprints: all 24 business tables have identical row counts and
     checksums over every existing column; `_prisma_migrations` is +1 row with its 29
     existing rows identical; 83 constraints valid, 0 invalid indexes. The fingerprint
