@@ -1,6 +1,17 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). All decisions Q1–Q15 made (§16); failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0/A1 only when the user says start.**
+**Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 open. Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
+
+**Existing database is preserved (user, 2026-11-24).** Phase 32 only **adds** to the
+current PashuSeva database. Customers, names, phone numbers, products, inventory,
+orders, payments, delivery records and history, and staff/user accounts are all kept
+as they are. Changes go in through **additive Prisma migrations only**:
+- **never** `prisma migrate reset`
+- **never** `prisma migrate dev` or a seed against production
+- **never** drop or rename existing tables or columns
+
+Local Docker PG and production Neon are **separate**: testing a migration locally
+changes nothing in production. Production is migrated only in the controlled step A4.
 
 **Development rules (user, 2026-11-24):**
 - Implement in the order of the §18 checklist: **database and backend tests before
@@ -317,7 +328,7 @@ enum MessageStatus   {
 }
 enum MessageErrorKind { TEMPORARY PERMANENT CONFIGURATION AMBIGUOUS }
 enum WhatsappConsent  { YES NO }      // YES – Customer agreed, NO – Customer declined
-enum ConsentSource    { STAFF CUSTOMER_STOP_REPLY }
+enum ConsentSource    { STAFF CUSTOMER_STOP_REPLY BACKFILL }
 
 model CustomerPhone {
   // … existing fields
@@ -330,10 +341,10 @@ model CustomerPhone {
 model Customer {
   // … existing fields
   preferredLanguage     MessageLanguage @default(EN)
-  whatsappConsent       WhatsappConsent @default(NO)   // existing customers → NO until staff records YES
+  whatsappConsent       WhatsappConsent @default(NO)   // column default stays NO (safe); existing customers are set to YES by the one-time backfill A5
   whatsappConsentAt     DateTime?                      // when it was last set
   whatsappConsentById   Int?                           // staff who set it (null = customer replied STOP)
-  whatsappConsentSource ConsentSource?                 // STAFF / CUSTOMER_STOP_REPLY
+  whatsappConsentSource ConsentSource?                 // STAFF / CUSTOMER_STOP_REPLY / BACKFILL (one-time A5)
 }
 
 model Order {
@@ -469,8 +480,13 @@ safe for `migrate deploy` over `DIRECT_URL`.
   customer (no field; the saved consent is used and shown in the WhatsApp hint, D3),
   Create Order with an **inline new** customer (choose, default YES), Customer
   Details (edit). It's always stored on the **customer**, never per order.
-- **Existing customers:** the migration sets them to **NO** (consent was never
-  recorded) until staff change it *(Q3)*.
+- **Existing customers (Q3, updated by the user 2026-11-24):** the migration itself
+  adds the column with the safe default NO. Then the **one-time backfill (A5) sets
+  every existing, non-trashed customer to `YES`**, with source `BACKFILL`, a
+  timestamp, and a customer-activity entry "WhatsApp consent set to YES (one-time
+  backfill, Phase 32)". This keeps it auditable and separate from staff-recorded
+  consent. Staff can switch any customer to NO afterwards. **The backfill sends no
+  messages** (§18 A5).
 - **Every change is audited:** `whatsappConsentAt`, `whatsappConsentById`,
   `whatsappConsentSource` on the customer, **plus** a customer-activity entry that
   records the **previous value, new value, employee and timestamp** (e.g. "WhatsApp
@@ -783,13 +799,14 @@ Only `.env.example` gets placeholders.
 
 | # | Question | Decision |
 |---|---|---|
-| — | Consent model | **YES / NO only**, staff-recorded; new customer **defaults to YES (preselected)**, staff can switch to NO; existing customers NO; STOP → NO; consent NO = no messages; NO while queued = stopped. **Frozen** |
+| — | Consent model | **YES / NO only**, staff-recorded; new customer **defaults to YES (preselected)**, staff can switch to NO; existing customers **YES via the one-time backfill** (Q3); STOP → NO; consent NO = no messages; NO while queued = stopped. **Frozen** |
 | Q1 | WhatsApp numbers per customer | **At most one** |
 | Q2 | New customer: first/primary phone WhatsApp flag | **ON** by default |
-| Q3 | Existing customers | **Consent NO** + a **one-time backfill of the WhatsApp phone flag** (primary → WhatsApp, valid Indian mobiles only; script after the release) |
+| Q3 | Existing customers | **Updated by the user 2026-11-24:** the one-time backfill (A5) sets **consent YES** (source `BACKFILL`, audited) and **marks the primary phone as WhatsApp only if it's a valid Indian mobile**. All customer records and order history are kept. **No messages are sent** by the migration or the backfill |
 | Q4 | Default language | **English** (switch per customer to Hindi via the "WhatsApp Message Language" dropdown) |
 | Q13 | Names in Hindi messages | **Customer names and product names are never translated or transliterated**; they stay exactly as stored (English) in both languages. Quantities/units/order numbers/amounts are unchanged too. **Frozen** |
-| Q14 | Consent default for new customers | **YES preselected**; staff can switch to NO; existing customers stay NO |
+| Q14 | Consent default for new customers | **YES preselected**; staff can switch to NO; existing customers → YES via the backfill (Q3) |
+| Q16 | **Open:** an order created **before** Phase 32 goes live and is still Not Dispatched, then dispatched after go-live: send the dispatch notification? (No confirmation was ever sent for it.) | *Recommended:* **yes, send it**. It's self-contained and the data is correct. The alternative is to skip orders created before the go-live date. *Awaiting decision* |
 | Q15 | Staff visibility | Post-save toast with order and WhatsApp outcomes shown separately + the WhatsApp messages card on Order Details with status explanations (§0.1) |
 | Q5 | Re-dispatch after an Admin/Manager correction | **No automatic second message**; use Resend |
 | Q6 | Hindi template not approved | **Fall back to English** |
@@ -836,13 +853,71 @@ Only `.env.example` gets placeholders.
 
 ## 18. TODO
 
-### A. Database
-- [ ] A0. Confirm whether Prisma 7.9 supports partial indexes in `schema.prisma`. If not, add the partial unique index as **raw SQL** in the migration, and from now on check every generated migration doesn't drop it (§19.1)
-- [ ] A1. Schema from §5 (incl. `claimToken`, `sendStartedAt`, `lateResponseNote`, `Order.idempotencyHash`, `MessagingState.rateLimitedUntil`, the partial unique index): `CustomerPhone.isWhatsapp`; `Customer.preferredLanguage`, `Customer.whatsappConsent` (enum `WhatsappConsent { YES NO }`, default NO) + `whatsappConsentAt/ById/Source` (**no opt-out Boolean**); `Order.idempotencyKey`; `OutboundMessage`, `MessageStatusEvent`, `MessagingState`, `MessageTemplateStatus`; enums; back-relations
-- [ ] A2. Migration `<ts>_phase32_whatsapp_automation`, generated and applied against **local Docker PG only**
-- [ ] A3. Customer purge also scrubs `OutboundMessage.toPhone/params/snapshot/lastError` and `MessageStatusEvent.raw` for that customer (and any still-pending row → SKIPPED)
-- [ ] A3a. Migration safety drill (§19.1): restore the latest prod backup (`D:\pashuseva\backups`) into local Docker PG → `migrate deploy` → run the **old** commit's code against the migrated DB (create/edit customer, create/dispatch order) → run the new code → simulate a failed migration and recover with `migrate resolve`
-- [ ] A4. Backfill script `scripts/backfillWhatsappFlag.ts` (Q3): dry-run mode first, prints a count, then applies
+### A. Database (preserve everything, additive only)
+
+**Rules for every A step:** no `migrate reset`, no `migrate dev`/seed against
+production, no DROP or RENAME of existing tables/columns. Every local command sets
+`DATABASE_URL`/`DIRECT_URL` **explicitly to local Docker PG** (`backend/.env` points at
+production Neon). Every generated migration SQL file is **reviewed before it's
+applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
+
+- [ ] A0. **Inspect the existing database (read-only, no changes):** current
+  `schema.prisma` (models, relations, enums, indexes, unique constraints,
+  `onDelete` rules), the migration history (count, latest), the Postgres version
+  (production Neon vs local Docker `postgres:18`), current row counts per table on
+  local, and existing duplicates that could break the new rules (e.g. customers
+  whose phones would normalize identically). Also confirm whether Prisma 7.9
+  supports partial indexes in `schema.prisma`; if not, the one-WhatsApp-number index
+  goes in as raw SQL in the migration (§19.1). **Report the findings before A1.**
+- [ ] A1. **Prepare the schema changes (additive):** everything from §5:
+  `CustomerPhone.isWhatsapp` + the partial unique index;
+  `Customer.preferredLanguage`, `whatsappConsent` (enum `{ YES NO }`, column default
+  NO) + `whatsappConsentAt/ById/Source` (incl. `BACKFILL`), **no opt-out Boolean**;
+  `Order.idempotencyKey/idempotencyHash`; `OutboundMessage` (incl. `claimToken`,
+  `sendStartedAt`, `lateResponseNote`), `MessageStatusEvent`, `MessagingState`
+  (incl. `rateLimitedUntil`), `MessageTemplateStatus`; enums; back-relations. All
+  new columns are nullable or defaulted, so existing rows stay valid and the
+  current code keeps working.
+- [ ] A2. **Backup + local migration:** fresh production backup with the existing
+  procedure (`pg_dump` via Docker `postgres:18` → `D:\pashuseva\backups`, verified
+  readable with `pg_restore --list`) → restore into local Docker PG → generate
+  `<ts>_phase32_whatsapp_automation` and apply it **locally only**.
+- [ ] A3. **Verify the existing data is intact (local):** before/after the migration,
+  compare
+  - row counts for every existing table (customers, phones, addresses, products,
+    categories, orders, items, order addresses, payments, delivery tracking,
+    activities, notes, users, permissions, audit log, notifications, stock history)
+  - checksums of key columns (e.g. `md5(string_agg(...))` over customer
+    name/phones, order totals, payment amounts)
+  - FK/relationship integrity
+
+  Then run the **old commit's code** on the migrated DB (create/edit customer,
+  create/dispatch order, add payment, parcel label) and the new code. Also simulate a
+  failed migration and recover with `migrate resolve` (§19.1, E38).
+- [ ] A4. **Controlled production migration** (only after A0–A3 and the backend tests
+  pass): a fresh verified prod backup taken the same day → push → Render runs
+  `migrate deploy` with **`WHATSAPP_ENABLED=false`** → read-only production check:
+  same row counts as the backup, the app works as before.
+
+  **Rollback:** the migration is additive, so redeploy the previous commit; the old
+  code runs on the new schema. Worst case: restore the verified backup using the
+  documented procedure (`migrate deploy` + `pg_restore --data-only
+  --disable-triggers`).
+- [ ] A5. **One-time backfill script** `scripts/phase32Backfill.ts` (Q3), run **after
+  A4 with WhatsApp still disabled**:
+  1. sets `whatsappConsent = YES` (source `BACKFILL`, timestamp, customer-activity
+     entry) for every existing non-trashed, non-purged customer
+  2. sets `isWhatsapp = true` on the **primary** phone **only if** it normalizes to
+     a valid Indian mobile (`toWhatsappNumber`)
+
+  Modes: `--dry-run` (default; prints counts: customers → YES, phones flagged,
+  phones skipped as invalid, with a sample list) → `--apply`. Idempotent: re-running
+  changes nothing. It only touches `Customer` / `CustomerPhone` /
+  `CustomerActivity`, and **never creates an `OutboundMessage` or triggers a send**.
+  Messages only ever come from the two events (order created, dispatch transition)
+  after go-live. Run locally on the restored copy first.
+- [ ] A6. Customer purge also scrubs `OutboundMessage.toPhone/params/snapshot/lastError`
+  and `MessageStatusEvent.raw` for that customer (and any still-pending row → SKIPPED)
 
 ### B. Backend — messaging core (`src/services/messaging/`)
 - [ ] B0. `services/orderPayment.ts` `getOrderPaymentSummary(orderId, tx?)` → `{ total, paid, due, overpaid, kind: UNPAID|PARTIAL|PAID|FREE|REFUNDED }` (§19.6); refactor `parcelSummary.service.ts` to use it (output must stay identical, checked by a before/after PDF text diff)
@@ -900,7 +975,7 @@ Only `.env.example` gets placeholders.
 - [ ] E18. `WHATSAPP_ENABLED=false` / missing credentials → app starts, rows SKIPPED "WhatsApp disabled", existing queue untouched
 - [ ] E19. Hindi customer: Hindi template used; Hindi not approved → English fallback recorded
 - [ ] E20. Customer with no WhatsApp number, or with consent NO → order created, SKIPPED with the right reason, Create Order hint shown
-- [ ] E20a. Add Customer and inline new customer: consent shows **YES preselected**, saving unchanged stores YES, switching to NO stores NO; an API create without the field → rejected; consent change → audited in activity; STOP reply → consent NO; existing customers still NO after the migration
+- [ ] E20a. Add Customer and inline new customer: consent shows **YES preselected**, saving unchanged stores YES, switching to NO stores NO; an API create without the field → rejected; consent change → audited in activity; STOP reply → consent NO; after the migration + backfill (A5): existing customers are YES with source BACKFILL and an activity entry, primaries flagged only where valid, **zero `OutboundMessage` rows created by the backfill**
 - [ ] E24. Two simultaneous customer saves flagging different phones as WhatsApp → exactly one succeeds, the other gets 409; the DB never holds two (partial unique index)
 - [ ] E25. A queued message whose `toPhoneId` was deleted, renumbered (new row), or is not owned by `customerId` → SKIPPED, no Meta call; a phone with the same number on another customer is never used
 - [ ] E26. Same idempotency key + different order details → 422 (no new order, the original unchanged); same key from a different user → 422; same key concurrently → one order
@@ -919,7 +994,7 @@ Only `.env.example` gets placeholders.
 - [ ] E36. Template approved → paused/rejected at Meta (cache still says approved) → CONFIGURATION for that template only, the other template keeps sending; re-approved + Refresh → resumes
 - [ ] E19a. Hindi customer: the message has the Hindi fixed text, but the customer name, product names, units (`2 Bags`), order number and amounts are **byte-identical to the English message's values** (no translation/transliteration)
 - [ ] E37. Long product/customer names (incl. any non-ASCII stored in the CRM), conjuncts, emoji, ZWJ, newline/tab/5+ spaces inside names → valid parameters, truncation on grapheme boundaries, the body under Meta's limit
-- [ ] E38. Migration drill A3a passes (old code on the new schema works; a failed migration recovers; Render keeps the previous deploy when `migrate deploy` fails)
+- [ ] E38. Migration drill A2/A3 passes (all existing row counts and checksums unchanged) (old code on the new schema works; a failed migration recovers; Render keeps the previous deploy when `migrate deploy` fails)
 - [ ] E39. One row that keeps throwing (forced) → other rows in the same and later batches still send; the bad row ends FAILED after max attempts
 - [ ] E40. Confirmation FAILED / SKIPPED / UNKNOWN, then dispatch → dispatch sent normally; confirmation still QUEUED → dispatch waits (max 10 min)
 - [ ] E40a. Messaging endpoints respect the order data-scope: an Employee can't list/preview/resend messages of an order outside their scope
@@ -930,7 +1005,7 @@ Only `.env.example` gets placeholders.
 
 ### F. Release
 - [ ] F1. Commit + push. Render runs `migrate deploy` (additive)
-- [ ] F2. Deploy with `WHATSAPP_ENABLED=false` (**stays false until all of §18 E, including E21, has passed**) → confirm the existing flows are unchanged → run the backfill script (Q3) dry-run, then apply
+- [ ] F2. Production migration per A4 with `WHATSAPP_ENABLED=false` (**stays false until all of §18 E, including E21, has passed**) → confirm the existing flows are unchanged → backfill A5 dry-run, review the counts with the user, then apply
 - [ ] F3. Only after E1–E40b pass: setup guide steps 11–12 → enable → test order to your own number: confirmation arrives (Sent → Delivered → Read) → dispatch it → dispatch notification arrives with correct amounts → trash the test order (Admin trash, as in earlier phases) → record the results here
 
 ---
@@ -947,7 +1022,7 @@ The YES/NO consent design was deliberately left out of this review and is unchan
 | **Number changed** after queueing | `syncPhones` treats a changed number as **delete + create** (new row id) | The `toPhoneId` check fails → SKIPPED "Recipient changed", so the old message can never reach the new number (E25) |
 | Phone "moved" to another customer | **Not possible in the code**: phone rows are only created under their customer; another customer with the same number has a different row | The pre-send check also verifies `phone.customerId = message.customerId` (defence in depth, E25) |
 | Phone formatting | No format check today | `toWhatsappNumber` is strict, ASCII `[0-9]` only, non-ASCII digits rejected, with explicit cases for `+91`, `0091`, `091`, `0…`; 12-digit `91…` accepted only if the remaining 10 start with 6–9 (B1) |
-| Migration fails half-way | The Render start command is `migrate deploy` → server; **if the migration fails, the server doesn't start and Render keeps the previous deploy** (seen in Phase 27) | The migration is purely additive, so **old code runs fine on the new schema** (rollback = redeploy the previous commit, no down-migration). Drill on a copy of the prod backup before release (A3a, E38) |
+| Migration fails half-way | The Render start command is `migrate deploy` → server; **if the migration fails, the server doesn't start and Render keeps the previous deploy** (seen in Phase 27) | The migration is purely additive, so **old code runs fine on the new schema** (rollback = redeploy the previous commit, no down-migration). Drill on a copy of the prod backup before release (A2/A3, E38) |
 
 ### 19.2 Order creation and idempotency
 | Scenario | Resolution |
@@ -1043,6 +1118,6 @@ dispatch time; a resend uses current data (§13). Tests: E16, E31, E32, E32a.
 | Simultaneous configuration errors | Atomic pause, a single Admin notification (E35) |
 | Hindi / Unicode | NFC, keep ZWJ/ZWNJ, grapheme-safe truncation (E37) |
 | Security | Every `/orders/:id/messages*` route uses the order data-scope check; `/messaging/*` is `message:manage` only (E40a) |
-| Privacy on purge | Scrub phone, params, snapshot, lastError and webhook raw data; pending rows → SKIPPED (A3) |
+| Privacy on purge | Scrub phone, params, snapshot, lastError and webhook raw data; pending rows → SKIPPED (A6) |
 | Shutdown | Stop claiming; in-flight calls finish or time out (10 s); anything interrupted after `sendStartedAt` → UNKNOWN on recovery |
 | Queue overload | No bulk trigger exists (orders are created and dispatched one at a time); concurrency 3, batch 10, shared rate-limit back-off; queue size + oldest age on the Admin page + an alert after 15 min |
