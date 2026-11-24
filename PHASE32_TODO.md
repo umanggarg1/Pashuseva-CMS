@@ -1,17 +1,84 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Status: FINAL — ARCHITECTURE APPROVED (2026-11-24), corrections applied. No code written yet.**
+**Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). All decisions Q1–Q15 made (§16); failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0/A1 only when the user says start.**
 
 **Development rules (user, 2026-11-24):**
 - Implement in the order of the §18 checklist: **database and backend tests before
   frontend integration**.
 - **WhatsApp stays disabled in production** (`WHATSAPP_ENABLED=false`) until the full
-  §18 E test suite passes **and** the Meta test-number check (E21) passes.
+  §18 E test suite (E1–E40b) passes **and** the Meta test-number check (E21) passes.
 
 **Consent decision is frozen:** WhatsApp consent is a single **YES / NO** field on the
 customer, recorded by staff. No OTP, SMS, IVR, customer verification screen or any
 extra consent step (§6). **Don't expand it** unless a real technical or regulatory
-requirement makes it necessary.
+requirement makes it necessary. **Default on new customers = YES – Customer agreed
+(preselected), decided 2026-11-24.** Staff can switch it to NO before saving.
+
+**Language rules are frozen (user, 2026-11-24):** the CRM stays in English. The
+WhatsApp message language is a per-customer setting (English default / Hindi) that
+only picks which approved Meta template is used. **Customer names, product names,
+order numbers, quantities, units and amounts are never translated or
+transliterated.** They're sent exactly as stored in the CRM, in English, in both
+languages (§4.3).
+
+---
+
+## 0. End-to-end flow (what staff and the customer experience)
+
+1. Staff open **Create Order**, select the customer (or create one inline), products,
+   quantities, payment, and click **Create Order**.
+2. The backend creates the order. The **idempotency key** prevents a duplicate order
+   on a double-click, retry or refresh (§8, §19.2).
+3. **In the same database transaction**, an `ORDER_CREATED` message row is created.
+   If the order fails, the message row disappears with it.
+4. **Eligibility at enqueue:** WhatsApp number present and valid, consent YES,
+   feature enabled. If not, the row is saved as **SKIPPED with the reason**.
+5. If eligible, the row is **QUEUED**. After the order is saved, a worker sends the
+   approved template through Meta (re-checking consent, recipient, order and
+   customer immediately before the call, §9.2).
+6. The status is updated: **SENT** (Meta accepted) → **DELIVERED** → **READ**, or
+   RETRY_WAIT / FAILED / UNKNOWN / SKIPPED. Staff see it on the order (§0.1).
+7. Later, when the order's delivery status goes **Not Dispatched → Dispatched**, a
+   separate **dispatch notification** is created and sent the same way, with
+   products, prices, payment details and the 5–7 day estimate.
+
+**The order is always created**, even if WhatsApp is disabled, Meta is down, or the
+message fails. Messaging never interrupts order creation.
+
+### 0.1 How staff know whether a message was sent
+
+**Right after saving** (Create Order and Reorder): the success toast shows two
+separate lines, because they're two separate outcomes:
+- **Order saved**: ORD-…
+- **WhatsApp:** `Queued for sending` / `Not sent: <reason>` (e.g. "No WhatsApp
+  consent", "No WhatsApp number", "WhatsApp disabled")
+
+The order API response includes `whatsapp: { status, skipReason }` for this. A
+failure that happens *after* saving (Meta rejects it a few seconds later) shows up
+in the order's WhatsApp card below.
+
+**Order Details → WhatsApp messages card**: one row per message, showing the type
+(Order confirmation / Dispatch notification / Resend), the number (masked
+`98XXXX3210`), language, status chip, time, the reason for FAILED/SKIPPED, who
+triggered it, and "resend of #…". It refreshes every 10 s while any message is
+still active (QUEUED / PROCESSING / RETRY_WAIT / SENT). Each status chip has a
+one-line explanation (tooltip / help text, in English like the rest of the CRM):
+
+| Status | Shown to staff as |
+|---|---|
+| QUEUED | Waiting to be sent |
+| PROCESSING | Sending now |
+| RETRY_WAIT | Temporary problem, will retry automatically at <time> |
+| SENT | Accepted by WhatsApp, **not yet delivered** |
+| DELIVERED | Delivered to the customer's WhatsApp |
+| READ | Read by the customer |
+| FAILED | Could not be sent: <reason> |
+| UNKNOWN | Not confirmed whether it was sent; an Admin will check (shown in Needs attention) |
+| SKIPPED | Not sent: <reason> |
+
+SENT ≠ delivered: the help text says so explicitly. Authorised staff can **Resend**
+from this card (§13). UNKNOWN and FAILED also appear in the Admin **Needs attention**
+list (D6).
 
 ---
 
@@ -104,7 +171,7 @@ Footer: Order confirmation
 |---|---|---|
 | {{1}} | customer name | Rahul |
 | {{2}} | `order.orderNumber` | ORD-2026-000125 |
-| {{3}} | items: `name × qty`, joined with `  \|  ` | Cattle Feed Supplement × 2  \|  Herbal Mineral Mix × 1  \|  Calcium Powder × 1 |
+| {{3}} | items: `productName × qty unit`, joined with `  \|  ` (unit only if the item has one; English plural, §4.3) | Satvik Shahi Mixer Feed × 2 Bags  \|  Milk Booster Powder × 1 Packet |
 
 ### 4.2 `ps_order_dispatched` — en
 ```
@@ -135,27 +202,87 @@ Footer: Dispatch notification
 |---|---|
 | {{1}} | customer name |
 | {{2}} | order number |
-| {{3}} | items: `name × qty – ₹lineTotal`, joined with `  \|  ` (from `OrderItem` snapshot) |
+| {{3}} | items: `productName × qty unit – ₹lineTotal`, joined with `  \|  ` (from `OrderItem` snapshot; names/units always English, §4.3) |
 | {{4}} | `order.total` formatted `1,250` |
 | {{5}} | see payment table below |
 | {{6}} | see payment table below |
 | {{7}} | see payment table below (a whole line, so the label can change) |
 | {{8}} | Article No. if set, else `Will be shared soon` *(decided, Q7)* |
 
-Payment wording (computed from `paid = SUM(payments incl. reversals)`, `due = total − paid`):
+Payment wording comes **only** from the central `getOrderPaymentSummary()` (§19.6).
+The template builder, the resend preview and the parcel label all call it, and none
+of them calculate amounts themselves. `paid` = SUM of all `Payment` rows (reversals
+are negative rows), `due = max(total − paid, 0)`.
 
-| Situation | {{5}} Payment method | {{6}} Payment status | {{7}} |
+| Situation (from the summary) | {{5}} Payment method | {{6}} Payment status | {{7}} |
 |---|---|---|---|
-| due = total (nothing paid) | Cash on Delivery | Unpaid | Amount to pay: ₹1,250 |
-| 0 < due < total | Partly prepaid, balance on delivery | Partially paid | Paid ₹500, amount to pay: ₹750 |
-| due = 0, total > 0 | Prepaid | Paid | Amount paid: ₹1,250 |
-| total = 0 (Phase 31 free) | Free order | Paid | Amount to pay: ₹0 |
+| total > 0, paid = 0 | Cash on Delivery | Unpaid | Amount to pay on delivery: ₹1,250 |
+| 0 < paid < total | Part prepaid, balance due on delivery | Partially paid | Paid ₹500, balance due on delivery: ₹750 |
+| paid ≥ total, total > 0 | Prepaid | Paid | Amount paid: ₹1,250 |
+| total = 0 (Phase 31 free) | Free order | Paid | Nothing to pay |
+| status REFUNDED (unreachable today, defensive) | — | Refunded | Please contact us for payment details |
 
-### 4.3 Hindi (`hi`)
-Same variables, same order. The Hindi text is drafted during implementation (item B6)
-and you approve the wording before it's submitted to Meta. Variables stay
-language-neutral (names, numbers); payment wording strings ({{5}}–{{8}}) are
-translated by the builder.
+**{{5}} Payment method wording, decided (Q12, user 2026-11-24).** These exact
+strings go in `templates/i18n.ts`:
+
+| Payment situation | English template | Hindi template |
+|---|---|---|
+| Nothing paid | Cash on Delivery | कैश ऑन डिलीवरी |
+| Part payment | Part prepaid, balance due on delivery | कुछ एडवांस, बाकी डिलीवरी पर। |
+| Fully paid | Prepaid | पूरा भुगतान हो चुका है |
+| Free order | Free order | निःशुल्क ऑर्डर |
+
+This matches the parcel label the courier collects against (`COD AMOUNT` / `DUE`).
+The Hindi strings for {{6}}, {{7}} and {{8}} are drafted in B6 and approved by you
+along with the Hindi template text. The amounts inside them stay as numbers (₹).
+
+### 4.3 Language rules (frozen) and Hindi (`hi`)
+
+**How the language is chosen:** each customer has **WhatsApp Message Language**
+(`English` default / `Hindi`), a dropdown in Add Customer, in the inline new
+customer on Create Order, and in Customer Details (edit). It only selects which
+approved template (`en` / `hi`) is used. The CRM itself stays in English. Nothing is
+translated at send time, and if the Hindi template isn't approved the English one is
+used (Q6).
+
+| Message element | English message | Hindi message |
+|---|---|---|
+| Fixed template text (greeting, labels, thank-you) | English | Hindi (approved template) |
+| **Customer name** | as stored (English) | **as stored (English), no transliteration** |
+| **Product names** | as stored in the product catalogue (English) | **same English names, never translated** |
+| Order number, Article No. | unchanged | unchanged |
+| Quantity + unit | `× 2 Bags` | **`× 2 Bags` (English)** |
+| Amounts | ₹1,250 | ₹1,250 |
+| Payment wording ({{5}}–{{7}}) | English strings | Hindi strings (fixed set in `i18n.ts`) |
+| Tracking fallback ({{8}}) | "Will be shared soon" | Hindi string |
+
+**Units:** `OrderItem.unit` comes from the product's `PackagingUnit`
+(PIECE/PACKET/BOX/BAG/BOTTLE). It's rendered in English, singular/plural by quantity
+(Piece(s), Packet(s), Box(es), Bag(s), Bottle(s)), in both languages. No unit →
+just `× 2`.
+
+Example `ps_order_confirmation` / `hi` (illustrative; the final Hindi wording is
+approved by you in B6 before submission to Meta):
+```
+Header: पशुसेवा
+Body:
+नमस्ते {{1}} जी! 🙏
+
+आपका ऑर्डर {{2}} सफलतापूर्वक बुक हो गया है।
+
+आपके ऑर्डर में शामिल उत्पाद:
+{{3}}
+
+ऑर्डर भेजे जाने पर हम आपको सूचित करेंगे।
+
+पशुसेवा चुनने के लिए धन्यवाद! ❤️
+```
+Rendered: "नमस्ते **Ram Lal** जी! … आपका ऑर्डर **ORD-2026-001025** … **Satvik Shahi
+Mixer Feed × 2 Bags  |  Milk Booster Powder × 1 Packet**". The name, products, order
+number and units stay in English.
+
+Same variables, same order as the English template. Order numbers are the CRM's real
+format (`ORD-YYYY-NNNNNN`); examples elsewhere showing `PS-1025` are illustrative.
 
 ### 4.4 Template rules in code
 - Builders: `buildConfirmationParams(snapshot, lang)` and
@@ -196,6 +323,9 @@ model CustomerPhone {
   // … existing fields
   isWhatsapp Boolean @default(false)          // independent of isPrimary
 }
+// + DATABASE-LEVEL RULE (raw SQL in the migration, §19.1):
+//   CREATE UNIQUE INDEX "CustomerPhone_one_whatsapp_per_customer"
+//     ON "CustomerPhone" ("customerId") WHERE "isWhatsapp" = true;
 
 model Customer {
   // … existing fields
@@ -208,7 +338,8 @@ model Customer {
 
 model Order {
   // … existing fields
-  idempotencyKey String? @unique               // §8, set by POST /orders
+  idempotencyKey  String? @unique              // §8, set by POST /orders and reorder
+  idempotencyHash String?                      // sha256(acting user id + canonical request body), §19.2
 }
 
 model OutboundMessage {
@@ -244,6 +375,8 @@ model OutboundMessage {
   lockedAt           DateTime?
   lockedUntil        DateTime?
   lockedBy           String?                    // instance id (RENDER_INSTANCE_ID / hostname+pid)
+  claimToken         String?                    // new uuid on every claim; every worker write must match it (§19.3)
+  sendStartedAt      DateTime?                  // committed right before the Meta call, reset on each claim (§19.3)
   lastAttemptAt      DateTime?
 
   providerMessageId  String?          @unique   // wamid
@@ -254,6 +387,7 @@ model OutboundMessage {
 
   triggeredById      Int?                       // creator / dispatcher / resender
   resolvedById       Int?                       // who resolved an UNKNOWN
+  lateResponseNote   String?                    // a Meta answer that arrived after the claim was lost (§19.3)
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
@@ -280,6 +414,7 @@ model MessagingState {                           // single row, id = 1
   pausedAt      DateTime?                        // circuit breaker (§11)
   pauseReason   String?
   pausedBy      String?                          // "system" or user id
+  rateLimitedUntil DateTime?                     // shared back-off after a Meta 429, honoured by every worker (§19.4)
 }
 
 model MessageTemplateStatus {
@@ -324,8 +459,16 @@ safe for `migrate deploy` over `DIRECT_URL`.
 - Staff record it on the customer. **No OTP, SMS confirmation, IVR or any extra step
   for the customer.**
 - **New customer** (Add Customer dialog and inline new customer on Create Order):
-  staff **must choose YES or NO**. Neither is preselected, and the form won't save
-  without a choice. The API requires the field when creating a customer.
+  **`YES – Customer agreed` is preselected** (decided 2026-11-24). `NO – Customer
+  declined` stays available, and staff can switch to NO before saving. If staff
+  don't change it, YES is saved. **Staff must make sure YES reflects the customer's
+  actual agreement.** The API still requires the field explicitly on create (the
+  form always sends it), so no code path can save a customer without a recorded
+  value.
+- **Where it appears:** Add Customer (choose), Create Order with an **existing**
+  customer (no field; the saved consent is used and shown in the WhatsApp hint, D3),
+  Create Order with an **inline new** customer (choose, default YES), Customer
+  Details (edit). It's always stored on the **customer**, never per order.
 - **Existing customers:** the migration sets them to **NO** (consent was never
   recorded) until staff change it *(Q3)*.
 - **Every change is audited:** `whatsappConsentAt`, `whatsappConsentById`,
@@ -375,7 +518,10 @@ What does **not** trigger:
 Order of messages: the worker does not claim an `ORDER_DISPATCHED` row while that
 order's `ORDER_CONFIRMATION` is still QUEUED/PROCESSING/RETRY_WAIT (waits up to
 10 min, then sends anyway). This stops "dispatched" arriving before "confirmed" when an
-order is created and dispatched within seconds.
+order is created and dispatched within seconds. If the confirmation ends **FAILED,
+SKIPPED, expired or UNKNOWN**, the dispatch message is **sent normally**. It's
+self-contained (order number + full details), and an UNKNOWN confirmation is never
+resent automatically, so the dispatch never waits on a human. Covered by test E40.
 
 ---
 
@@ -395,18 +541,31 @@ order is created and dispatched within seconds.
 ```sql
 UPDATE "OutboundMessage" SET status='PROCESSING', "lockedAt"=now(),
        "lockedUntil"=now()+interval '2 minutes', "lockedBy"=$instance,
+       "claimToken"=gen_random_uuid(), "sendStartedAt"=NULL,
        attempts=attempts+1, "lastAttemptAt"=now()
 WHERE id IN (
   SELECT id FROM "OutboundMessage"
   WHERE status IN ('QUEUED','RETRY_WAIT') AND "nextAttemptAt" <= now()
-  ORDER BY id LIMIT $batch
+  ORDER BY "nextAttemptAt", id LIMIT $batch
   FOR UPDATE SKIP LOCKED)
 RETURNING *;
 ```
 - `dispatch(id)` right after commit uses the same claim, filtered to that id. If the
   sweeper already took it, it gets 0 rows and does nothing.
-- **The claim is committed before calling Meta** (write-ahead). The database records
-  "we may have sent this" before the external call happens.
+- **Two-step write-ahead.** (1) The claim is committed. (2) Right before the
+  Meta call, `sendStartedAt = now()` is committed (`WHERE id AND claimToken`). The
+  database knows exactly whether Meta *may* have been called (§19.3).
+- **Every worker write after the claim** is
+  `UPDATE … WHERE id=$id AND status='PROCESSING' AND "claimToken"=$token`. If 0 rows
+  match, the worker lost its claim (expired, recovered, reconciled by a webhook, or
+  resolved by an Admin), so the stale-worker rule in §19.3 applies.
+- **Lease vs work time:** lease 2 min; the Meta call has a hard 10 s AbortController
+  timeout; pre-send checks are a few queries. The worker doesn't call Meta if less
+  than 60 s of the lease is left (it releases back to QUEUED instead). No lease renewal
+  is needed.
+- **Fair queue:** the claim orders by `nextAttemptAt, id`. A row that keeps failing
+  moves back by backoff, and each row is processed in its own try/catch
+  (`Promise.allSettled`), so one bad row can't block the rest.
 
 ### 9.2 Pre-send checks (on the claimed row, before calling Meta)
 1. Feature enabled and not paused (§11). Otherwise put it back to QUEUED, unlock, and
@@ -418,10 +577,16 @@ RETURNING *;
    NO → **SKIPPED "No WhatsApp consent"**, with no Meta call. This applies to the
    first attempt, **every retry** and **every manual resend**. Example: consent YES →
    order created, message queued → staff set NO → worker claims it → re-check → SKIPPED.
-4. Eligibility: recipient unchanged (§6), order not in Trash.
-   Confirmation: the order isn't cancelled. Dispatch: the order is still in the
-   dispatched/forward path (not cancelled/returned). Failing any of these → SKIPPED
-   with the reason.
+4. Eligibility, all read fresh:
+   - recipient: phone row `toPhoneId` exists, **belongs to `customerId`**, is still
+     `isWhatsapp`, and still normalizes to `toPhone` (§6, §19.1)
+   - **customer** not in Trash (`deletedAt`) and not purged (`purgedAt`)
+   - **order** not in Trash, not purged
+   - confirmation: order not cancelled
+   - dispatch: delivery status still DISPATCHED / IN_TRANSIT / OUT_FOR_DELIVERY /
+     DELIVERED and the order isn't cancelled
+
+   Failing any of these → SKIPPED with the reason.
 5. The template for the chosen language is approved (§4.4).
 
 ### 9.3 Call Meta
@@ -433,13 +598,14 @@ in status webhooks, which is what makes reconciliation (§9.5) possible.
 
 | Outcome | errorKind | New status |
 |---|---|---|
-| 200 with `messages[0].id` | — | **SENT**, save `providerMessageId`, `sentAt`, unlock |
+| 200 with a **valid** `messages[0].id` (non-empty string, `wamid.` prefix) | — | **SENT**, save `providerMessageId`, `sentAt`, unlock, only if the claim still holds (§19.3) |
+| **200 but body missing/malformed/no valid id** | AMBIGUOUS | **UNKNOWN** (never treated as SENT, never retried) |
 | Connection failed **before** the request was sent (DNS, ECONNREFUSED) | TEMPORARY | RETRY_WAIT (backoff) |
-| 429 / Meta rate-limit codes | TEMPORARY | RETRY_WAIT after `Retry-After` or backoff |
+| 429 / Meta rate-limit codes | TEMPORARY | RETRY_WAIT after `Retry-After` or backoff, **and** `MessagingState.rateLimitedUntil` is set so *every* worker pauses claiming until then (§19.4) |
 | 5xx **with** a Meta error body saying "temporarily unavailable" | TEMPORARY | RETRY_WAIT |
 | **Timeout / connection reset after sending / 5xx with no body / response unreadable** | AMBIGUOUS | **UNKNOWN**, never auto-retried |
 | Invalid/unreachable recipient, not on WhatsApp, bad parameters | PERMANENT | FAILED (no retry) |
-| Invalid/expired token, template missing/paused/disabled, account restricted/locked, payment issue | CONFIGURATION | Row goes back to QUEUED (attempt not counted) + **circuit breaker pauses sending** (§11) + Admin notification |
+| Invalid/expired token, template missing/paused/disabled, account restricted/locked, payment issue, **unsupported API version** | CONFIGURATION | Row goes back to QUEUED (attempt not counted) + **circuit breaker pauses sending** (§11) + Admin notification |
 
 The exact Meta error-code → kind mapping lives in one table in `metaErrors.ts`. It's
 built from Meta's current Cloud API error-code docs at implementation time; unknown
@@ -450,12 +616,17 @@ Backoff for TEMPORARY: 1 min → 5 min → 15 min → 1 h. After `maxAttempts` (
 
 ### 9.5 UNKNOWN and crash recovery (the "Meta accepted it, CRM crashed" case)
 - **Crash after Meta accepted, before saving the id:** the row is PROCESSING with an
-  expired `lockedUntil`. The recovery job turns **expired PROCESSING → UNKNOWN**,
-  never back to QUEUED. This is the rule that prevents the duplicate.
+  expired `lockedUntil`. Recovery (atomic `UPDATE … WHERE status='PROCESSING' AND
+  "lockedUntil" < now()`, clearing `claimToken`):
+  - `sendStartedAt` **set** → **UNKNOWN** (Meta may have been called). Never re-queued.
+    This is the rule that prevents the duplicate.
+  - `sendStartedAt` **null** → back to **QUEUED** (the crash happened before the
+    Meta call, so retrying is provably safe).
 - **Automatic reconciliation:** when a status webhook arrives for an unknown `wamid`,
   its `biz_opaque_callback_data` (= eventKey) is looked up. If it matches an UNKNOWN
-  (or PROCESSING) row, the row gets the `providerMessageId` and moves to
-  SENT/DELIVERED/READ. Resolved, no duplicate.
+  (or PROCESSING) row, the row gets the `providerMessageId`, moves to
+  SENT/DELIVERED/READ, and **its `claimToken` is cleared**, so a slower API response
+  from the original worker can't overwrite it (§19.5). Resolved, no duplicate.
 - **Still UNKNOWN after 30 min** (no webhook arrived, so it was probably never sent):
   it appears in the Admin **Needs attention** list (and on the order's Messages
   card). An Admin chooses **"Mark as failed and resend"** (creates a resend row) or
@@ -510,8 +681,11 @@ Backoff for TEMPORARY: 1 min → 5 min → 15 min → 1 h. After `maxAttempts` (
   Invalid → 401, nothing processed.
 - The payload is validated with **zod**. Invalid shape → log it, return 200 (Meta
   would otherwise retry garbage forever).
-- **Dedupe:** insert into `MessageStatusEvent` with unique
-  (`providerMessageId`, `status`). A duplicate is a no-op.
+- **Dedupe + update are one DB transaction per status entry:** insert into
+  `MessageStatusEvent` with `ON CONFLICT DO NOTHING` (unique `providerMessageId`,
+  `status`). A duplicate is a no-op. Otherwise the conditional status UPDATE runs in
+  the same transaction, so a crash mid-way leaves nothing half-applied and Meta's
+  retry re-processes cleanly.
 - **Monotonic status:** rank SENT 1 < DELIVERED 2 < READ 3. Apply only if the new
   rank is higher (READ before DELIVERED → READ, and DELIVERED still sets
   `deliveredAt` if empty; a late SENT never downgrades). A `failed` webhook is
@@ -521,20 +695,33 @@ Backoff for TEMPORARY: 1 min → 5 min → 15 min → 1 h. After `maxAttempts` (
 - Inbound `messages` (customer replies): only the STOP keywords are acted on. They
   set consent to NO (§6, *Q8*). Everything else is ignored this phase.
 - DB error while processing → **500**, so Meta retries (it does for non-2xx).
-- Public route: rate limited (generous, e.g. 300/min).
+- Public route: its own limiter, **not** the app's general one. It's generous
+  (e.g. 2,000/min) because Meta sends bursts, and the signature check runs before any
+  DB work, so the limiter only guards against floods.
+- **The same monotonic rule applies to API-response writes** (§19.5): one shared
+  `applyStatus()` helper is used by the webhook, the send result and reconciliation.
+  `SENT` can never overwrite DELIVERED/READ.
 
 ---
 
 ## 13. Manual resend
 
 - Permission **`message:resend`** (new key) + the usual order data-scope check.
-- **Dialog before sending** shows the message type, the destination number (a picker
-  if the customer has more than one phone), the previous message's status and time,
+- **Destination = the customer's current WhatsApp number only** (consistent with
+  Q1). There's no number picker. To send elsewhere, staff first change the WhatsApp
+  number in Customer Details, then Resend.
+- **Dialog before sending** shows the message type, the destination (current
+  WhatsApp number), the previous message's status and time,
   a **required reason** (Customer didn't receive / Number changed / Customer asked
   again / Other + text), a **preview of the exact text**, and a Confirm button.
 - **Content:** a resend **rebuilds the params from the order's current data** (for
   example, the dispatch message shows the current payment status), and the preview
   shows exactly that.
+- **Preview = what is sent (§19.7):** the preview API returns a `previewHash` =
+  sha256(toPhone + template + language + params). Confirm sends it back. The server
+  rebuilds and compares. If anything changed (payment, items, number, language) →
+  **409 "Message changed since preview"** with the new preview, the dialog shows it,
+  and staff confirm again. Nothing is sent from a stale preview.
 - **Blocked when:**
   - a message of the same type for this order is QUEUED / PROCESSING / RETRY_WAIT ("already in progress")
   - the last one of that type was created less than **2 min** ago (cooldown)
@@ -555,10 +742,10 @@ Backoff for TEMPORARY: 1 min → 5 min → 15 min → 1 h. After `maxAttempts` (
 | Method | Path | Permission | Purpose |
 |---|---|---|---|
 | (changed) | customer create/update, `POST /orders` inline customer | as today | phones accept `isWhatsapp`; customer accepts `preferredLanguage`, `whatsappConsent` (**required on create**, optional on update) |
-| (changed) | `POST /api/orders` | `order:create` | accepts the `Idempotency-Key` header |
+| (changed) | `POST /api/orders`, `POST /api/orders/:id/reorder` | `order:create` | accept the `Idempotency-Key` header; same key + different body → **422** (§19.2) |
 | GET | `/api/orders/:id/messages` | `order:read` + scope | message history for the order |
 | GET | `/api/orders/:id/messages/preview?type=` | `message:resend` + scope | preview text + recipient for the Resend dialog |
-| POST | `/api/orders/:id/messages/resend` | `message:resend` + scope | `{ type, phoneId?, reason }` + `Idempotency-Key` |
+| POST | `/api/orders/:id/messages/resend` | `message:resend` + scope | `{ type, reason, previewHash }` + `Idempotency-Key` (no phone choice, §13) |
 | GET | `/api/messaging/status` | `message:manage` | enabled, paused/reason, template statuses, counts |
 | GET | `/api/messaging/messages?status=` | `message:manage` | list (Needs attention: UNKNOWN / FAILED / CONFIGURATION) |
 | POST | `/api/messaging/messages/:id/resolve` | `message:manage` | UNKNOWN → `mark-sent` / `mark-failed-and-resend` |
@@ -596,11 +783,14 @@ Only `.env.example` gets placeholders.
 
 | # | Question | Decision |
 |---|---|---|
-| — | Consent model | **YES / NO only**, staff-recorded; new customer must choose; existing customers NO; STOP → NO; consent NO = no messages; NO while queued = stopped. **Frozen** |
+| — | Consent model | **YES / NO only**, staff-recorded; new customer **defaults to YES (preselected)**, staff can switch to NO; existing customers NO; STOP → NO; consent NO = no messages; NO while queued = stopped. **Frozen** |
 | Q1 | WhatsApp numbers per customer | **At most one** |
 | Q2 | New customer: first/primary phone WhatsApp flag | **ON** by default |
 | Q3 | Existing customers | **Consent NO** + a **one-time backfill of the WhatsApp phone flag** (primary → WhatsApp, valid Indian mobiles only; script after the release) |
-| Q4 | Default language | **English** (switch per customer to Hindi) |
+| Q4 | Default language | **English** (switch per customer to Hindi via the "WhatsApp Message Language" dropdown) |
+| Q13 | Names in Hindi messages | **Customer names and product names are never translated or transliterated**; they stay exactly as stored (English) in both languages. Quantities/units/order numbers/amounts are unchanged too. **Frozen** |
+| Q14 | Consent default for new customers | **YES preselected**; staff can switch to NO; existing customers stay NO |
+| Q15 | Staff visibility | Post-save toast with order and WhatsApp outcomes shown separately + the WhatsApp messages card on Order Details with status explanations (§0.1) |
 | Q5 | Re-dispatch after an Admin/Manager correction | **No automatic second message**; use Resend |
 | Q6 | Hindi template not approved | **Fall back to English** |
 | Q7 | Article No. in the dispatch message | **Include** ("Will be shared soon" if empty) |
@@ -608,6 +798,7 @@ Only `.env.example` gets placeholders.
 | Q9 | Resend permission | `message:resend` for **Admin, Manager and Employee**; `message:manage` **Admin only** |
 | Q10 | Provider | **Meta Cloud API directly** (dry-run provider locally) |
 | Q11 | WhatsApp business details | Display name **PashuSeva** (proposed, subject to Meta's review). Business number: **to be provided during Meta setup** (§17 steps 2 and 5) |
+| Q12 | Payment method wording ({{5}}) | **Decided:** Nothing paid → "Cash on Delivery" / "कैश ऑन डिलीवरी"; part payment → "Part prepaid, balance due on delivery" / "कुछ एडवांस, बाकी डिलीवरी पर।"; fully paid → "Prepaid" / "पूरा भुगतान हो चुका है"; free → "Free order" / "निःशुल्क ऑर्डर" (§4.2) |
 
 ---
 
@@ -646,40 +837,45 @@ Only `.env.example` gets placeholders.
 ## 18. TODO
 
 ### A. Database
-- [ ] A1. Schema from §5: `CustomerPhone.isWhatsapp`; `Customer.preferredLanguage`, `Customer.whatsappConsent` (enum `WhatsappConsent { YES NO }`, default NO) + `whatsappConsentAt/ById/Source` (**no opt-out Boolean**); `Order.idempotencyKey`; `OutboundMessage`, `MessageStatusEvent`, `MessagingState`, `MessageTemplateStatus`; enums; back-relations
+- [ ] A0. Confirm whether Prisma 7.9 supports partial indexes in `schema.prisma`. If not, add the partial unique index as **raw SQL** in the migration, and from now on check every generated migration doesn't drop it (§19.1)
+- [ ] A1. Schema from §5 (incl. `claimToken`, `sendStartedAt`, `lateResponseNote`, `Order.idempotencyHash`, `MessagingState.rateLimitedUntil`, the partial unique index): `CustomerPhone.isWhatsapp`; `Customer.preferredLanguage`, `Customer.whatsappConsent` (enum `WhatsappConsent { YES NO }`, default NO) + `whatsappConsentAt/ById/Source` (**no opt-out Boolean**); `Order.idempotencyKey`; `OutboundMessage`, `MessageStatusEvent`, `MessagingState`, `MessageTemplateStatus`; enums; back-relations
 - [ ] A2. Migration `<ts>_phase32_whatsapp_automation`, generated and applied against **local Docker PG only**
-- [ ] A3. Customer purge also scrubs `OutboundMessage.toPhone/params/snapshot` and `MessageStatusEvent.raw` for that customer
+- [ ] A3. Customer purge also scrubs `OutboundMessage.toPhone/params/snapshot/lastError` and `MessageStatusEvent.raw` for that customer (and any still-pending row → SKIPPED)
+- [ ] A3a. Migration safety drill (§19.1): restore the latest prod backup (`D:\pashuseva\backups`) into local Docker PG → `migrate deploy` → run the **old** commit's code against the migrated DB (create/edit customer, create/dispatch order) → run the new code → simulate a failed migration and recover with `migrate resolve`
 - [ ] A4. Backfill script `scripts/backfillWhatsappFlag.ts` (Q3): dry-run mode first, prints a count, then applies
 
 ### B. Backend — messaging core (`src/services/messaging/`)
-- [ ] B1. `utils/phone.ts` `toWhatsappNumber()` + test cases
+- [ ] B0. `services/orderPayment.ts` `getOrderPaymentSummary(orderId, tx?)` → `{ total, paid, due, overpaid, kind: UNPAID|PARTIAL|PAID|FREE|REFUNDED }` (§19.6); refactor `parcelSummary.service.ts` to use it (output must stay identical, checked by a before/after PDF text diff)
+- [ ] B1. `utils/phone.ts` `toWhatsappNumber()` + test cases (§19.1: spaces, `+91`, `0091`, `091`, leading 0, 12-digit `91…` edge cases, too short/long, **non-ASCII digits rejected**, ASCII `[0-9]` only)
 - [ ] B2. `providers/types.ts` (`sendTemplate` → `{ ok, providerMessageId } | { errorKind, code, message, retryAfter? }`), `providers/metaCloud.ts` (fetch, 10 s timeout, `biz_opaque_callback_data`), `providers/dryRun.ts`
 - [ ] B3. `metaErrors.ts`: code → errorKind table (unknown → PERMANENT); timeout/reset/no-body → AMBIGUOUS
-- [ ] B4. `templates/confirmation.ts`, `templates/dispatched.ts`, `templates/sanitize.ts`, `templates/i18n.ts` (EN/HI strings for payment wording), template-availability + English fallback
-- [ ] B5. `snapshot.ts`: build the confirmation/dispatch snapshot from `OrderItem` + `SUM(payments)` (§4.2 table)
-- [ ] B6. Hindi template text draft → **user approves the wording** before Meta submission
+- [ ] B4. {{5}} payment-method strings exactly as decided in §4.2 (Q12); **Names, products, units, order numbers and amounts are inserted exactly as stored, never translated or transliterated, in both languages (§4.3)**; `templates/units.ts` (PackagingUnit → English singular/plural); `templates/confirmation.ts`, `templates/dispatched.ts`, `templates/sanitize.ts` (NFC normalize; strip control chars, newline, tab; **keep ZWJ/ZWNJ**, needed for Devanagari; collapse spaces; truncate on **grapheme** boundaries via `Intl.Segmenter`, never mid-conjunct), `templates/i18n.ts` (EN/HI strings for payment wording), template-availability + English fallback
+- [ ] B5. `snapshot.ts`: build the confirmation/dispatch snapshot from `OrderItem` + `getOrderPaymentSummary` (§4.2 table)
+- [ ] B6. Hindi template text draft + Hindi strings for {{6}}/{{7}}/{{8}} → **user approves the wording** before Meta submission ({{5}} already decided, Q12)
 - [ ] B7. `message.service.ts`: `enqueue(tx, {type, orderId, actingUserId})` (ON CONFLICT DO NOTHING; SKIPPED rows for disabled/no number/consent NO/invalid), `listForOrder`, `preview`, `resend` (all §13 rules), `resolveUnknown`
-- [ ] B8. `dispatcher.ts`: claim SQL (§9.1), pre-send checks (§9.2), send, classify (§9.4), backoff, expiry, confirmation-before-dispatch ordering (§7), concurrency 3
+- [ ] B8. `dispatcher.ts`: claim SQL (§9.1), `claimToken`-guarded writes, `sendStartedAt` write-ahead, the 60 s lease guard, pre-send checks (§9.2), send, classify (§9.4, incl. malformed 200 → UNKNOWN), backoff, expiry, shared `rateLimitedUntil`, the ordering policy (§7), concurrency 3, per-row isolation
+- [ ] B8a. `applyStatus.ts`: one monotonic status helper used by the send result, the webhook and reconciliation (§19.5); the late-response handler (§19.3)
 - [ ] B9. `sweeper.ts`: 30 s tick: lock recovery → UNKNOWN, claim, send, template-status refresh every 6 h, error-safe; start in `index.ts`, graceful stop on SIGTERM
-- [ ] B10. `circuitBreaker.ts`: pause/resume `MessagingState`, Admin `Notification`
+- [ ] B10. `circuitBreaker.ts`: **atomic** pause (`UPDATE … WHERE "pausedAt" IS NULL RETURNING`, so only the worker that flips it notifies the Admins) / resume; queue-age alert (oldest QUEUED > 15 min while enabled and not paused → Admin `Notification`, at most once an hour)
 - [ ] B11. `config.ts` `WHATSAPP_*` with conditional requirement; `.env.example`
 
 ### C. Backend — wiring
+- [ ] C0. `customer.repository` `syncPhones`: also update a row when **only `isWhatsapp`** changed (today it compares only label/isPrimary); **clear the old WhatsApp flag before setting the new one** in the same transaction (so a swap doesn't trip the partial index); map the unique violation (P2002) → 409 "Customer was changed by someone else, reload" (§19.1)
 - [ ] C1. `customer.schema.ts`: `isWhatsapp` (+ valid-number refine, + at-most-one refine), `preferredLanguage`, `whatsappConsent` (enum YES/NO, **required on create**, optional on update; the service stamps `whatsappConsentAt/ById/Source` on every change); customer repository writes them; activity text `9876543210 (primary, WhatsApp)`, consent changes logged with **previous value, new value, employee and timestamp** (STOP logged as "by customer"), language changes logged
-- [ ] C2. `orderService.create`: `Idempotency-Key` (unique `Order.idempotencyKey`; duplicate → return the existing order); `enqueue(tx, ORDER_CONFIRMATION)` inside the transaction; after commit `void dispatcher.dispatch(id)`
+- [ ] C2. `orderService.create` + reorder: response includes `whatsapp: { status, skipReason }` for the post-save toast (§0.1); `Idempotency-Key` + `idempotencyHash` (§19.2: same key + same hash → the existing order, 200; same key + different hash or different user → 422 with the existing order number; concurrent same key → the unique violation is caught → the existing order, or 409 "still being created"); `enqueue(tx, ORDER_CONFIRMATION)` inside the transaction; after commit `void dispatcher.dispatch(id)`
 - [ ] C3. `applyDeliveryStatusChange`: on the NOT_DISPATCHED → DISPATCHED transition only → `enqueue(tx, ORDER_DISPATCHED)`; the caller dispatches after commit (both `updateDeliveryStatus` and `updateArticleNumber` paths); the re-dispatch activity note (Q5)
 - [ ] C4. Order activity: "WhatsApp order confirmation sent / delivered / failed: <reason> / skipped: <reason>", the same for dispatch, resend with the user + reason
 - [ ] C5. Permissions `message:resend`, `message:manage` in `permission.schema.ts` + defaults (Q9) + permissions UI labels
-- [ ] C6. Routes `/orders/:id/messages*`, `/messaging/*` (§14)
+- [ ] C6. Routes `/orders/:id/messages*` (**every one** behind `checkOrderAccess` / the order data-scope, same as other order routes), `/messaging/*` (§14)
 - [ ] C7. Webhook router (§12): raw body, HMAC, zod, dedupe, monotonic, reconciliation, STOP → consent NO, rate limit; mounted before `express.json()`
 
 ### D. Frontend
-- [ ] D1. Customer form (AddCustomerDialog + CustomerDetail edit): a **WhatsApp** toggle next to **Primary** on each phone row (at most one; the first row is ON by default per Q2); **Message language** EN/HI select; **WhatsApp Consent** with two radio options, `YES – Customer agreed` / `NO – Customer declined`. Neither is preselected on create and a choice is required; on edit it shows the current value + "last changed by X on date". The same field appears in the inline new-customer section of Create Order
+- [ ] D1. Customer form (AddCustomerDialog + CustomerDetail edit): a **WhatsApp** toggle next to **Primary** on each phone row (at most one; the first row is ON by default per Q2); **WhatsApp Message Language** dropdown (`English` default / `Hindi`); **WhatsApp Consent** with two radio options, `YES – Customer agreed` (**preselected on create**) / `NO – Customer declined`; on edit it shows the current value + "last changed by X on date". Both fields also appear in the inline new-customer section of Create Order. The CRM UI stays English
 - [ ] D2. WhatsApp icon beside flagged numbers in CustomerDetail, CustomerPicker, GlobalSearch and the OrderDetail customer card; a **Consent: YES / NO** badge (NO shown in red)
-- [ ] D3. Create Order: a hint "Confirmation will be sent on WhatsApp to 98xxxx3210 (Hindi)", or an amber "No WhatsApp number / WhatsApp consent is NO, no message will be sent"; generate an `Idempotency-Key` per form session and send it
-- [ ] D4. OrderDetail **WhatsApp messages** card: rows per message (type, to, language, status chip with time, error tooltip, "resend of #", by whom); auto-refresh every 10 s while any row is QUEUED/PROCESSING/RETRY_WAIT/SENT
-- [ ] D5. **Resend dialog** (§13): type, number picker, previous status, required reason, text preview, delivered warning, confirm; button disabled while pending; idempotency key
-- [ ] D6. Admin **Messaging** page (Settings area, `message:manage`): enabled/paused state + Resume, template approval statuses + Refresh, a **Needs attention** list (UNKNOWN / FAILED) with Resolve actions
+- [ ] D3. Create Order: a hint "Confirmation will be sent on WhatsApp to 98xxxx3210 (Hindi)", or an amber "No WhatsApp number / WhatsApp consent is NO, no message will be sent"; for an existing customer it shows the saved consent and language (no consent field); **post-save toast with two separate lines: "Order saved: ORD-…" and "WhatsApp: Queued for sending / Not sent: <reason>"** (§0.1, from `whatsapp` in the create response); `Idempotency-Key` kept in **sessionStorage** for the Create Order page, cleared only on a successful response, so a page refresh after a lost response reuses it (§19.2); a 422 shows "This order may already exist: ORD-…, open it". The same for the Reorder button
+- [ ] D4. OrderDetail **WhatsApp messages** card (§0.1): rows per message (type, masked number, language, status chip with time, reason for FAILED/SKIPPED, next retry time for RETRY_WAIT, "resend of #", by whom); **status help text per §0.1 (SENT explicitly "not yet delivered")**; auto-refresh every 10 s while any row is QUEUED/PROCESSING/RETRY_WAIT/SENT
+- [ ] D5. **Resend dialog** (§13): type, **current WhatsApp number (no picker; link to Customer Details to change it)**, previous status, required reason, text preview, delivered warning, confirm with `previewHash`; on 409 show the new preview and ask again; button disabled while pending; idempotency key
+- [ ] D6. Admin **Messaging** page (Settings area, `message:manage`): enabled/paused state + Resume, rate-limited-until, template approval statuses + Refresh, **queue size + oldest queued age**, a **Needs attention** list (UNKNOWN / FAILED / late-response notes) with Resolve actions
 - [ ] D7. Types + API client + react-query hooks for all of the above
 
 ### E. Mandatory tests before production (local Docker PG + dry-run, plus a fake-Meta stub server for error responses)
@@ -699,17 +895,154 @@ Only `.env.example` gets placeholders.
 - [ ] E13. Fake Meta 429 (with Retry-After), 500, invalid token (→ paused + Admin notified + resume works), template not approved/paused, invalid parameters, not-on-WhatsApp number → each handled per §9.4
 - [ ] E14. A permanent failure never retries; temporary failures stop at 5 attempts
 - [ ] E15. Resend: repeated clicks, while in progress, within the cooldown, without permission, to a customer with consent NO, of an old dispatch (preview shows current data) → each handled per §13; each resend is a new linked row
-- [ ] E16. COD unpaid, fully prepaid, partially paid, payment reversed, ₹0 free order → the dispatch amounts are correct
+- [ ] E16. COD unpaid, fully prepaid, partially paid, payment reversed, ₹0 free order → the dispatch amounts are correct and {{5}} matches the Q12 table exactly, in English and Hindi
 - [ ] E17. Product renamed / repriced after the order → messages still show the order's snapshot
 - [ ] E18. `WHATSAPP_ENABLED=false` / missing credentials → app starts, rows SKIPPED "WhatsApp disabled", existing queue untouched
 - [ ] E19. Hindi customer: Hindi template used; Hindi not approved → English fallback recorded
 - [ ] E20. Customer with no WhatsApp number, or with consent NO → order created, SKIPPED with the right reason, Create Order hint shown
-- [ ] E20a. Customer create without a consent choice → rejected (UI and API); consent change → audited in activity; STOP reply → consent NO
+- [ ] E20a. Add Customer and inline new customer: consent shows **YES preselected**, saving unchanged stores YES, switching to NO stores NO; an API create without the field → rejected; consent change → audited in activity; STOP reply → consent NO; existing customers still NO after the migration
+- [ ] E24. Two simultaneous customer saves flagging different phones as WhatsApp → exactly one succeeds, the other gets 409; the DB never holds two (partial unique index)
+- [ ] E25. A queued message whose `toPhoneId` was deleted, renumbered (new row), or is not owned by `customerId` → SKIPPED, no Meta call; a phone with the same number on another customer is never used
+- [ ] E26. Same idempotency key + different order details → 422 (no new order, the original unchanged); same key from a different user → 422; same key concurrently → one order
+- [ ] E26a. Order transaction fails after enqueue (e.g. stock check) → no order **and** no `OutboundMessage` row
+- [ ] E27. Stale worker: claim → lease expires → recovery → Admin resolves → the late worker's result is not written over the resolved state (only `lateResponseNote` + Admin notification)
+- [ ] E27a. Crash **before** `sendStartedAt` → back to QUEUED and sent once; crash **after** → UNKNOWN
+- [ ] E28. DELIVERED webhook arrives before the API response → the final status stays DELIVERED (no downgrade to SENT); `providerMessageId` set once
+- [ ] E29. Fake Meta 200 with an empty / malformed / id-less body → UNKNOWN, never SENT, never retried
+- [ ] E30. Customer moved to Trash (order still active) with a queued message → SKIPPED; also order in Trash, order purged, customer purged
+- [ ] E31. Reversals: a payment reversed fully, then partially re-paid → dispatch amounts correct (refunds in this system = reversals; REFUNDED status → defensive wording)
+- [ ] E32. Forced overpayment state (written directly in the test DB) → due shows ₹0, never negative; status Paid
+- [ ] E32a. Parcel label PDF text is identical before and after the `getOrderPaymentSummary` refactor, for unpaid / partial / paid / free orders
+- [ ] E33. Payment added between preview and confirm → 409 with the new preview; confirm again → the sent params equal the second preview
+- [ ] E34. WhatsApp number changed between preview and confirm → 409; nothing goes to the old number
+- [ ] E35. Several workers get CONFIGURATION errors at once → paused once, exactly one Admin notification; the affected rows go back to QUEUED and aren't lost
+- [ ] E36. Template approved → paused/rejected at Meta (cache still says approved) → CONFIGURATION for that template only, the other template keeps sending; re-approved + Refresh → resumes
+- [ ] E19a. Hindi customer: the message has the Hindi fixed text, but the customer name, product names, units (`2 Bags`), order number and amounts are **byte-identical to the English message's values** (no translation/transliteration)
+- [ ] E37. Long product/customer names (incl. any non-ASCII stored in the CRM), conjuncts, emoji, ZWJ, newline/tab/5+ spaces inside names → valid parameters, truncation on grapheme boundaries, the body under Meta's limit
+- [ ] E38. Migration drill A3a passes (old code on the new schema works; a failed migration recovers; Render keeps the previous deploy when `migrate deploy` fails)
+- [ ] E39. One row that keeps throwing (forced) → other rows in the same and later batches still send; the bad row ends FAILED after max attempts
+- [ ] E40. Confirmation FAILED / SKIPPED / UNKNOWN, then dispatch → dispatch sent normally; confirmation still QUEUED → dispatch waits (max 10 min)
+- [ ] E40a. Messaging endpoints respect the order data-scope: an Employee can't list/preview/resend messages of an order outside their scope
+- [ ] E40b. Meta 429 with Retry-After while 3 workers run → all pause until `rateLimitedUntil`, nothing is lost
 - [ ] E21. Real message via the **Meta test number** to your phone (both types, both languages)
-- [ ] E22. Playwright: customer phone toggles, language, consent YES/NO (required on create, not preselected), Create Order hint, Messages card, Resend dialog, Admin Messaging page
+- [ ] E22. Playwright: customer phone toggles, language, consent YES/NO (YES preselected on create), post-save toast lines, status help text, Create Order hint, Messages card, Resend dialog, Admin Messaging page
 - [ ] E23. `tsc` backend + frontend, eslint
 
 ### F. Release
 - [ ] F1. Commit + push. Render runs `migrate deploy` (additive)
 - [ ] F2. Deploy with `WHATSAPP_ENABLED=false` (**stays false until all of §18 E, including E21, has passed**) → confirm the existing flows are unchanged → run the backfill script (Q3) dry-run, then apply
-- [ ] F3. Only after E1–E23 pass: setup guide steps 11–12 → enable → test order to your own number: confirmation arrives (Sent → Delivered → Read) → dispatch it → dispatch notification arrives with correct amounts → trash the test order (Admin trash, as in earlier phases) → record the results here
+- [ ] F3. Only after E1–E40b pass: setup guide steps 11–12 → enable → test order to your own number: confirmation arrives (Sent → Delivered → Read) → dispatch it → dispatch notification arrives with correct amounts → trash the test order (Admin trash, as in earlier phases) → record the results here
+
+---
+
+## 19. Failure-scenario review 2 (2026-11-24): checked against the code and resolved
+
+The YES/NO consent design was deliberately left out of this review and is unchanged.
+
+### 19.1 Database and phone numbers
+| Scenario | What the code does today | Resolution |
+|---|---|---|
+| Two staff flag different WhatsApp numbers at once | No DB rule; `syncPhones` matches rows **by phone number** and only updates label/isPrimary | **Partial unique index** `("customerId") WHERE "isWhatsapp"`. `syncPhones` also updates on an `isWhatsapp`-only change, clears the old flag before setting the new one, and maps P2002 → 409 (C0, E24) |
+| Phone deleted after queueing | Removing a number deletes its row | The pre-send check finds no row → SKIPPED (E25) |
+| **Number changed** after queueing | `syncPhones` treats a changed number as **delete + create** (new row id) | The `toPhoneId` check fails → SKIPPED "Recipient changed", so the old message can never reach the new number (E25) |
+| Phone "moved" to another customer | **Not possible in the code**: phone rows are only created under their customer; another customer with the same number has a different row | The pre-send check also verifies `phone.customerId = message.customerId` (defence in depth, E25) |
+| Phone formatting | No format check today | `toWhatsappNumber` is strict, ASCII `[0-9]` only, non-ASCII digits rejected, with explicit cases for `+91`, `0091`, `091`, `0…`; 12-digit `91…` accepted only if the remaining 10 start with 6–9 (B1) |
+| Migration fails half-way | The Render start command is `migrate deploy` → server; **if the migration fails, the server doesn't start and Render keeps the previous deploy** (seen in Phase 27) | The migration is purely additive, so **old code runs fine on the new schema** (rollback = redeploy the previous commit, no down-migration). Drill on a copy of the prod backup before release (A3a, E38) |
+
+### 19.2 Order creation and idempotency
+| Scenario | Resolution |
+|---|---|
+| Double click / retried request | Same key + same body → returns the existing order (200), no second order or message |
+| Response lost, then the page is refreshed and resubmitted | The key is in **sessionStorage**, cleared only on success, so the resubmit reuses it → the existing order (D3) |
+| **Same key, different order details** | `idempotencyHash` = sha256(acting user id + canonical body). A mismatch → **422** "This idempotency key was already used for a different order (ORD-…)". The original order is unchanged (E26) |
+| Same key at the same moment | The unique index makes the second transaction fail (its stock decrements roll back) → re-read → the existing order, or 409 "still being created" |
+| Two staff genuinely create the same order (different keys) | Two real orders, by design. That's a business duplicate, not a retry, and out of scope |
+| Order transaction fails | The message row is inserted **inside** the order transaction, so it rolls back with it (E26a) |
+| Reorder | `POST /orders/:id/reorder` calls `create()` too, so it gets the same key handling (C2) |
+
+### 19.3 Worker and queue (stale workers)
+- **Claim token.** Every claim writes a new `claimToken`. Every later write by that
+  worker is conditioned on `id + status='PROCESSING' + claimToken`.
+- **Write-ahead in two steps.** `sendStartedAt` is committed right before the Meta
+  call. Expired lease + `sendStartedAt` null → QUEUED (safe). Set → UNKNOWN.
+- **Late worker.** If the guarded write matches 0 rows, the worker lost the claim
+  (recovered, reconciled, or resolved). It **never overwrites**. If it holds a
+  **success with a valid wamid**:
+  - and the row is UNKNOWN (unresolved) and has no `providerMessageId` → attach the
+    wamid and mark SENT (a safe reconciliation, same as the webhook path)
+  - in any other state (e.g. an Admin already chose "mark failed and resend") →
+    write only `lateResponseNote` ("Meta accepted this message at …; a resend may
+    have duplicated it") + an Admin notification
+
+  A failure response from a late worker is only logged.
+- **Lease.** 2 min lease vs a 10 s hard timeout; no Meta call if < 60 s of lease is
+  left. No renewal needed.
+- **Poison rows.** Per-row try/catch, `Promise.allSettled`, backoff ordering. An
+  unexpected exception before `sendStartedAt` → RETRY_WAIT (counts as an attempt) →
+  FAILED at the max. After `sendStartedAt` → UNKNOWN (E39).
+- **DB offline.** The tick fails and is logged; the next tick retries. If the DB is
+  lost right after Meta accepted, the row stays PROCESSING → lease expiry → UNKNOWN →
+  webhook reconciliation.
+
+### 19.4 Meta API
+| Scenario | Resolution |
+|---|---|
+| 200 without a valid `messages[0].id` | AMBIGUOUS → UNKNOWN, never SENT (E29) |
+| Timeout after Meta accepted / 500 with an unreadable body | AMBIGUOUS → UNKNOWN; never auto-resent |
+| Token expires mid-batch | The first CONFIGURATION error pauses (atomic). The other in-flight rows that also get CONFIGURATION errors were **rejected** by Meta (not sent), so they go back to QUEUED with no attempt counted. Nothing is lost (E35) |
+| Template paused/rejected after approval | Meta's error at send time beats the cache. That template is marked unavailable and the other keeps going. An Admin refreshes after re-approval (E36) |
+| Rate limit with several workers | `MessagingState.rateLimitedUntil` = the shared back-off from `Retry-After`. No worker claims until then (E40b) |
+| API version unsupported | `WHATSAPP_API_VERSION` is **verified against Meta's docs at implementation time** (not assumed v21.0). A version-deprecation error → CONFIGURATION → pause + Admin notification |
+| Webhook delayed/never arrives | SENT stays SENT (accepted is enough). UNKNOWN rows go to Needs attention after 30 min |
+
+### 19.5 Webhook and API-response races
+- **DELIVERED before the API response is saved:** the webhook carries an unknown
+  wamid → reconciled via `biz_opaque_callback_data` → the row gets the wamid +
+  DELIVERED, and **`claimToken` is cleared**. The API response handler's guarded
+  write then matches 0 rows, so there's no downgrade. Final state DELIVERED (E28).
+- **One `applyStatus(messageId, newStatus, providerMessageId?)` helper** for
+  webhooks, send results and reconciliation. It's a single conditional `UPDATE` with
+  a rank in SQL (QUEUED / PROCESSING / RETRY_WAIT / UNKNOWN 0 < SENT 1 < DELIVERED 2 <
+  READ 3; FAILED only applied below DELIVERED), so it never moves backwards.
+- **Dedupe and update atomic** in one transaction per status entry; a crash mid-way
+  → Meta retries → idempotent.
+- **Rate limit:** a dedicated, generous webhook limiter, signature check first.
+
+### 19.6 Payment calculation (one function)
+Checked in the code:
+- Payments are `Payment` rows; **reversals are negative rows** (`reversesPaymentId`)
+- `paymentStatus` is derived by `paidStatusFor`
+- **there is no refund flow**: `REFUNDED` is never produced, and a "refund" in this
+  CRM is a reversal
+- **Overpayment is already blocked** in three places: create (`amountPaid > total`),
+  `addPayment` (`amount > remaining`, re-summed inside the transaction), and the
+  Phase 31 edit (new total below paid is blocked)
+- `parcelSummary.service.ts` already computes `due = max(total − paid, 0)` itself
+
+Resolution: **`getOrderPaymentSummary(orderId, tx?)`** is the only place amounts are
+computed. It returns total, net paid (incl. reversals), `due = max(total − paid, 0)`,
+`overpaid = max(paid − total, 0)` (logged as a warning if > 0; the message then shows
+Paid), and a kind (UNPAID / PARTIAL / PAID / FREE / REFUNDED-defensive). The parcel
+label, dispatch builder and resend preview all use it. Dispatch params are frozen at
+dispatch time; a resend uses current data (§13). Tests: E16, E31, E32, E32a.
+
+### 19.7 Resend consistency
+- **Contradiction fixed:** no number picker; resend uses the current WhatsApp number
+  only (Q1). To change it, edit Customer Details first.
+- **Preview = what is sent:** `previewHash` round-trip; any change (payment, items,
+  number, language) → 409 + the new preview → confirm again (E33, E34).
+
+### 19.8 Other scenarios
+| Area | Resolution |
+|---|---|
+| Customer in Trash, order not | The pre-send check covers the customer `deletedAt`/`purgedAt` too (orders of a trashed customer stay active by design) (E30) |
+| Order in Trash / purged | Order purge here sets `purgedAt` (soft); both are checked → SKIPPED |
+| Cancelled while the dispatch message waits | Order status is re-read before the send → SKIPPED |
+| Ordering when the confirmation failed/UNKNOWN | The dispatch is sent normally (§7, E40) |
+| Stale messages after downtime | `expiresAt` (§10) |
+| Simultaneous configuration errors | Atomic pause, a single Admin notification (E35) |
+| Hindi / Unicode | NFC, keep ZWJ/ZWNJ, grapheme-safe truncation (E37) |
+| Security | Every `/orders/:id/messages*` route uses the order data-scope check; `/messaging/*` is `message:manage` only (E40a) |
+| Privacy on purge | Scrub phone, params, snapshot, lastError and webhook raw data; pending rows → SKIPPED (A3) |
+| Shutdown | Stop claiming; in-flight calls finish or time out (10 s); anything interrupted after `sendStartedAt` → UNKNOWN on recovery |
+| Queue overload | No bulk trigger exists (orders are created and dispatched one at a time); concurrency 3, batch 10, shared rate-limit back-off; queue size + oldest age on the Admin page + an alert after 15 min |
