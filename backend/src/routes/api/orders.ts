@@ -4,10 +4,18 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { authenticate } from '../../middleware/authenticate';
 import { authorize } from '../../middleware/authorize';
 import { checkOrderAccess } from '../../middleware/checkAccess';
+import { messagingController } from '../../controllers/messaging.controller';
 
 const router = Router();
 
 router.use(authenticate);
+
+// Phase 32 C6: an order's WhatsApp messages. Every route is behind checkOrderAccess
+// (same Data Scope as the order itself); preview/resend additionally need
+// message:resend. Registered before GET /:id for clarity (distinct paths anyway).
+router.get('/:id/messages', authorize('order:view'), checkOrderAccess, asyncHandler(messagingController.listForOrder));
+router.get('/:id/messages/preview', authorize('message:resend'), checkOrderAccess, asyncHandler(messagingController.preview));
+router.post('/:id/messages/resend', authorize('message:resend'), checkOrderAccess, asyncHandler(messagingController.resend));
 
 // GET /api/orders — scoped per role inside the service (Admin: all, Manager: team, Employee: own)
 router.get('/', authorize('order:view'), asyncHandler(orderController.list));

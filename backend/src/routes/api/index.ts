@@ -9,6 +9,7 @@ import searchRouter from './search';
 import dashboardRouter from './dashboard';
 import reportsRouter from './reports';
 import trashRouter from './trash';
+import messagingRouter from './messaging';
 
 const router = Router();
 
@@ -24,5 +25,7 @@ router.use('/search', searchRouter);
 router.use('/dashboard', dashboardRouter);
 router.use('/reports', reportsRouter);
 router.use('/trash', trashRouter);
+// Phase 32 C6: Admin Messaging page (message:manage).
+router.use('/messaging', messagingRouter);
 
 export default router;

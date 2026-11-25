@@ -1309,7 +1309,27 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     byte-identical.
   - The A3-verified local copy `pashuseva` was not modified (test copies apply the
     migration themselves).
-- [ ] C6. Routes `/orders/:id/messages*` (**every one** behind `checkOrderAccess` / the order data-scope, same as other order routes), `/messaging/*` (§14)
+- [x] C6. **DONE 2026-11-25.**
+  - **Order routes** (all behind `checkOrderAccess`):
+    - `GET /orders/:id/messages` (order:view): masked numbers; Admin-only notes
+      hidden from others.
+    - `GET /orders/:id/messages/preview?type=` (message:resend): the exact current
+      text, `previewHash`, `blockedReason`, the previous status, and an "already
+      received" warning.
+    - `POST /orders/:id/messages/resend` (message:resend): every rule re-checked.
+      Always a **new** record (`RESEND:`, `resendOfId`, reason, who); the original is
+      untouched. Current WhatsApp number only; `previewHash` must match (otherwise
+      409 `PREVIEW_CHANGED` with the new preview). Blocked while in progress, while
+      UNKNOWN is unresolved, within the 2-min cooldown, above 10 per user per 10 min,
+      with consent NO, no number, before go-live, or not dispatched. Idempotency-Key;
+      an advisory lock means two at once → one. Order history + audit log.
+  - **Admin `/messaging/*`** (message:manage; every action audited): `status`,
+    `messages?needsAttention=`, `messages/:id/resolve` (mark-sent /
+    mark-failed-and-resend, only unresolved UNKNOWN), `resume`, `templates/refresh`.
+  - `HttpError` gained optional `details` (backward-compatible) for the 409 preview
+    payload.
+  - Tests **38/38 ON + 3/3 OFF**, 0 non-local requests. Regressions: integration
+    14/14 + 22/22, workflows 17/17 + 17/17, worker 51/51, activity 14/14.
 - [ ] C7. Webhook router (§12): raw body, HMAC, zod, dedupe, monotonic, reconciliation, STOP → consent NO, rate limit; mounted before `express.json()`
 
 ### D. Frontend
