@@ -1590,3 +1590,35 @@ the user's GO.** This replaces options A/B/C above.
 - **Q18: DECIDED + IMPLEMENTED** (see §20.2). Original question: total-weight rule as designed in §20.2, with ML/L counting as "no known
   weight", applied to the parcel label now (the only total-weight display), and as
   the mandatory rule for any future screen?
+
+---
+
+## 21. Recorded rule: WhatsApp is optional, never a condition for ordering (user, 2026-11-25)
+
+Architecture recommendation, kept as a rule. It doesn't change the approved scope.
+Most of it was already decided; this table shows where each part is defined.
+
+**Two independent fields** (§6): **WhatsApp number** (`CustomerPhone.isWhatsapp`: is
+this number used on WhatsApp?) and **WhatsApp consent** (`Customer.whatsappConsent`:
+has the customer agreed to PashuSeva messages?). A customer can have WhatsApp but
+refuse messages, or agree but have no WhatsApp.
+
+| Situation | CRM behaviour | Defined / implemented in |
+|---|---|---|
+| Valid number + WhatsApp YES + consent YES | **QUEUED** | §6, §18 B7 (done) |
+| Valid number + WhatsApp YES + consent NO | **SKIPPED** "No WhatsApp consent" | §6 consent rules, §9.2 check 3, B7 (done) |
+| Number not registered on WhatsApp | **FAILED, permanent, never retried**: Meta error **131026** ("not a WhatsApp number…") | §9.4 + B3 `metaErrors.ts` (done). Meta may reject at send time (B8) **or** accept and report `failed` + 131026 later in a status webhook (§12, C7). Both end FAILED with the reason. |
+| Number marked WhatsApp = NO (none flagged) | **SKIPPED** "No valid WhatsApp number" | §6 "No WhatsApp number", B7 (done; tested) |
+| Customer has no phone at all | **SKIPPED** "No valid WhatsApp number" | B7. The current customer form requires ≥ 1 phone, so this mostly concerns legacy data |
+| Invalid mobile number flagged WhatsApp | **SKIPPED** "No valid WhatsApp number"; the WhatsApp flag is also refused when saving the customer | §6 + B1 `toWhatsappNumber` (done), C1 save-time validation (pending) |
+
+**Never blocks the business:**
+- Customers can be saved and orders created and dispatched with WhatsApp unavailable,
+  consent NO, or WhatsApp switched off (B7 never throws; savepoint; verified
+  14/14 + 22/22 + 17/17 workflows, see §18 C3).
+- A format-valid number does **not** prove a WhatsApp account. That's only known when
+  Meta answers.
+
+The stored skip-reason text is "No valid WhatsApp number" (`SKIP_REASONS.NO_NUMBER`
+in `message.service.ts`); "NO_VALID_WHATSAPP_NUMBER" in the recommendation refers to
+the same reason.
