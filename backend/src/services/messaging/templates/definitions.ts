@@ -4,10 +4,11 @@ import type { Lang } from './i18n';
 // truth used to (a) render the exact text for previews / the resend dialog and (b)
 // submit to Meta (B6 / setup step 8). Category: Utility. Positional variables.
 //
-// Status: English confirmation/dispatch = as approved in §4.1/§4.2. Hindi bodies =
-// DRAFT (§4.3 example + dispatch draft) — the user approves the wording in B6 BEFORE
-// any Meta submission. Names/products/order numbers/units/amounts are variables and
-// are never translated (frozen language rules).
+// Status: English = as approved in §4.1/§4.2; Hindi wording = approved by the user in
+// B6 (2026-11-25). Names/products/order numbers/units/amounts are variables and are
+// never translated (frozen language rules).
+// PENDING (user decision, see PHASE32_TODO.md §20): the "every product on its own
+// line" layout — the product list is still a single {{3}} line here.
 //
 // Meta limits (official docs, read 2026-11-24): body ≤ 1024 chars, text header ≤ 60,
 // footer ≤ 60; template names lowercase letters/digits/underscores. Meta also rejects
@@ -60,16 +61,17 @@ Please keep your phone available for delivery updates.
 
 Thank you for choosing PashuSeva! ❤️`;
 
+// Hindi wording approved by the user in B6 (2026-11-25).
 const CONFIRMATION_HI = `नमस्ते {{1}} जी! 🙏
 
-पशुसेवा में ऑर्डर करने के लिए धन्यवाद।
+पशुसेवा से ऑर्डर करने के लिए धन्यवाद।
 
 आपका ऑर्डर {{2}} सफलतापूर्वक बुक हो गया है।
 
-आपके ऑर्डर में शामिल उत्पाद:
+आपके ऑर्डर में शामिल सामान:
 {{3}}
 
-हम आपका ऑर्डर तैयार कर रहे हैं और भेजे जाने पर आपको सूचित करेंगे।
+हम आपका ऑर्डर तैयार कर रहे हैं। ऑर्डर भेजे जाने पर आपको सूचना दे दी जाएगी।
 
 पशुसेवा चुनने के लिए धन्यवाद! ❤️`;
 
@@ -77,17 +79,17 @@ const DISPATCHED_HI = `नमस्ते {{1}} जी! 🙏
 
 खुशखबरी! आपका पशुसेवा ऑर्डर {{2}} भेज दिया गया है। 🚚
 
-ऑर्डर विवरण:
+ऑर्डर का विवरण:
 {{3}}
 
-ऑर्डर सारांश
+ऑर्डर का हिसाब:
 • कुल राशि: ₹{{4}}
 • भुगतान का तरीका: {{5}}
 • भुगतान की स्थिति: {{6}}
 • {{7}}
 • ट्रैकिंग नंबर: {{8}}
 
-अनुमानित डिलीवरी: भेजे जाने के लगभग 5–7 दिन में (यह अनुमान है, गारंटी नहीं)।
+अनुमानित डिलीवरी: ऑर्डर भेजे जाने के लगभग 5–7 दिनों में पहुंचने की उम्मीद है। यह केवल अनुमान है, पक्की तारीख नहीं।
 
 डिलीवरी अपडेट के लिए कृपया अपना फ़ोन चालू रखें।
 
@@ -96,11 +98,11 @@ const DISPATCHED_HI = `नमस्ते {{1}} जी! 🙏
 export const TEMPLATES: Record<TemplateKey, Record<Lang, TemplateDefinition>> = {
   confirmation: {
     EN: { key: 'confirmation', language: 'EN', metaLanguage: 'en', status: 'APPROVED_TEXT', header: 'PashuSeva', body: CONFIRMATION_EN, footer: 'Order confirmation', paramCount: 3 },
-    HI: { key: 'confirmation', language: 'HI', metaLanguage: 'hi', status: 'DRAFT', header: 'पशुसेवा', body: CONFIRMATION_HI, footer: 'ऑर्डर की पुष्टि', paramCount: 3 },
+    HI: { key: 'confirmation', language: 'HI', metaLanguage: 'hi', status: 'APPROVED_TEXT', header: 'पशुसेवा', body: CONFIRMATION_HI, footer: 'ऑर्डर की पुष्टि', paramCount: 3 },
   },
   dispatched: {
     EN: { key: 'dispatched', language: 'EN', metaLanguage: 'en', status: 'APPROVED_TEXT', header: 'PashuSeva', body: DISPATCHED_EN, footer: 'Dispatch notification', paramCount: 8 },
-    HI: { key: 'dispatched', language: 'HI', metaLanguage: 'hi', status: 'DRAFT', header: 'पशुसेवा', body: DISPATCHED_HI, footer: 'डिस्पैच सूचना', paramCount: 8 },
+    HI: { key: 'dispatched', language: 'HI', metaLanguage: 'hi', status: 'APPROVED_TEXT', header: 'पशुसेवा', body: DISPATCHED_HI, footer: 'डिस्पैच सूचना', paramCount: 8 },
   },
 };
 

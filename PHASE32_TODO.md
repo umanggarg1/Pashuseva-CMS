@@ -1,6 +1,6 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Progress: A0 · A1 · A2 · A3 · B0 · B1 · B2 · B3 · B4 done (all local; nothing pushed, no deploy; 0 real WhatsApp requests). B6 (Hindi wording) awaits the user's review of PHASE32_TEMPLATES_REVIEW.md. Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
+**Progress: A0 · A1 · A2 · A3 · B0 · B1 · B2 · B3 · B4 done (all local; nothing pushed, no deploy; 0 real WhatsApp requests). B6 Hindi wording approved. Two new architecture requirements recorded in §20 (product per line; total-weight rule); their designs await the user's approval before any code. Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
 
 **Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
@@ -1170,12 +1170,19 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   - Rendered samples for review: **`PHASE32_TEMPLATES_REVIEW.md`** (regenerate with
     `--write-review`).
 - [ ] B5. `snapshot.ts`: build the confirmation/dispatch snapshot from `OrderItem` + `getOrderPaymentSummary` (§4.2 table)
-- [ ] B6. **Hindi wording approval (user).** Review `PHASE32_TEMPLATES_REVIEW.md`:
-  - Hindi confirmation + dispatch bodies, headers ("पशुसेवा") and footers
-  - Hindi {{6}} status, {{7}} amount line and {{8}} tracking fallback
-  - the "+N और उत्पाद" suffix
-
-  {{5}} is already final (Q12). Nothing is submitted to Meta before this approval.
+- [x] B6. **Hindi wording APPROVED by the user (2026-11-25), implemented.**
+  - Header "पशुसेवा"; footers "ऑर्डर की पुष्टि" / "डिस्पैच सूचना".
+  - Confirmation: "पशुसेवा से ऑर्डर करने…", "आपके ऑर्डर में शामिल सामान:", two-sentence
+    closing notice.
+  - Dispatch: "ऑर्डर का विवरण:", "ऑर्डर का हिसाब:", the new 5–7 day estimate sentence.
+  - {{6}}/{{7}}: unpaid "भुगतान बाकी है" / "डिलीवरी पर देय राशि"; part paid unchanged;
+    paid "भुगतान हो चुका है" (shorter, so {{5}} isn't repeated) / "जमा की गई राशि";
+    free "निःशुल्क ऑर्डर" / "कोई राशि देय नहीं".
+  - **English free order: status changed "Paid" → "Free order"** (amount line stays
+    "Nothing to pay"). A free order is never called paid in either language.
+  - Q12 {{5}} unchanged.
+  - `templates.verify.ts` **67/67**; samples regenerated in `PHASE32_TEMPLATES_REVIEW.md`.
+  - **Not yet submittable to Meta:** the product-list layout is pending (§20.1).
 - [ ] B7. `message.service.ts`: `enqueue(tx, {type, orderId, actingUserId})` (ON CONFLICT DO NOTHING; SKIPPED rows for disabled/no number/consent NO/invalid), `listForOrder`, `preview`, `resend` (all §13 rules), `resolveUnknown`
 - [ ] B8. `dispatcher.ts`: claim SQL (§9.1), `claimToken`-guarded writes, `sendStartedAt` write-ahead, the 60 s lease guard, pre-send checks (§9.2), send, classify (§9.4, incl. malformed 200 → UNKNOWN), backoff, expiry, shared `rateLimitedUntil`, the ordering policy (§7), concurrency 3, per-row isolation
 - [ ] B8a. `applyStatus.ts`: one monotonic status helper used by the send result, the webhook and reconciliation (§19.5); the late-response handler (§19.3)
@@ -1372,3 +1379,98 @@ dispatch time; a resend uses current data (§13). Tests: E16, E31, E32, E32a.
 | Privacy on purge | Scrub phone, params, snapshot, lastError and webhook raw data; pending rows → SKIPPED (A6) |
 | Shutdown | Stop claiming; in-flight calls finish or time out (10 s); anything interrupted after `sendStartedAt` → UNKNOWN on recovery |
 | Queue overload | No bulk trigger exists (orders are created and dispatched one at a time); concurrency 3, batch 10, shared rate-limit back-off; queue size + oldest age on the Admin page + an alert after 15 min |
+
+---
+
+## 20. New architecture requirements (user, 2026-11-25), DESIGN ONLY, awaiting approval
+
+The user's words: *"This is an architecture requirement, not permission to start
+coding."* Nothing in this section has been implemented.
+
+### 20.1 Every product on its own line (WhatsApp confirmation + dispatch, EN + HI)
+
+**Requirement.** Every product is on a separate line, never joined with `|`, in both
+message types, both languages and long orders. Product names, quantities, units and
+prices stay exactly as stored; only the layout changes. Example:
+```
+Satvik Shahi Mixer Feed × 2 Bags – ₹500
+Milk Booster Powder × 1 Packet – ₹450
+Liquid Calcium × 2 Bottles – ₹300
+```
+
+**Constraint.** A WhatsApp template parameter can't contain line breaks. Meta's
+official pages don't state this (checked 2026-11-25: error-codes, components,
+overview, template-review), but the API is widely reported to reject it with *"Param
+text cannot have new-line/tab characters or more than 4 consecutive spaces"*. So the
+line breaks must be in the **fixed template text**, which means each product needs its
+**own parameter on its own line**.
+
+**Options**
+
+| | Design | Pros | Cons |
+|---|---|---|---|
+| **A (recommended)** | **Template variants by number of product lines, 1–5.** Each variant has one parameter per product line, each on its own line. Orders with more than 5 products: lines 1–4 are products and line 5 is "… +N more items" / "… +N और उत्पाद". A0: real orders have at most 5 items. | Compliant with Meta; exact layout; no blank lines; every product readable | **20 Meta templates** (2 types × 2 languages × 5 variants) instead of 4. Any wording change needs re-approval of the affected variants. Variant chosen per message by item count. |
+| B | Put line breaks inside the single `{{3}}` and test it with the Meta test number (E21) | Only 4 templates | Undocumented and widely reported as rejected (every message would FAIL). Meta could start rejecting it at any time. **Not recommended** for production. |
+| C | One template with 5 fixed product lines, unused lines filled with a placeholder such as "—" | 4 templates | Visible "—" lines on short orders; looks broken. Not recommended. |
+
+**With A:**
+- Names are `ps_order_confirmation_1` … `_5` and `ps_order_dispatched_1` … `_5`, each in `en` and `hi`.
+- Confirmation n has `2 + n` parameters; dispatch n has `7 + n`.
+- The builders choose variant `min(itemCount, 5)`.
+- Meta's "too many variables for the message length" check (error 2388293) is verified per variant before submission.
+- `OutboundMessage.templateName` stores the exact variant.
+- §17 step 8 becomes 20 templates.
+- Tests (E42) are added for every variant and language.
+
+### 20.2 Total Weight shown only when every product's weight is known (everywhere)
+
+**Requirement.**
+- Show Total Weight only when every product in the order has a known weight.
+- If even one product has no weight, hide the entire Total Weight section.
+- Never show a partial or estimated total, "0 kg", a blank or "N/A".
+- One central calculation and display rule, used everywhere.
+
+**Where weight appears today** (read-only inventory, 2026-11-25):
+
+| Place | Shows a total weight? | Change |
+|---|---|---|
+| **Print Parcel Summary (PDF)** `parcelSummary.service.ts` | **Yes.** Today it sums the known weights and prints `TOTAL WEIGHT` whenever that sum is > 0, so **it prints a partial total when some items have no weight** | **Use the central rule** |
+| Order Details, Orders list, order Excel/PDF export, Create Order, order trash views | No | None now; any future total weight must use the central rule |
+| WhatsApp confirmation / dispatch templates | No (the approved templates have no weight line) | None. Adding one later needs template variants (a template can't hide a line) and must use the central rule |
+| Product pages / product trash | Per-product weight only (not a total) | Not affected |
+| Invoices / other prints | No separate invoice print exists; the parcel summary is the only order print | — |
+
+**Impact on real data** (local copy, read-only), 444 active orders:
+- **265** have every item weighed, so their label is unchanged.
+- **159** have no weights, so the total is already hidden (unchanged).
+- **20** print a **partial total today**. Those labels would no longer show Total
+  Weight.
+
+**Design:**
+- **One central function** `utils/orderWeight.ts`, `getOrderTotalWeight(items)`,
+  returns grams, or **null** when any item has no known mass. Unknown means:
+  - no linked product
+  - `weightValue` missing or ≤ 0
+  - unit not G/KG (ML/L are volumes, not weights; none of today's mixed orders
+    involve them)
+- `formatTotalWeight(grams)` keeps today's display exactly (`≥ 1000 g → "x.xx KG"`,
+  otherwise `"N G"`).
+- The parcel label prints the section only when the result is non-null.
+- Verification uses the same before/after PDF method as B0:
+  - all-known orders are byte-identical
+  - no-weight orders are identical
+  - mixed orders differ only by the removed TOTAL WEIGHT line
+  - E43 covers this
+- Data note (no change proposed): weight comes from the **current** Product record,
+  not a snapshot on the order item, so editing a product's weight changes the weight
+  printed on older orders' labels. A deleted product has no weight, so the section
+  is hidden. Tell me if you want a weight snapshot on order items; that would be a
+  separate, additive change.
+
+### 20.3 Decisions needed
+
+- **Q17:** product-per-line design, **A** (template variants, recommended), B or C? If
+  A, the maximum is 5 product lines (the 5th becomes "+N more" when there are more)?
+- **Q18:** total-weight rule as designed in §20.2, with ML/L counting as "no known
+  weight", applied to the parcel label now (the only total-weight display), and as
+  the mandatory rule for any future screen?

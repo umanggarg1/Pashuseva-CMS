@@ -28,21 +28,21 @@ Thank you for choosing PashuSeva! ❤️
 
 ### Order confirmation — Hindi (`ps_order_confirmation`, `hi`)
 
-Status: **DRAFT — needs your approval (B6)** · Meta language `hi` · 346/1024 characters
+Status: **Hindi wording approved (B6)** · Meta language `hi` · 353/1024 characters
 
 ```
 [Header] पशुसेवा
 
 नमस्ते Ram Lal जी! 🙏
 
-पशुसेवा में ऑर्डर करने के लिए धन्यवाद।
+पशुसेवा से ऑर्डर करने के लिए धन्यवाद।
 
 आपका ऑर्डर ORD-2026-001025 सफलतापूर्वक बुक हो गया है।
 
-आपके ऑर्डर में शामिल उत्पाद:
+आपके ऑर्डर में शामिल सामान:
 Satvik Shahi Mixer Feed × 2 Bags  |  Milk Booster Powder × 1 Packet  |  Liquid Calcium × 2 Bottles
 
-हम आपका ऑर्डर तैयार कर रहे हैं और भेजे जाने पर आपको सूचित करेंगे।
+हम आपका ऑर्डर तैयार कर रहे हैं। ऑर्डर भेजे जाने पर आपको सूचना दे दी जाएगी।
 
 पशुसेवा चुनने के लिए धन्यवाद! ❤️
 
@@ -81,7 +81,7 @@ Thank you for choosing PashuSeva! ❤️
 
 ### Dispatch notification — Hindi, Cash on Delivery (`ps_order_dispatched`, `hi`)
 
-Status: **DRAFT — needs your approval (B6)** · Meta language `hi` · 541/1024 characters
+Status: **Hindi wording approved (B6)** · Meta language `hi` · 588/1024 characters
 
 ```
 [Header] पशुसेवा
@@ -90,17 +90,17 @@ Status: **DRAFT — needs your approval (B6)** · Meta language `hi` · 541/1024
 
 खुशखबरी! आपका पशुसेवा ऑर्डर ORD-2026-001025 भेज दिया गया है। 🚚
 
-ऑर्डर विवरण:
+ऑर्डर का विवरण:
 Satvik Shahi Mixer Feed × 2 Bags – ₹500  |  Milk Booster Powder × 1 Packet – ₹450  |  Liquid Calcium × 2 Bottles – ₹300
 
-ऑर्डर सारांश
+ऑर्डर का हिसाब:
 • कुल राशि: ₹1,250
 • भुगतान का तरीका: कैश ऑन डिलीवरी
-• भुगतान की स्थिति: भुगतान बाकी
+• भुगतान की स्थिति: भुगतान बाकी है
 • डिलीवरी पर देय राशि: ₹1,250
 • ट्रैकिंग नंबर: EK123456789IN
 
-अनुमानित डिलीवरी: भेजे जाने के लगभग 5–7 दिन में (यह अनुमान है, गारंटी नहीं)।
+अनुमानित डिलीवरी: ऑर्डर भेजे जाने के लगभग 5–7 दिनों में पहुंचने की उम्मीद है। यह केवल अनुमान है, पक्की तारीख नहीं।
 
 डिलीवरी अपडेट के लिए कृपया अपना फ़ोन चालू रखें।
 
@@ -111,7 +111,7 @@ Satvik Shahi Mixer Feed × 2 Bags – ₹500  |  Milk Booster Powder × 1 Packet
 
 ### Dispatch notification — Hindi, part prepaid, no Article No. yet
 
-Status: **DRAFT — needs your approval (B6)** · Meta language `hi` · 570/1024 characters
+Status: **Hindi wording approved (B6)** · Meta language `hi` · 614/1024 characters
 
 ```
 [Header] पशुसेवा
@@ -120,17 +120,17 @@ Status: **DRAFT — needs your approval (B6)** · Meta language `hi` · 570/1024
 
 खुशखबरी! आपका पशुसेवा ऑर्डर ORD-2026-001025 भेज दिया गया है। 🚚
 
-ऑर्डर विवरण:
+ऑर्डर का विवरण:
 Satvik Shahi Mixer Feed × 2 Bags – ₹500  |  Milk Booster Powder × 1 Packet – ₹450  |  Liquid Calcium × 2 Bottles – ₹300
 
-ऑर्डर सारांश
+ऑर्डर का हिसाब:
 • कुल राशि: ₹1,250
 • भुगतान का तरीका: कुछ एडवांस, बाकी डिलीवरी पर।
 • भुगतान की स्थिति: आंशिक भुगतान
 • ₹500 जमा, डिलीवरी पर बाकी: ₹750
 • ट्रैकिंग नंबर: जल्द ही साझा किया जाएगा
 
-अनुमानित डिलीवरी: भेजे जाने के लगभग 5–7 दिन में (यह अनुमान है, गारंटी नहीं)।
+अनुमानित डिलीवरी: ऑर्डर भेजे जाने के लगभग 5–7 दिनों में पहुंचने की उम्मीद है। यह केवल अनुमान है, पक्की तारीख नहीं।
 
 डिलीवरी अपडेट के लिए कृपया अपना फ़ोन चालू रखें।
 

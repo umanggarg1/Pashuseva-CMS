@@ -34,9 +34,11 @@ for (const key of ['confirmation', 'dispatched'] as const) {
     check(`template ${key}/${lang}: Meta language code`, def.metaLanguage === (lang === 'EN' ? 'en' : 'hi'));
   }
 }
-check('English templates are the approved §4.1/§4.2 text; Hindi marked DRAFT until B6',
-  TEMPLATES.confirmation.EN.status === 'APPROVED_TEXT' && TEMPLATES.dispatched.EN.status === 'APPROVED_TEXT' &&
-  TEMPLATES.confirmation.HI.status === 'DRAFT' && TEMPLATES.dispatched.HI.status === 'DRAFT');
+check('all four templates carry approved wording (EN §4.1/§4.2, HI B6)',
+  [TEMPLATES.confirmation.EN, TEMPLATES.dispatched.EN, TEMPLATES.confirmation.HI, TEMPLATES.dispatched.HI].every((d) => d.status === 'APPROVED_TEXT'));
+check('B6 Hindi wording present (confirmation)', ['पशुसेवा से ऑर्डर करने के लिए धन्यवाद।', 'आपके ऑर्डर में शामिल सामान:', 'हम आपका ऑर्डर तैयार कर रहे हैं। ऑर्डर भेजे जाने पर आपको सूचना दे दी जाएगी।'].every((t) => TEMPLATES.confirmation.HI.body.includes(t)));
+check('B6 Hindi wording present (dispatch)', ['ऑर्डर का विवरण:', 'ऑर्डर का हिसाब:', 'अनुमानित डिलीवरी: ऑर्डर भेजे जाने के लगभग 5–7 दिनों में पहुंचने की उम्मीद है। यह केवल अनुमान है, पक्की तारीख नहीं।'].every((t) => TEMPLATES.dispatched.HI.body.includes(t)));
+check('B6 Hindi header/footers', TEMPLATES.confirmation.HI.header === 'पशुसेवा' && TEMPLATES.dispatched.HI.header === 'पशुसेवा' && TEMPLATES.confirmation.HI.footer === 'ऑर्डर की पुष्टि' && TEMPLATES.dispatched.HI.footer === 'डिस्पैच सूचना');
 check('dispatch templates state the 5–7 day estimate as an estimate',
   TEMPLATES.dispatched.EN.body.includes('approximately 5–7 days') && TEMPLATES.dispatched.EN.body.includes('estimate, not guaranteed') &&
   TEMPLATES.dispatched.HI.body.includes('5–7') && TEMPLATES.dispatched.HI.body.includes('अनुमान'));
@@ -105,7 +107,7 @@ const cases: [string, ReturnType<typeof pay>, 'UNPAID' | 'PARTIAL' | 'PAID' | 'F
   ['COD unpaid', pay(1250, 0, 'PENDING'), 'UNPAID', 'Amount to pay on delivery: ₹1,250', 'Unpaid'],
   ['partially paid', pay(1250, 500, 'PARTIAL'), 'PARTIAL', 'Paid ₹500, balance due on delivery: ₹750', 'Partially paid'],
   ['fully prepaid', pay(1250, 1250, 'PAID'), 'PAID', 'Amount paid: ₹1,250', 'Paid'],
-  ['free ₹0 order', pay(0, 0, 'PAID'), 'FREE', 'Nothing to pay', 'Paid'],
+  ['free ₹0 order', pay(0, 0, 'PAID'), 'FREE', 'Nothing to pay', 'Free order'],
   ['payment reversed to ₹0', pay(1250, 0, 'PENDING'), 'UNPAID', 'Amount to pay on delivery: ₹1,250', 'Unpaid'],
   ['overpaid (clamped)', pay(1000, 1200, 'PAID'), 'PAID', 'Amount paid: ₹1,000', 'Paid'],
 ];
@@ -116,6 +118,22 @@ for (const [name, p, kind, line, status] of cases) {
     en.params[4] === Q12.EN[kind] && hi.params[4] === Q12.HI[kind] && en.params[5] === status && en.params[6] === line,
     JSON.stringify([en.params[4], hi.params[4], en.params[5], en.params[6]]));
 }
+const B6_HI: Record<string, [string, string]> = {
+  UNPAID: ['भुगतान बाकी है', 'डिलीवरी पर देय राशि: ₹1,250'],
+  PARTIAL: ['आंशिक भुगतान', '₹500 जमा, डिलीवरी पर बाकी: ₹750'],
+  PAID: ['भुगतान हो चुका है', 'जमा की गई राशि: ₹1,250'],
+  FREE: ['निःशुल्क ऑर्डर', 'कोई राशि देय नहीं'],
+};
+for (const [kind, p] of [['UNPAID', pay(1250, 0, 'PENDING')], ['PARTIAL', pay(1250, 500, 'PARTIAL')], ['PAID', pay(1250, 1250, 'PAID')], ['FREE', pay(0, 0, 'PAID')]] as const) {
+  const hi = buildDispatchParams(disp(p), 'HI');
+  check(`B6 Hindi ${kind}: status "${B6_HI[kind][0]}", amount "${B6_HI[kind][1]}"`, hi.params[5] === B6_HI[kind][0] && hi.params[6] === B6_HI[kind][1], JSON.stringify([hi.params[5], hi.params[6]]));
+}
+for (const lang of ['EN', 'HI'] as const) {
+  const free = buildDispatchParams(disp(pay(0, 0, 'PAID')), lang);
+  check(`free order is never called "Paid" (${lang})`, !/^(Paid|भुगतान हो चुका)/.test(free.params[5]));
+}
+const paidHi = buildDispatchParams(disp(pay(1250, 1250, 'PAID')), 'HI');
+check('Hindi paid order: payment method (Q12) and status differ (no repetition)', paidHi.params[4] === 'पूरा भुगतान हो चुका है' && paidHi.params[5] === 'भुगतान हो चुका है');
 check('dispatch: never shows a negative balance', !/-₹|₹-/.test(buildDispatchParams(disp(pay(1000, 1200, 'PAID')), 'EN').params.join(' ')));
 check('dispatch: no Article No. → "Will be shared soon" / Hindi fallback',
   buildDispatchParams(disp(pay(100, 0, 'PENDING'), null), 'EN').params[7] === TRACKING_FALLBACK.EN &&
@@ -150,7 +168,7 @@ if (reviewIdx > 0 && process.argv[reviewIdx + 1]) {
   const out: string[] = [];
   const block = (title: string, def: typeof TEMPLATES.confirmation.EN, params: string[]) => {
     const r = renderTemplate(def, params);
-    out.push(`### ${title}`, '', `Status: **${def.status === 'DRAFT' ? 'DRAFT — needs your approval (B6)' : 'approved text (§4.1/§4.2)'}** · Meta language \`${def.metaLanguage}\` · ${r.body.length}/${BODY_MAX} characters`, '', '```', `[Header] ${r.header}`, '', r.body, '', `[Footer] ${r.footer}`, '```', '');
+    out.push(`### ${title}`, '', `Status: **${def.language === 'HI' ? 'Hindi wording approved (B6)' : 'approved text (§4.1/§4.2)'}** · Meta language \`${def.metaLanguage}\` · ${r.body.length}/${BODY_MAX} characters`, '', '```', `[Header] ${r.header}`, '', r.body, '', `[Footer] ${r.footer}`, '```', '');
   };
   out.push('# Phase 32 — WhatsApp message samples for review (B6)', '', 'Generated from `backend/src/services/messaging/templates` by `templates.verify.ts --write-review`.', 'Example order: Ram Lal, ORD-2026-001025, 3 items. Names, products, order numbers, units and amounts are inserted exactly as stored, in English, in both languages.', '');
   block('Order confirmation — English (`ps_order_confirmation`, `en`)', TEMPLATES.confirmation.EN, cEN.params);
