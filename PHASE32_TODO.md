@@ -1537,6 +1537,17 @@ the user's GO.** This replaces options A/B/C above.
   is hidden. Tell me if you want a weight snapshot on order items; that would be a
   separate, additive change.
 
+### 20.2a Safeguards set by the user on accepting Q17 + Q18 (2026-11-25)
+
+1. **Q17:** keep all 20 approved templates and the exact product-line behaviour.
+   **No "• " bullet prefixes** unless Meta actually rejects the templates **and** the
+   user approves that change.
+2. **Q18:** `utils/orderWeight.ts` stays the **single source of truth** for total
+   weight. Any future screen, report, export or message must reuse it and never
+   calculate weight on its own.
+3. **Production:** no push, deployment, migration or real WhatsApp sending until the
+   controlled A4/F steps.
+
 ### 20.3 Decisions needed
 
 - **Q17: DECIDED** (5 sizes, line 5 joined by "; ", see above). Waiting for GO.
