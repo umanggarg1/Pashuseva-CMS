@@ -51,6 +51,14 @@ export const PERMISSIONS = [
   // DEFAULT_MANAGER_PERMISSIONS below and from the picker's business-data grid;
   // it's granted explicitly, never bundled into "Full Access."
   'employee:manage-permissions',
+  // Phase 32 C5 (Q9): resend an order's WhatsApp message by hand (Resend dialog).
+  // Default for Employees and Managers; backfilled once to everyone who already had
+  // order:update (migration 20261125120000_phase32_message_resend_permission).
+  'message:resend',
+  // Phase 32 C5 (Q9): the Admin Messaging page — pause/resume sending, resolve UNKNOWN
+  // messages, refresh template statuses. Admin-only by default: deliberately NOT in
+  // DEFAULT_MANAGER_PERMISSIONS and never backfilled (Admin bypasses authorize()).
+  'message:manage',
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -86,6 +94,9 @@ export const DEFAULT_EMPLOYEE_PERMISSIONS: Permission[] = [
   // who wants to restrict a specific Employee's search to their own scope.
   'order:customerSearchAll',
   'product:view',
+  // Phase 32 C5 (Q9): resending an order's WhatsApp message is part of normal order
+  // work for anyone who handles orders.
+  'message:resend',
 ];
 
 // Not auto-applied anywhere — purely the pre-checked starting point the Admin sees
@@ -94,7 +105,9 @@ export const DEFAULT_EMPLOYEE_PERMISSIONS: Permission[] = [
 // uncheck any of these before approving. Every *business* permission, but not
 // employee:manage-permissions — that stays an explicit, separate grant.
 export const DEFAULT_MANAGER_PERMISSIONS: Permission[] = PERMISSIONS.filter(
-  (p) => p !== 'employee:manage-permissions'
+  // Phase 32 C5: message:manage (the Admin Messaging page) is Admin-only by default,
+  // like employee:manage-permissions — an explicit, separate grant, never bundled.
+  (p) => p !== 'employee:manage-permissions' && p !== 'message:manage'
 );
 
 export type UpdatePermissionsInput = z.infer<typeof updatePermissionsSchema>;

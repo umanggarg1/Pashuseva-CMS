@@ -1295,7 +1295,20 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   - The entry is written in the order transaction at enqueue (inside the savepoint).
   - Tests **14/14**; regressions: worker 51/51, integration OFF 14/14 + ON 22/22,
     workflows 17/17 + 17/17.
-- [ ] C5. Permissions `message:resend`, `message:manage` in `permission.schema.ts` + defaults (Q9) + permissions UI labels + a **grant backfill migration for existing users** (`message:resend` to existing active Managers/Employees, following `20260910100000_backfill_order_export_permission`; Admin passes all checks already); the exact rule is confirmed against that migration in C5
+- [x] C5. **DONE 2026-11-25.**
+  - `message:resend` and `message:manage` added to `PERMISSIONS`. `message:resend` is
+    in the Employee and Manager defaults; **`message:manage` is excluded from the
+    Manager defaults** (Admin-only, like `employee:manage-permissions`).
+  - One-time grant migration `20261125120000_phase32_message_resend_permission`
+    (data-only, BEGIN/COMMIT, `ON CONFLICT DO NOTHING`): `message:resend` to every
+    Manager/Employee with `order:update` (**21** on the local copy of production);
+    `message:manage` to nobody.
+  - Tests **11/11**: exactly the eligible users; nobody else; re-running inserts
+    nothing; defaults; Admin bypass. Only `UserPermission` (+21) and
+    `_prisma_migrations` (+1) changed, and the 552 existing permission rows are
+    byte-identical.
+  - The A3-verified local copy `pashuseva` was not modified (test copies apply the
+    migration themselves).
 - [ ] C6. Routes `/orders/:id/messages*` (**every one** behind `checkOrderAccess` / the order data-scope, same as other order routes), `/messaging/*` (§14)
 - [ ] C7. Webhook router (§12): raw body, HMAC, zod, dedupe, monotonic, reconciliation, STOP → consent NO, rate limit; mounted before `express.json()`
 
@@ -1314,6 +1327,7 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
 - [ ] D5. **Resend dialog** (§13): type, **current WhatsApp number (no picker; link to Customer Details to change it)**, previous status, required reason, text preview, delivered warning, confirm with `previewHash`; on 409 show the new preview and ask again; button disabled while pending; idempotency key
 - [ ] D6. Admin **Messaging** page (Settings area, `message:manage`): enabled/paused state + Resume, rate-limited-until, template approval statuses + Refresh, **queue size + oldest queued age**, a **Needs attention** list (UNKNOWN / FAILED / late-response notes) with Resolve actions
 - [ ] D7. Types + API client + react-query hooks for all of the above
+- [ ] D8. **Permission picker (`frontend/src/lib/permissions.ts`): add `message:resend` ("Resend WhatsApp message") and `message:manage` ("Manage WhatsApp messaging").** Required before release: the picker saves a user's FULL permission list, so without these two entries saving anyone's permissions would silently remove `message:resend` (found in C5).
 
 ### E. Mandatory tests before production (local Docker PG + dry-run, plus a fake-Meta stub server for error responses)
 - [ ] E1. Create an order twice with the same idempotency key → one order, one confirmation
