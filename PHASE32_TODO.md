@@ -1422,6 +1422,37 @@ line breaks must be in the **fixed template text**, which means each product nee
 - §17 step 8 becomes 20 templates.
 - Tests (E42) are added for every variant and language.
 
+**Q17 DECISION (user, 2026-11-25): 5 template sizes. Confirmed by Claude; NOT
+implemented, waiting for the user's explicit GO.** This replaces options A/B/C above.
+
+- **20 Meta templates:** sizes 1, 2, 3, 4, 5 products × {confirmation, dispatch} ×
+  {en, hi}. Names `ps_order_confirmation_1`…`_5` and `ps_order_dispatched_1`…`_5`.
+- **1–5 products:** template size = number of products; one product per line
+  (product line = `name × qty unit` for the confirmation, `name × qty unit – ₹price`
+  for dispatch).
+- **More than 5 products:** the 5-product template.
+  - Lines 1–4 are the first four products, one each.
+  - **Line 5 is product 5 + every remaining product, joined by "; "** on one line.
+    Product names contain no ";" today.
+- **No product is ever omitted and no product name is ever shortened.** The current
+  80-character name cap is removed.
+- **No line contains a line break or tab.** Enforced by `paramProblem()` before
+  sending.
+- **1024-character limit:** only if the complete message would exceed it, line 5
+  keeps as many whole products as fit, then ends with "… +N more items" / "… +N और
+  उत्पाद". Lines 1–4 are always complete.
+- **Last-resort edge case** (confirmed with the user): a single product line so long
+  that the message can't fit even with it alone (real data: longest name 33 chars,
+  line ~60) is shortened with "…". This is the only case where text is cut.
+- Example (7 products), line 5:
+  `Product E × 1 Bag – ₹350; Product F × 2 Bags – ₹500; Product G × 1 Bag – ₹150`.
+- Same logic for English and Hindi, for both message types.
+- `OutboundMessage.templateName` stores the exact sized name.
+- §17 setup step 8 becomes 20 templates. Each size is checked against Meta's
+  "too many variables for the length" rule (2388293) before submission.
+- Tests (E42): every size 1–5 × type × language, 6/7/12-product orders (nothing
+  omitted, "; " on line 5 only), the 1024 fallback, and no newline/tab in any line.
+
 ### 20.2 Total Weight shown only when every product's weight is known (everywhere)
 
 **Requirement.**
@@ -1469,8 +1500,7 @@ line breaks must be in the **fixed template text**, which means each product nee
 
 ### 20.3 Decisions needed
 
-- **Q17:** product-per-line design, **A** (template variants, recommended), B or C? If
-  A, the maximum is 5 product lines (the 5th becomes "+N more" when there are more)?
+- **Q17: DECIDED** (5 sizes, line 5 joined by "; ", see above). Waiting for GO.
 - **Q18:** total-weight rule as designed in §20.2, with ML/L counting as "no known
   weight", applied to the parcel label now (the only total-weight display), and as
   the mandatory rule for any future screen?
