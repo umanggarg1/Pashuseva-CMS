@@ -18,6 +18,11 @@ interface WhatsappFields {
   whatsappConsentSource?: 'STAFF' | 'CUSTOMER_STOP_REPLY' | 'BACKFILL';
 }
 
+// Phase 32 D1: creating a customer REQUIRES an explicit consent record — the type
+// makes any create path that forgets it a compile error, not a silent default.
+type NewCustomerWhatsappFields = Omit<WhatsappFields, 'whatsappConsent' | 'whatsappConsentAt' | 'whatsappConsentSource'> &
+  Required<Pick<WhatsappFields, 'whatsappConsent' | 'whatsappConsentAt' | 'whatsappConsentSource'>>;
+
 interface AddressInput {
   line1: string;
   line2?: string;
@@ -190,6 +195,8 @@ export const customerRepository = {
         orders: { include: { payments: { select: { amount: true } } } },
         assignedEmployees: { include: { employee: { select: { id: true, name: true } } } },
         assignedManager: { select: { id: true, name: true } },
+        // Phase 32 D1: "last changed by X on date" on the customer form.
+        whatsappConsentBy: { select: { id: true, name: true } },
       },
     });
   },
@@ -259,7 +266,7 @@ export const customerRepository = {
       assignedEmployeeId?: number;
       phones: PhoneInput[];
       address?: AddressInput;
-    } & WhatsappFields,
+    } & NewCustomerWhatsappFields,
     client: PrismaClientOrTx = prisma
   ) {
     return client.customer.create({

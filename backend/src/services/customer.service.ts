@@ -321,16 +321,15 @@ export const customerService = {
       address: input.address,
       // Phase 32 C1: consent recorded by staff (stamped who/when/STAFF) + language.
       preferredLanguage: input.preferredLanguage,
-      ...(input.whatsappConsent ? staffConsentFields(input.whatsappConsent, actingUser.id) : {}),
+      // Phase 32 D1: always present (required by the schema).
+      ...staffConsentFields(input.whatsappConsent, actingUser.id),
     });
     await customerRepository.recordActivity(customer.id, 'Customer created', actingUser.id);
-    if (input.whatsappConsent) {
-      await customerRepository.recordActivity(customer.id, CONSENT_RECORDED_ACTIVITY, actingUser.id, {
-        from: consentLabel(null),
-        to: consentLabel(input.whatsappConsent),
-        source: 'STAFF',
-      });
-    }
+    await customerRepository.recordActivity(customer.id, CONSENT_RECORDED_ACTIVITY, actingUser.id, {
+      from: consentLabel(null),
+      to: consentLabel(input.whatsappConsent),
+      source: 'STAFF',
+    });
     return customer;
   },
 

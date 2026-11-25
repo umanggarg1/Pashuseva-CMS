@@ -26,6 +26,8 @@ import {
 } from '@/components/ui/form';
 import { apiFetch, ApiError } from '@/lib/api';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
+import { refineWhatsapp, whatsappFormFields } from '@/lib/whatsapp';
+import { PhoneRowErrors, WhatsappConsentFields, WhatsappPhoneToggle } from '@/components/WhatsappCustomerFields';
 
 export interface CreatedCustomer {
   id: number;
@@ -46,9 +48,11 @@ const customerFormSchema = z.object({
         phone: z.string().min(1, 'Phone number is required'),
         label: z.string().optional(),
         isPrimary: z.boolean(),
+        isWhatsapp: z.boolean(),
       })
     )
     .min(1, 'At least one phone number is required'),
+  ...whatsappFormFields,
   line1: z.string().min(1, 'Address is required'),
   city: z.string().min(1, 'City is required'),
   district: z.string().optional(),
@@ -56,7 +60,31 @@ const customerFormSchema = z.object({
   pincode: z.string().min(1, 'Pincode is required'),
   landmark: z.string().optional(),
   notes: z.string().optional(),
-});
+})
+  // Phase 32 D1: a new customer has no saved consent, so a YES always needs the
+  // staff member's confirmation that the customer actually agreed.
+  .superRefine(refineWhatsapp(null));
+
+type CustomerFormValues = z.infer<typeof customerFormSchema>;
+
+// Phase 32 D1 defaults (Q2): the first phone is the WhatsApp number, consent YES is
+// preselected (NO stays one click away) but is only accepted once staff tick the
+// confirmation, message language English.
+const DEFAULT_VALUES: CustomerFormValues = {
+  name: '',
+  email: '',
+  phones: [{ phone: '', label: 'Personal', isPrimary: true, isWhatsapp: true }],
+  whatsappConsent: 'YES',
+  whatsappConfirmed: false,
+  preferredLanguage: 'EN',
+  line1: '',
+  city: '',
+  district: '',
+  state: '',
+  pincode: '',
+  landmark: '',
+  notes: '',
+};
 
 // Reusable "add a customer without leaving the current flow" dialog — built for
 // CustomerPicker (Create Order) but deliberately generic so it can be dropped into
@@ -73,20 +101,9 @@ export default function AddCustomerDialog({
   const [open, setOpen] = useState(defaultOpen ?? false);
   const [ignoreDuplicate, setIgnoreDuplicate] = useState(false);
 
-  const form = useForm<z.infer<typeof customerFormSchema>>({
+  const form = useForm<CustomerFormValues>({
     resolver: zodResolver(customerFormSchema),
-    defaultValues: {
-      name: '',
-      email: '',
-      phones: [{ phone: '', label: 'Personal', isPrimary: true }],
-      line1: '',
-      city: '',
-      district: '',
-      state: '',
-      pincode: '',
-      landmark: '',
-      notes: '',
-    },
+    defaultValues: DEFAULT_VALUES,
   });
 
   const { fields, append, remove } = useFieldArray({ control: form.control, name: 'phones' });
@@ -106,7 +123,7 @@ export default function AddCustomerDialog({
   const possibleDuplicate = duplicateQuery.data?.data[0];
 
   const createCustomer = useMutation({
-    mutationFn: (values: z.infer<typeof customerFormSchema>) =>
+    mutationFn: (values: CustomerFormValues) =>
       apiFetch<CreatedCustomer>('/customers', {
         method: 'POST',
         body: JSON.stringify({
@@ -114,6 +131,9 @@ export default function AddCustomerDialog({
           email: values.email || undefined,
           notes: values.notes || undefined,
           phones: values.phones,
+          // Phase 32 D1: always an explicit YES or NO — the API rejects a create without it.
+          whatsappConsent: values.whatsappConsent,
+          preferredLanguage: values.preferredLanguage,
           address: {
             line1: values.line1,
             city: values.city,
@@ -206,6 +226,7 @@ export default function AddCustomerDialog({
                     >
                       Primary
                     </Button>
+                    <WhatsappPhoneToggle index={index} />
                     <Button
                       type="button"
                       variant="ghost"
@@ -223,16 +244,14 @@ export default function AddCustomerDialog({
                 variant="outline"
                 size="sm"
                 className="mt-2"
-                onClick={() => append({ phone: '', label: 'Alternate', isPrimary: false })}
+                onClick={() => append({ phone: '', label: 'Alternate', isPrimary: false, isWhatsapp: false })}
               >
                 <Plus className="mr-1 h-4 w-4" /> Add another phone
               </Button>
-              {form.formState.errors.phones && (
-                <p className="mt-1 text-sm font-medium text-destructive">
-                  {form.formState.errors.phones.message}
-                </p>
-              )}
+              <PhoneRowErrors />
             </div>
+
+            <WhatsappConsentFields savedConsent={null} />
 
             {possibleDuplicate && (
               <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm">

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -35,12 +35,22 @@ import EmployeeMultiSelect from '@/components/EmployeeMultiSelect';
 import { apiFetch, ApiError } from '@/lib/api';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 import { TRASH_RETENTION_DAYS } from '@/lib/trash';
+import {
+  describeConsentChange,
+  refineWhatsapp,
+  whatsappFormFields,
+  type ConsentSource,
+  type MessageLanguage,
+  type WhatsappConsent,
+} from '@/lib/whatsapp';
+import { PhoneRowErrors, WhatsappConsentFields, WhatsappPhoneToggle } from '@/components/WhatsappCustomerFields';
 
 interface Phone {
   id: number;
   phone: string;
   label: string | null;
   isPrimary: boolean;
+  isWhatsapp: boolean;
 }
 
 interface Address {
@@ -80,6 +90,12 @@ interface CustomerDetailData {
   assignedEmployees?: { employeeId: number; employee: { id: number; name: string | null } }[];
   assignedManager?: { id: number; name: string | null } | null;
   createdAt: string;
+  // Phase 32 D1
+  whatsappConsent: WhatsappConsent;
+  preferredLanguage: MessageLanguage;
+  whatsappConsentAt: string | null;
+  whatsappConsentSource: ConsentSource | null;
+  whatsappConsentBy?: { id: number; name: string | null } | null;
 }
 
 interface NoteRow {
@@ -587,7 +603,7 @@ function ActivityPanel({
   );
 }
 
-const editSchema = z.object({
+const editBaseSchema = z.object({
   name: z.string().min(1, 'Name is required'),
   email: z.string().email().optional().or(z.literal('')),
   notes: z.string().optional(),
@@ -597,9 +613,11 @@ const editSchema = z.object({
         phone: z.string().min(1),
         label: z.string().optional(),
         isPrimary: z.boolean(),
+        isWhatsapp: z.boolean(),
       })
     )
     .min(1),
+  ...whatsappFormFields,
   line1: z.string().min(1, 'Address is required'),
   city: z.string().min(1, 'City is required'),
   district: z.string().optional(),
@@ -607,14 +625,21 @@ const editSchema = z.object({
   pincode: z.string().min(1, 'Pincode is required'),
   landmark: z.string().optional(),
 });
+type EditValues = z.infer<typeof editBaseSchema>;
 
 function EditCustomerDialog({ customer }: { customer: CustomerDetailData }) {
   const [open, setOpen] = useState(false);
   const queryClient = useQueryClient();
 
   const currentAddress = customer.addresses[0];
+  // Phase 32 D1: changing consent to YES needs the staff confirmation; keeping the
+  // saved YES (or changing to NO) does not.
+  const editSchema = useMemo(
+    () => editBaseSchema.superRefine(refineWhatsapp(customer.whatsappConsent)),
+    [customer.whatsappConsent]
+  );
 
-  const form = useForm<z.infer<typeof editSchema>>({
+  const form = useForm<EditValues>({
     resolver: zodResolver(editSchema),
     defaultValues: {
       name: customer.name,
@@ -624,7 +649,12 @@ function EditCustomerDialog({ customer }: { customer: CustomerDetailData }) {
         phone: p.phone,
         label: p.label ?? '',
         isPrimary: p.isPrimary,
+        // Sent back on every save: leaving it out would clear the WhatsApp flag.
+        isWhatsapp: p.isWhatsapp,
       })),
+      whatsappConsent: customer.whatsappConsent,
+      whatsappConfirmed: false,
+      preferredLanguage: customer.preferredLanguage,
       line1: currentAddress?.line1 ?? '',
       city: currentAddress?.city ?? '',
       district: currentAddress?.district ?? '',
@@ -637,7 +667,7 @@ function EditCustomerDialog({ customer }: { customer: CustomerDetailData }) {
   const { fields, append, remove } = useFieldArray({ control: form.control, name: 'phones' });
 
   const updateCustomer = useMutation({
-    mutationFn: (values: z.infer<typeof editSchema>) =>
+    mutationFn: (values: EditValues) =>
       apiFetch(`/customers/${customer.id}`, {
         method: 'PATCH',
         body: JSON.stringify({
@@ -645,6 +675,10 @@ function EditCustomerDialog({ customer }: { customer: CustomerDetailData }) {
           email: values.email || undefined,
           notes: values.notes || undefined,
           phones: values.phones,
+          // Phase 32 D1: consent is sent only when staff changed it (a plain re-save
+          // must not re-stamp who/when); the language is always sent (unchanged = no-op).
+          ...(values.whatsappConsent !== customer.whatsappConsent && { whatsappConsent: values.whatsappConsent }),
+          preferredLanguage: values.preferredLanguage,
           address: {
             line1: values.line1,
             city: values.city,
@@ -740,6 +774,7 @@ function EditCustomerDialog({ customer }: { customer: CustomerDetailData }) {
                     >
                       Primary
                     </Button>
+                    <WhatsappPhoneToggle index={index} />
                     <Button
                       type="button"
                       variant="ghost"
@@ -757,11 +792,14 @@ function EditCustomerDialog({ customer }: { customer: CustomerDetailData }) {
                 variant="outline"
                 size="sm"
                 className="mt-2"
-                onClick={() => append({ phone: '', label: 'Alternate', isPrimary: false })}
+                onClick={() => append({ phone: '', label: 'Alternate', isPrimary: false, isWhatsapp: false })}
               >
                 <Plus className="mr-1 h-4 w-4" /> Add Phone
               </Button>
+              <PhoneRowErrors />
             </div>
+
+            <WhatsappConsentFields savedConsent={customer.whatsappConsent} lastChange={describeConsentChange(customer)} />
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <FormField

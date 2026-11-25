@@ -1360,7 +1360,7 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     3/3.
 
 ### D. Frontend
-- [ ] D1. **Also: make `whatsappConsent` REQUIRED on customer create in the API (`createCustomerSchema`/inline new customer), in the same step as the form change (C1 kept it optional so today's screens keep working).** **D1 conditions (user, accepting C1, 2026-11-25):**
+- [x] D1. **Also: make `whatsappConsent` REQUIRED on customer create in the API (`createCustomerSchema`/inline new customer), in the same step as the form change (C1 kept it optional so today's screens keep working).** **D1 conditions (user, accepting C1, 2026-11-25):**
   - (a) every customer-create path must send an explicit consent value: Add Customer,
     the inline new customer on Create Order, and **any other or future create path**;
     after D1 no path may silently create a customer without one (the API rejects it);
@@ -1368,6 +1368,49 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     the customer's actual agreement, not automatic permission because the form was
     saved;
   - (c) test: an API create without consent → 400 on every create path. Customer form (AddCustomerDialog + CustomerDetail edit): a **WhatsApp** toggle next to **Primary** on each phone row (at most one; the first row is ON by default per Q2); **WhatsApp Message Language** dropdown (`English` default / `Hindi`); **WhatsApp Consent** with two radio options, `YES – Customer agreed` (**preselected on create**) / `NO – Customer declined`; on edit it shows the current value + "last changed by X on date". Both fields also appear in the inline new-customer section of Create Order. The CRM UI stays English
+  - **Done (2026-11-25, local only).** Customer-create paths, found by a code search
+    for every `customerRepository.create` caller (there are exactly two):
+    - **POST /customers**: the Add Customer dialog, opened from the Customers page and
+      from Create Order's customer picker (this is Create Order's "inline new
+      customer"; no screen calls the API's `newCustomer` today);
+    - **POST /orders with `newCustomer`**: API only.
+    Both share `createCustomerSchema`, where `whatsappConsent` is now required (YES
+    or NO). A missing, null, empty, lower-case or other value returns 400 "WhatsApp
+    consent is required: send "YES" (customer agreed) or "NO" (customer declined)",
+    and nothing is created: no customer, no phone, no order. The repository's
+    `create()` type now requires the consent value, its timestamp and its source, so
+    a future create path that leaves them out fails to compile. Every create stamps
+    who and when (source STAFF) and writes one "WhatsApp consent recorded" history
+    entry. Edit, reorder and orders for existing customers are unchanged.
+  - Frontend:
+    - `lib/whatsapp.ts` holds the shared rules (a client copy of the backend
+      phone-number check).
+    - `components/WhatsappCustomerFields.tsx` holds the WhatsApp section and the
+      per-phone toggle.
+    - Add Customer: YES is preselected and NO is available. While YES is selected,
+      saving needs a ticked box: "I asked the customer, and they agreed to receive
+      order updates on WhatsApp". It starts unticked and resets on every change.
+      This makes the preselected YES reflect the customer's actual agreement, per
+      condition (b).
+    - The first phone is the WhatsApp number by default (Q2). At most one phone can
+      be the WhatsApp number, and an invalid number shows an error before sending.
+    - Message language: English by default, or Hindi. A note says names and products
+      stay in English and the CRM stays English.
+    - Edit Customer: shows "Saved: … · Last changed by X on date" (or "Customer
+      replied STOP…"). Changing to YES needs the same confirmation; keeping YES or
+      changing to NO does not. Consent is sent only when it changed, so a plain
+      re-save does not re-stamp it.
+    - **Fixes a latent bug:** the edit form previously left out `isWhatsapp`, which
+      would have cleared the WhatsApp flag on every save. It now always sends it.
+  - Tests:
+    - API **37/37**: both paths × Admin and Employee × 6 invalid forms → 400 with
+      nothing created; YES and NO → 201 with the stamp and history entry. Existing
+      customer order, edit and reorder unaffected.
+    - Browser (Playwright, local only) **22/22**: Customers page, Create Order
+      picker and Edit flows, checking the request bodies and the database.
+    - Regressions: integration 14/14 + 22/22, workflows 17/17 + 17/17 (the workflow
+      script now sends consent NO when it creates customers), worker 51/51,
+      activity 14/14, C6 38/38 + 3/3, webhook 29/29.
 - [ ] D2. WhatsApp icon beside flagged numbers in CustomerDetail, CustomerPicker, GlobalSearch and the OrderDetail customer card; a **Consent: YES / NO** badge (NO shown in red)
 - [ ] D3. Create Order: a hint "Confirmation will be sent on WhatsApp to 98xxxx3210 (Hindi)", or an amber "No WhatsApp number / WhatsApp consent is NO, no message will be sent"; for an existing customer it shows the saved consent and language (no consent field); **post-save toast with two separate lines: "Order saved: ORD-…" and "WhatsApp: Queued for sending / Not sent: <reason>"** (§0.1, from `whatsapp` in the create response); `Idempotency-Key` kept in **sessionStorage** for the Create Order page, cleared only on a successful response, so a page refresh after a lost response reuses it (§19.2); a 422 shows "This order may already exist: ORD-…, open it". The same for the Reorder button
 - [ ] D4. OrderDetail **WhatsApp messages** card (§0.1): rows per message (type, masked number, language, status chip with time, reason for FAILED/SKIPPED, next retry time for RETRY_WAIT, "resend of #", by whom); **status help text per §0.1 (SENT explicitly "not yet delivered")**; auto-refresh every 10 s while any row is QUEUED/PROCESSING/RETRY_WAIT/SENT

@@ -44,6 +44,13 @@ const phonesSchema = z
 
 // Phase 32 C1: staff-recorded consent (two options only) and message language.
 export const whatsappConsentSchema = z.enum(['YES', 'NO']);
+// Phase 32 D1: on CREATE the consent is mandatory on every path — staff must record
+// what the customer actually said; the API never falls back to a default.
+export const CONSENT_REQUIRED_MESSAGE =
+  'WhatsApp consent is required: send "YES" (customer agreed) or "NO" (customer declined)';
+const requiredConsentSchema = z.enum(['YES', 'NO'], {
+  errorMap: () => ({ message: CONSENT_REQUIRED_MESSAGE }),
+});
 export const messageLanguageSchema = z.enum(['EN', 'HI']);
 
 const addressSchema = z.object({
@@ -63,11 +70,10 @@ export const createCustomerSchema = z.object({
   notes: z.string().optional(),
   phones: phonesSchema,
   address: addressSchema.optional(),
-  // Phase 32 C1. Optional for now so today's Add Customer / Create Order screens keep
-  // working unchanged (an omitted value keeps the safe database default NO, which
-  // never sends anything). It becomes REQUIRED on create together with the frontend
-  // step D1, which preselects YES — so the screen and the API change at the same time.
-  whatsappConsent: whatsappConsentSchema.optional(),
+  // Phase 32 D1: REQUIRED on create (was optional in C1). This schema is also the
+  // inline `newCustomer` of POST /orders (customerInputSchema below), so both create
+  // paths reject a missing or invalid value with 400.
+  whatsappConsent: requiredConsentSchema,
   preferredLanguage: messageLanguageSchema.optional(),
 });
 
