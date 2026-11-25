@@ -1,6 +1,6 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Progress: A0 · A1 · A2 · A3 · B0 · B1 · B2 · B3 · B4 done (all local; nothing pushed, no deploy; 0 real WhatsApp requests). B6 Hindi wording approved. Q17 (20 product-per-line templates) and Q18 (central total-weight rule) implemented and verified locally (§20). Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
+**Progress: A0 · A1 · A2 · A3 · B0 · B1 · B2 · B3 · B4 done (all local; nothing pushed, no deploy; 0 real WhatsApp requests). B6 Hindi wording approved. Q17 + Q18 implemented (§20). B5 · B7 · C2 · C3 done (message records created inside order creation/reorder/dispatch; QUEUED or SKIPPED; nothing sent — the dispatcher B8 is not built). Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
 
 **Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
@@ -1169,7 +1169,12 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     E19a (identical non-translated values) and dirty data.
   - Rendered samples for review: **`PHASE32_TEMPLATES_REVIEW.md`** (regenerate with
     `--write-review`).
-- [ ] B5. `snapshot.ts`: build the confirmation/dispatch snapshot from `OrderItem` + `getOrderPaymentSummary` (§4.2 table)
+- [x] B5. **DONE 2026-11-25.** `services/messaging/snapshot.ts`
+  `loadOrderMessageSnapshot(tx, orderId)` reads only the saved order through the
+  caller's transaction:
+  - OrderItem name/qty/unit/line total (never the live catalogue)
+  - the customer name and Article No.
+  - money only from B0 `getOrderPaymentSummary`
 - [x] B6. **Hindi wording APPROVED by the user (2026-11-25), implemented.**
   - Header "पशुसेवा"; footers "ऑर्डर की पुष्टि" / "डिस्पैच सूचना".
   - Confirmation: "पशुसेवा से ऑर्डर करने…", "आपके ऑर्डर में शामिल सामान:", two-sentence
@@ -1183,7 +1188,18 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   - Q12 {{5}} unchanged.
   - `templates.verify.ts` **67/67**; samples regenerated in `PHASE32_TEMPLATES_REVIEW.md`.
   - **Not yet submittable to Meta:** the product-list layout is pending (§20.1).
-- [ ] B7. `message.service.ts`: `enqueue(tx, {type, orderId, actingUserId})` (ON CONFLICT DO NOTHING; SKIPPED rows for disabled/no number/consent NO/invalid), `listForOrder`, `preview`, `resend` (all §13 rules), `resolveUnknown`
+- [x] B7. **DONE 2026-11-25** (record creation; list/preview/resend/resolve come with
+  C6/D4/D5). `services/messaging/message.service.ts`:
+  - `enqueueOrderMessage(tx, {type, orderId, actingUserId})` inserts one row per event
+    (unique `eventKey`, `INSERT … ON CONFLICT DO NOTHING`) as QUEUED or SKIPPED.
+  - Skip reasons, checked in order: "WhatsApp disabled" → "Order created before WhatsApp
+    go-live" (no `goLiveAt` or the order is older) → "No WhatsApp consent" → "No valid
+    WhatsApp number".
+  - QUEUED rows store the sized template name, language, 91-number, the exact params, a
+    snapshot, and a 24 h / 72 h expiry.
+  - **Runs inside a SAVEPOINT and never throws:** any messaging error rolls back only
+    the message part and is logged; the order carries on.
+  - Template-approval fallback (Q6) is checked at send time (B8/B9).
 - [ ] B8. `dispatcher.ts`: claim SQL (§9.1), `claimToken`-guarded writes, `sendStartedAt` write-ahead, the 60 s lease guard, pre-send checks (§9.2), send, classify (§9.4, incl. malformed 200 → UNKNOWN), backoff, expiry, shared `rateLimitedUntil`, the ordering policy (§7), concurrency 3, per-row isolation
 - [ ] B8a. `applyStatus.ts`: one monotonic status helper used by the send result, the webhook and reconciliation (§19.5); the late-response handler (§19.3)
 - [ ] B9. `sweeper.ts`: 30 s tick: lock recovery → UNKNOWN, claim, send, template-status refresh every 6 h, error-safe; start in `index.ts`, graceful stop on SIGTERM
@@ -1193,8 +1209,28 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
 ### C. Backend — wiring
 - [ ] C0. `customer.repository` `syncPhones`: also update a row when **only `isWhatsapp`** changed (today it compares only label/isPrimary); **clear the old WhatsApp flag before setting the new one** in the same transaction (so a swap doesn't trip the partial index); map the unique violation (P2002) → 409 "Customer was changed by someone else, reload" (§19.1)
 - [ ] C1. `customer.schema.ts`: `isWhatsapp` (+ valid-number refine, + at-most-one refine), `preferredLanguage`, `whatsappConsent` (enum YES/NO, **required on create**, optional on update; the service stamps `whatsappConsentAt/ById/Source` on every change); customer repository writes them; activity text `9876543210 (primary, WhatsApp)`, consent changes logged with **previous value, new value, employee and timestamp** (STOP logged as "by customer"), language changes logged
-- [ ] C2. `orderService.create` + reorder: response includes `whatsapp: { status, skipReason }` for the post-save toast (§0.1); `Idempotency-Key` + `idempotencyHash` (§19.2: same key + same hash → the existing order, 200; same key + different hash or different user → 422 with the existing order number; concurrent same key → the unique violation is caught → the existing order, or 409 "still being created"); `enqueue(tx, ORDER_CONFIRMATION)` inside the transaction; after commit `void dispatcher.dispatch(id)`
-- [ ] C3. `applyDeliveryStatusChange`: on the NOT_DISPATCHED → DISPATCHED transition only → `enqueue(tx, ORDER_DISPATCHED)` (an order created before go-live → SKIPPED "Order created before WhatsApp go-live", no send, §7.1); the caller dispatches after commit (both `updateDeliveryStatus` and `updateArticleNumber` paths); the re-dispatch activity note (Q5)
+- [x] C2. **DONE 2026-11-25.**
+  - `POST /orders` and `POST /orders/:id/reorder` accept an optional `Idempotency-Key`
+    header (8–128 `[A-Za-z0-9_-]`, otherwise 400). The key + `sha256(user + canonical
+    body)` are stored on the order.
+  - Same key + same body → the existing order (**200**, `idempotentReplay`); different
+    details or another user → **422** naming the original order. Concurrent same key →
+    the unique violation is caught → the existing order.
+  - **No key → exactly as before** (the frontend sends keys in D3). Repeat orders are
+    never blocked.
+  - The confirmation record is created inside the order transaction; the response
+    includes `whatsapp: {status, skipReason}`.
+- [x] C3. **DONE 2026-11-25.** In `applyDeliveryStatusChange`, only on the genuine
+  NOT_DISPATCHED → DISPATCHED transition (delivery-status PATCH and first-Article-No.
+  auto-dispatch), in the same transaction (now 15 s timeout like order creation).
+  - A repeat (Admin correction) creates no record and adds the activity note "WhatsApp
+    dispatch notification not created again (this order already has one) — use Resend
+    if needed".
+  - **Verification** (`D:\pashuseva\backups\phase32-verification\B5-B7-C2-C3-REPORT.md`,
+    disposable copy):
+    - WhatsApp OFF **14/14**, ON (dry-run) **22/22**
+    - existing-code workflows **17/17 OFF and ON**
+    - 0 send attempts
 - [ ] C4. Order activity: "WhatsApp order confirmation sent / delivered / failed: <reason> / skipped: <reason>", the same for dispatch, resend with the user + reason
 - [ ] C5. Permissions `message:resend`, `message:manage` in `permission.schema.ts` + defaults (Q9) + permissions UI labels + a **grant backfill migration for existing users** (`message:resend` to existing active Managers/Employees, following `20260910100000_backfill_order_export_permission`; Admin passes all checks already); the exact rule is confirmed against that migration in C5
 - [ ] C6. Routes `/orders/:id/messages*` (**every one** behind `checkOrderAccess` / the order data-scope, same as other order routes), `/messaging/*` (§14)

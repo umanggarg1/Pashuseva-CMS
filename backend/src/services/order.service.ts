@@ -13,6 +13,8 @@ import { computeDeletionExpiry, TRASH_RETENTION_DAYS } from '../utils/trash';
 import { recalculateCustomerState } from '../utils/customerAutomation';
 import { DEFAULT_DISPATCH_LOCATION, INDIA_POST_ARTICLE_NUMBER_REGEX } from '../constants/delivery';
 import type { Role, OrderStatus, DeliveryStatus, PaymentStatus, DataScope } from '../generated/prisma/enums';
+import { createHash } from 'node:crypto';
+import { enqueueOrderMessage, eventKeyFor } from './messaging/message.service';
 import type {
   CreateOrderInput,
   UpdateOrderInput,
@@ -483,7 +485,18 @@ export const orderService = {
     return order;
   },
 
-  async create(input: CreateOrderInput, actingUser: ActingUser) {
+  // Phase 32 C2: `idempotencyKey` (from the Idempotency-Key header) makes a retried /
+  // double-clicked submission return the order the first one created instead of a
+  // second order (and a second WhatsApp record). It identifies ONE submission of ONE
+  // form — repeat orders for the same customer/products are never blocked (§8).
+  async create(input: CreateOrderInput, actingUser: ActingUser, opts: { idempotencyKey?: string } = {}) {
+    const idempotencyKey = opts.idempotencyKey;
+    const idempotencyHash = idempotencyKey ? hashOrderRequest(actingUser.id, input) : undefined;
+    if (idempotencyKey) {
+      const prior = await orderRepository.findByIdempotencyKey(idempotencyKey);
+      if (prior) return replayIdempotentOrder(prior, idempotencyHash!);
+    }
+
     // Two mutually exclusive paths (enforced by the schema's refine): order for an
     // existing customer (checked/fetched up front, as before), or create the customer
     // and the order together in one transaction (phases.md-adjacent requirement — see
@@ -522,7 +535,9 @@ export const orderService = {
       }
     }
 
-    const order = await prisma.$transaction(async (tx) => {
+    let order;
+    try {
+    order = await prisma.$transaction(async (tx) => {
       let customerId: number;
       let addresses: {
         line1: string;
@@ -605,6 +620,8 @@ export const orderService = {
           estimatedDeliveryCharges: input.estimatedDeliveryCharges,
           items: resolved,
           address,
+          idempotencyKey,
+          idempotencyHash,
         },
         tx
       );
@@ -685,13 +702,35 @@ export const orderService = {
         created.paymentStatus = newStatus;
       }
 
-      return created;
+      // Phase 32 C2: the order-confirmation WhatsApp record, in THIS transaction (it
+      // exists only if the order commits). QUEUED or SKIPPED with the reason; nothing
+      // is sent here. enqueueOrderMessage never throws — a messaging problem can't
+      // block or roll back the order (savepoint inside).
+      const whatsapp = await enqueueOrderMessage(tx, {
+        type: 'ORDER_CONFIRMATION',
+        orderId: created.id,
+        actingUserId: actingUser.id,
+      });
+
+      return Object.assign(created, {
+        whatsapp: { status: whatsapp.status, skipReason: whatsapp.skipReason ?? null },
+      });
     // Default interactive-transaction timeout is 5000ms; against the live Neon
     // serverless DB, inline customer creation (phones + address + activity) on top of
     // per-item stock decrements can genuinely exceed that under normal network latency
     // — confirmed by hitting the real timeout live, not a hypothetical. 15s gives real
     // headroom without masking an actual hang.
     }, { timeout: 15000 });
+    } catch (err) {
+      // Same key submitted twice at the same moment: the second transaction hits the
+      // unique idempotencyKey index (its stock changes roll back with it) — answer
+      // with the order the first one created.
+      if (idempotencyKey && isUniqueViolation(err)) {
+        const prior = await orderRepository.findByIdempotencyKey(idempotencyKey);
+        if (prior) return replayIdempotentOrder(prior, idempotencyHash!);
+      }
+      throw err;
+    }
 
     return order;
   },
@@ -1097,8 +1136,11 @@ export const orderService = {
       throw new HttpError(403, 'You do not have permission to record a payment');
     }
 
-    return prisma.$transaction((tx) =>
-      orderService.applyDeliveryStatusChange(existing, data, actingUser, tx)
+    // Phase 32: 15 s like order creation — the dispatch transition now also writes
+    // the WhatsApp record (a few small queries) inside this transaction.
+    return prisma.$transaction(
+      (tx) => orderService.applyDeliveryStatusChange(existing, data, actingUser, tx),
+      { timeout: 15000 }
     );
   },
 
@@ -1139,6 +1181,30 @@ export const orderService = {
       data.deliveryStatus,
       tx
     );
+
+    // Phase 32 C3: the dispatch WhatsApp record — ONLY on the genuine Not Dispatched →
+    // Dispatched transition (both the delivery-status PATCH and the first-Article-No.
+    // auto-dispatch come through here), in this same transaction. Re-logging
+    // DISPATCHED, later statuses and edits never create one. The unique event key
+    // means an Admin correction (Dispatched → Not Dispatched → Dispatched) or two
+    // simultaneous dispatches can never create a second record (Q5).
+    if (existing.deliveryStatus === 'NOT_DISPATCHED' && data.deliveryStatus === 'DISPATCHED') {
+      const whatsapp = await enqueueOrderMessage(tx, {
+        type: 'ORDER_DISPATCHED',
+        orderId: id,
+        actingUserId: actingUser.id,
+      });
+      if (whatsapp.status !== 'ERROR' && !whatsapp.created) {
+        await orderRepository.recordActivity(
+          id,
+          'WhatsApp dispatch notification not created again (this order already has one) — use Resend if needed',
+          actingUser.id,
+          undefined,
+          undefined,
+          tx
+        );
+      }
+    }
 
     // Phase 17: Delivery Status drives Order Status for normal progression —
     // see DELIVERY_TO_ORDER_STATUS. A cancelled order stays Cancelled regardless
@@ -1377,7 +1443,7 @@ export const orderService = {
     }, { timeout: 15000 });
   },
 
-  async reorder(sourceOrderId: number, actingUser: ActingUser) {
+  async reorder(sourceOrderId: number, actingUser: ActingUser, opts: { idempotencyKey?: string } = {}) {
     const source = await orderRepository.findById(sourceOrderId);
     if (!source) throw new NotFoundError('Order not found');
 
@@ -1401,7 +1467,8 @@ export const orderService = {
         amountPaid: 0,
         notes: undefined,
       },
-      actingUser
+      actingUser,
+      opts
     );
   },
 
@@ -1459,3 +1526,53 @@ export const orderService = {
     return order;
   },
 };
+
+// ── Phase 32 C2: idempotent order creation helpers ─────────────────────────────
+
+// Stable JSON (sorted keys) so the same request always hashes the same.
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value as Record<string, unknown>)
+      .sort()
+      .filter((k) => (value as Record<string, unknown>)[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/** sha256(acting user + canonical request body) — a reused key with different details or by another user won't match. */
+function hashOrderRequest(actingUserId: number, input: unknown): string {
+  return createHash('sha256').update(`${actingUserId}\n${stableStringify(input)}`).digest('hex');
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  return (err as { code?: string })?.code === 'P2002';
+}
+
+type IdempotentOrder = NonNullable<Awaited<ReturnType<typeof orderRepository.findByIdempotencyKey>>>;
+
+/**
+ * The same Idempotency-Key came back: same user + same details → return the order it
+ * already created (with its WhatsApp status), flagged so the controller answers 200;
+ * different details or another user → 422, the original order untouched.
+ */
+async function replayIdempotentOrder(prior: IdempotentOrder, hash: string) {
+  if (prior.idempotencyHash !== hash) {
+    throw new HttpError(
+      422,
+      `This submission key was already used for a different order (${prior.orderNumber}). Reload the page to start a new order.`
+    );
+  }
+  const message = await prisma.outboundMessage.findUnique({
+    where: { eventKey: eventKeyFor('ORDER_CONFIRMATION', prior.id) },
+    select: { status: true, skipReason: true },
+  });
+  return Object.assign(prior, {
+    whatsapp: message
+      ? { status: message.status === 'SKIPPED' ? 'SKIPPED' : 'QUEUED', skipReason: message.skipReason }
+      : { status: 'ERROR', skipReason: null },
+    idempotentReplay: true as const,
+  });
+}

@@ -268,6 +268,9 @@ export const orderRepository = {
       address?: OrderAddressInput;
       articleNumber?: string | null;
       estimatedDeliveryCharges?: number | null;
+      // Phase 32 C2: Idempotency-Key of the request + hash of (user, body).
+      idempotencyKey?: string;
+      idempotencyHash?: string;
     },
     client: PrismaClientOrTx = prisma
   ) {
@@ -285,6 +288,8 @@ export const orderRepository = {
         notes: data.notes,
         articleNumber: data.articleNumber,
         estimatedDeliveryCharges: data.estimatedDeliveryCharges,
+        idempotencyKey: data.idempotencyKey,
+        idempotencyHash: data.idempotencyHash,
         items: { create: data.items },
         ...(data.address && { address: { create: data.address } }),
         ...(data.assignedEmployeeIds &&
@@ -439,6 +444,15 @@ export const orderRepository = {
         cancelledAt: new Date(),
         cancellationReason: data.cancellationReason,
       },
+    });
+  },
+
+  // Phase 32 C2: the order an earlier submission with this Idempotency-Key created
+  // (same shape as create() returns), or null.
+  findByIdempotencyKey(idempotencyKey: string, client: PrismaClientOrTx = prisma) {
+    return client.order.findUnique({
+      where: { idempotencyKey },
+      include: { items: true, address: true },
     });
   },
 
