@@ -223,8 +223,17 @@ export async function processClaimed(c: Claimed, deps: DispatcherDeps = {}): Pro
       return (await release(c)) ? 'RELEASED' : 'LOST_CLAIM';
     }
 
-    // Write-ahead: from here on, Meta MAY receive the message.
-    if (!(await guarded(c, { sendStartedAt: new Date() }))) return 'LOST_CLAIM';
+    // Write-ahead: from here on, Meta MAY receive the message. Conditional on consent
+    // still being YES at this exact moment (C7): a STOP reply or a staff change to NO
+    // that lands after the eligibility check still prevents the send.
+    const started = await prisma.outboundMessage.updateMany({
+      where: { id: c.id, status: 'PROCESSING', claimToken: c.claimToken, customer: { whatsappConsent: 'YES' } },
+      data: { sendStartedAt: new Date() },
+    });
+    if (started.count !== 1) {
+      const still = await prisma.outboundMessage.findFirst({ where: { id: c.id, status: 'PROCESSING', claimToken: c.claimToken }, select: { id: true } });
+      return still ? skip(c, SKIP_REASONS.NO_CONSENT) : 'LOST_CLAIM';
+    }
     sendStarted = true;
 
     const result = await providerFrom(deps).sendTemplate({

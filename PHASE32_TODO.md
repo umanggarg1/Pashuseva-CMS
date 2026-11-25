@@ -1330,7 +1330,34 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     payload.
   - Tests **38/38 ON + 3/3 OFF**, 0 non-local requests. Regressions: integration
     14/14 + 22/22, workflows 17/17 + 17/17, worker 51/51, activity 14/14.
-- [ ] C7. Webhook router (§12): raw body, HMAC, zod, dedupe, monotonic, reconciliation, STOP → consent NO, rate limit; mounted before `express.json()`
+- [x] C7. Webhook router (§12): raw body, HMAC, zod, dedupe, monotonic, reconciliation, STOP → consent NO, rate limit; mounted before `express.json()`
+  - **Done (2026-11-25, local only):** `routes/webhooks/whatsapp.ts` mounted at
+    `/api/webhooks/whatsapp` BEFORE `express.json()`; its own rate limit 2000/min.
+    GET echoes `hub.challenge` only for our verify token (otherwise 403). POST: 503
+    if no app secret; `X-Hub-Signature-256` HMAC over the RAW body with
+    `timingSafeEqual` → 401 and nothing processed; signed but non-JSON or unexpected
+    shape → 200 ignored; database error → 500 so Meta retries.
+  - `services/messaging/webhook.service.ts`: each status report is stored once
+    (unique providerMessageId + status, `skipDuplicates`) **in the same transaction**
+    as its update through the monotonic `applyProviderStatus`. A repeated webhook is a
+    no-op, and a failure part-way stores nothing. Reports only UPDATE the original
+    message, reconciling by `biz_opaque_callback_data` = eventKey (UNKNOWN → SENT).
+    They never create outbound messages and never move a status backwards. A report
+    for an unknown wamid is stored unlinked.
+  - **STOP** ("STOP" in any case, "रोकें", "बंद", with trailing punctuation allowed;
+    "please stop" is not a STOP) from a customer's WhatsApp number does all of this
+    in one transaction:
+    - consent → NO (source CUSTOMER_STOP_REPLY, no staff id);
+    - adds a customer history entry;
+    - every QUEUED / RETRY_WAIT message of that customer → SKIPPED "Customer replied
+      STOP", with order history.
+    The worker's write-ahead `sendStartedAt` is now conditional on consent still
+    being YES, so a message already PROCESSING is stopped too. A repeat STOP is a
+    no-op. Other replies and unknown numbers are ignored.
+  - Tests **29/29** (in-process app on 127.0.0.1, disposable `c7_test`, dry-run,
+    test-only secret/token, 0 non-local requests). Regressions: worker 51/51,
+    activity 14/14, integration 14/14 + 22/22, workflows 17/17 + 17/17, C6 38/38 +
+    3/3.
 
 ### D. Frontend
 - [ ] D1. **Also: make `whatsappConsent` REQUIRED on customer create in the API (`createCustomerSchema`/inline new customer), in the same step as the form change (C1 kept it optional so today's screens keep working).** **D1 conditions (user, accepting C1, 2026-11-25):**

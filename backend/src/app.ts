@@ -4,6 +4,7 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import healthRouter from './routes/health';
 import apiRouter from './routes/api';
+import whatsappWebhookRouter from './routes/webhooks/whatsapp';
 import { errorHandler } from './middleware/errorHandler';
 import config from './config';
 
@@ -21,6 +22,9 @@ app.set('trust proxy', 1);
 // and `credentials: true` are required — the browser rejects wildcard-origin CORS
 // responses on credentialed requests.
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
+// Phase 32 C7: Meta's WhatsApp webhook must see the RAW request body to verify its
+// signature, so it is mounted BEFORE express.json() (it parses the body itself).
+app.use('/api/webhooks/whatsapp', whatsappWebhookRouter);
 app.use(express.json());
 app.use(cookieParser());
 
