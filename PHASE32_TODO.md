@@ -1,6 +1,6 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Progress: A0 · A1 · A2 · A3 · B0 · B1 · B2 · B3 · B4 done (all local; nothing pushed, no deploy; 0 real WhatsApp requests). B6 Hindi wording approved. Q17 + Q18 implemented (§20). B5 · B7 · C2 · C3 done (message records created inside order creation/reorder/dispatch; QUEUED or SKIPPED; nothing sent — the dispatcher B8 is not built). Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
+**Progress: A0 · A1 · A2 · A3 · B0 · B1 · B2 · B3 · B4 done (all local; nothing pushed, no deploy; 0 real WhatsApp requests). B6 Hindi wording approved. Q17 + Q18 implemented (§20). B5 · B7 · C2 · C3 · B8–B11 done: records created inside order creation/reorder/dispatch, sent by the worker (verified only against a fake local Meta server / dry-run; 0 real requests). Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
 
 **Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
@@ -1200,13 +1200,48 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   - **Runs inside a SAVEPOINT and never throws:** any messaging error rolls back only
     the message part and is logged; the order carries on.
   - Template-approval fallback (Q6) is checked at send time (B8/B9).
-- [ ] B8. `dispatcher.ts`: claim SQL (§9.1), `claimToken`-guarded writes, `sendStartedAt` write-ahead, the 60 s lease guard, pre-send checks (§9.2), send, classify (§9.4, incl. malformed 200 → UNKNOWN), backoff, expiry, shared `rateLimitedUntil`, the ordering policy (§7), concurrency 3, per-row isolation
-- [ ] B8a. `applyStatus.ts`: one monotonic status helper used by the send result, the webhook and reconciliation (§19.5); the late-response handler (§19.3)
-- [ ] B9. `sweeper.ts`: 30 s tick: lock recovery → UNKNOWN, claim, send, template-status refresh every 6 h, error-safe; start in `index.ts`, graceful stop on SIGTERM
-- [ ] B10. `circuitBreaker.ts`: **atomic** pause (`UPDATE … WHERE "pausedAt" IS NULL RETURNING`, so only the worker that flips it notifies the Admins) / resume; queue-age alert (oldest QUEUED > 15 min while enabled and not paused → Admin `Notification`, at most once an hour)
-- [ ] B11. `config.ts` `WHATSAPP_*` with conditional requirement; `.env.example`; on startup with `ENABLED=true` + provider `meta` → set `MessagingState.goLiveAt` once (`WHERE "goLiveAt" IS NULL`) (§7.1)
-
-### C. Backend — wiring
+- [x] B8. **DONE 2026-11-25.** `services/messaging/dispatcher.ts`:
+  - **Claiming:** atomic claim (`UPDATE … FOR UPDATE SKIP LOCKED`); a new `claimToken`
+    per claim; every later write is guarded by (id, PROCESSING, claimToken).
+  - **Before the Meta call:** the write-ahead `sendStartedAt`, then the lease guard.
+  - **Re-checked before every attempt, fresh from the database:**
+    - consent
+    - the recipient phone (exists, same customer, still the WhatsApp number, same
+      normalized number)
+    - customer/order not in Trash, order not cancelled, dispatch still valid
+    - go-live, expiry
+    - template approval, with the Q6 Hindi → English fallback rebuilt from the
+      snapshot
+  - **Outcomes:** ACCEPTED → SENT; TEMPORARY → backoff 1/5/15/60 min (Retry-After
+    respected, max 5); PERMANENT → FAILED; CONFIGURATION → re-queued untouched +
+    pause (or only that template); AMBIGUOUS → UNKNOWN, never resent.
+  - A late Meta acceptance after the claim was lost never overwrites (§19.3).
+  - Immediate send after the order/dispatch commits (`kickOrderMessages`,
+    fire-and-forget).
+  - New records are stamped due immediately (fix for app-vs-DB clock skew).
+- [x] B8a. **DONE 2026-11-25.** `services/messaging/applyStatus.ts`
+  `applyProviderStatus()`:
+  - monotonic (SENT < DELIVERED < READ; FAILED only below DELIVERED)
+  - reconciliation via `biz_opaque_callback_data` clears the worker claim
+  - ready for the webhook (C7)
+- [x] B9. **DONE 2026-11-25** (in `dispatcher.ts`). The 30 s sweep:
+  - expired locks: send started → UNKNOWN; not started → retry (counted)
+  - expire stale → FAILED
+  - queue-age alert (> 15 min, max hourly)
+  - template-status refresh every 6 h (Meta `message_templates`, our 20 names only)
+  - claim 10, concurrency 3, per-row isolation
+  - runs only when WhatsApp is enabled; graceful stop on SIGTERM/SIGINT (`index.ts`)
+- [x] B10. **DONE 2026-11-25.** `services/messaging/messagingState.ts`:
+  - atomic `pauseSending` (one pause, one Admin notification batch) / `resumeSending`
+  - shared `setRateLimitedFor`
+  - `setGoLiveOnce`
+  - template status cache
+  - `notifyAdmins`, de-duplicated per title
+  - **Verification:** `D:\pashuseva\backups\phase32-verification\B8-B10-REPORT.md`:
+    - worker tests **51/51** (fake Meta server, 0 real requests)
+    - end to end OFF 14/14 + 17/17, ON (dry-run) 22/22 + 17/17
+- [x] B11. **DONE.** WhatsApp config (B2) plus go-live, set once at worker start only
+  for a provider that really sends (`setGoLiveOnce`).
 - [ ] C0. `customer.repository` `syncPhones`: also update a row when **only `isWhatsapp`** changed (today it compares only label/isPrimary); **clear the old WhatsApp flag before setting the new one** in the same transaction (so a swap doesn't trip the partial index); map the unique violation (P2002) → 409 "Customer was changed by someone else, reload" (§19.1)
 - [ ] C1. `customer.schema.ts`: `isWhatsapp` (+ valid-number refine, + at-most-one refine), `preferredLanguage`, `whatsappConsent` (enum YES/NO, **required on create**, optional on update; the service stamps `whatsappConsentAt/ById/Source` on every change); customer repository writes them; activity text `9876543210 (primary, WhatsApp)`, consent changes logged with **previous value, new value, employee and timestamp** (STOP logged as "by customer"), language changes logged
 - [x] C2. **DONE 2026-11-25.**

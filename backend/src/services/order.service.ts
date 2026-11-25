@@ -15,6 +15,7 @@ import { DEFAULT_DISPATCH_LOCATION, INDIA_POST_ARTICLE_NUMBER_REGEX } from '../c
 import type { Role, OrderStatus, DeliveryStatus, PaymentStatus, DataScope } from '../generated/prisma/enums';
 import { createHash } from 'node:crypto';
 import { enqueueOrderMessage, eventKeyFor } from './messaging/message.service';
+import { kickOrderMessages } from './messaging/dispatcher';
 import type {
   CreateOrderInput,
   UpdateOrderInput,
@@ -732,6 +733,11 @@ export const orderService = {
       throw err;
     }
 
+    // Phase 32 B8: after the order has COMMITTED, try to send its queued WhatsApp
+    // message right away (fire-and-forget — never delays or affects this response;
+    // the 30 s sweep picks it up otherwise). No-op when WhatsApp is disabled.
+    if (order.whatsapp.status === 'QUEUED') kickOrderMessages(order.id);
+
     return order;
   },
 
@@ -1138,10 +1144,13 @@ export const orderService = {
 
     // Phase 32: 15 s like order creation — the dispatch transition now also writes
     // the WhatsApp record (a few small queries) inside this transaction.
-    return prisma.$transaction(
+    const updated = await prisma.$transaction(
       (tx) => orderService.applyDeliveryStatusChange(existing, data, actingUser, tx),
       { timeout: 15000 }
     );
+    // Phase 32 B8: send a just-queued dispatch message after commit (fire-and-forget).
+    if (existing.deliveryStatus === 'NOT_DISPATCHED' && data.deliveryStatus === 'DISPATCHED') kickOrderMessages(id);
+    return updated;
   },
 
   // Phase 22: the body of updateDeliveryStatus's transaction, pulled out so
@@ -1360,7 +1369,12 @@ export const orderService = {
       }
 
       return { order, autoDispatched: existing !== null };
-    }, { timeout: 15000 });
+    }, { timeout: 15000 }).then((result) => {
+      // Phase 32 B8: the auto-dispatch may have queued a dispatch message — try to
+      // send it after commit (fire-and-forget).
+      if (result.autoDispatched) kickOrderMessages(id);
+      return result;
+    });
   },
 
   getTracking(orderId: number) {

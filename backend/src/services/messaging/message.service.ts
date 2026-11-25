@@ -32,6 +32,13 @@ export const SKIP_REASONS = {
   BEFORE_GO_LIVE: 'Order created before WhatsApp go-live',
   NO_CONSENT: 'No WhatsApp consent',
   NO_NUMBER: 'No valid WhatsApp number',
+  // B8 pre-send re-checks (the situation changed after the record was queued):
+  RECIPIENT_CHANGED: 'Recipient changed before sending — use Resend',
+  CUSTOMER_TRASHED: 'Customer is in Trash',
+  ORDER_TRASHED: 'Order is in Trash',
+  ORDER_CANCELLED: 'Order was cancelled',
+  NOT_DISPATCHED: 'Order is no longer dispatched',
+  TEMPLATE_NOT_APPROVED: 'Template not approved',
 } as const;
 
 const EXPIRY_HOURS: Record<MessageType, number> = {
@@ -137,6 +144,10 @@ async function writeRecord(
       ...(params ? { params } : {}),
       ...(snapshot !== undefined ? { snapshot } : {}),
       expiresAt: new Date(now.getTime() + EXPIRY_HOURS[type] * 3600_000),
+      // Due immediately. Set explicitly 1 min in the past: Prisma would otherwise fill
+      // @default(now()) from the APP server's clock, and the worker compares with the
+      // DATABASE clock — a small skew could make a brand-new message look not-yet-due.
+      nextAttemptAt: new Date(now.getTime() - 60_000),
       triggeredById: actingUserId ?? null,
     }],
     skipDuplicates: true,

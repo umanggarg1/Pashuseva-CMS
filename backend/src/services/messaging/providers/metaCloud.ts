@@ -1,6 +1,6 @@
 import { classifyMetaError } from './metaErrors';
 import { validateRequest } from './dryRun';
-import type { SendResult, SendTemplateRequest, WhatsAppProvider } from './types';
+import type { SendResult, SendTemplateRequest, TemplateStatusEntry, WhatsAppProvider } from './types';
 
 // Phase 32 B2/B3 (PHASE32_TODO.md §9.3/§9.4): the real WhatsApp Cloud API provider.
 // Only ever constructed by providers/index.ts when sending is explicitly enabled.
@@ -20,6 +20,8 @@ export interface MetaCloudOptions {
   accessToken: string;
   phoneNumberId: string;
   apiVersion: string;
+  /** WhatsApp Business Account id — needed only to read template statuses (B9). */
+  businessAccountId?: string;
   timeoutMs?: number;
   /** Tests only (fake Meta server). Production always uses the real Graph host. */
   baseUrl?: string;
@@ -39,6 +41,7 @@ export class MetaCloudProvider implements WhatsAppProvider {
   readonly name = 'meta';
   readonly sendsRealMessages = true;
   private readonly url: string;
+  private readonly base: string;
   private readonly timeoutMs: number;
 
   constructor(private readonly opts: MetaCloudOptions) {
@@ -46,8 +49,41 @@ export class MetaCloudProvider implements WhatsAppProvider {
       throw new Error('MetaCloudProvider needs an access token and a phone number id');
     }
     const base = (opts.baseUrl ?? 'https://graph.facebook.com').replace(/\/+$/, '');
+    this.base = base;
     this.url = `${base}/${opts.apiVersion}/${encodeURIComponent(opts.phoneNumberId)}/messages`;
     this.timeoutMs = opts.timeoutMs ?? 10_000;
+  }
+
+  /**
+   * B9: read approval statuses of the account's templates
+   * (GET /{version}/{waba-id}/message_templates?fields=name,language,status).
+   * Returns null (never throws) when no WABA id is configured or the call fails.
+   */
+  async listTemplates(): Promise<TemplateStatusEntry[] | null> {
+    if (!this.opts.businessAccountId) return null;
+    const out: TemplateStatusEntry[] = [];
+    let next: string | null = `${this.base}/${this.opts.apiVersion}/${encodeURIComponent(this.opts.businessAccountId)}/message_templates?fields=name,language,status&limit=100`;
+    try {
+      for (let page = 0; next && page < 20; page++) {
+        // Only ever follow paging links on the same host we were configured with.
+        if (!next.startsWith(this.base)) break;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        const res = await fetch(next, { headers: { Authorization: `Bearer ${this.opts.accessToken}` }, signal: controller.signal });
+        const json = (await res.json().catch(() => null)) as { data?: { name?: unknown; language?: unknown; status?: unknown }[]; paging?: { next?: unknown } } | null;
+        clearTimeout(timer);
+        if (!res.ok || !json || !Array.isArray(json.data)) return null;
+        for (const t of json.data) {
+          if (typeof t.name === 'string' && typeof t.language === 'string' && typeof t.status === 'string') {
+            out.push({ name: t.name, language: t.language, status: t.status.toUpperCase() });
+          }
+        }
+        next = typeof json.paging?.next === 'string' ? json.paging.next : null;
+      }
+      return out;
+    } catch {
+      return null;
+    }
   }
 
   async sendTemplate(req: SendTemplateRequest): Promise<SendResult> {

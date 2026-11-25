@@ -32,6 +32,7 @@ export function createWhatsAppProvider(
       accessToken: wa.accessToken!,
       phoneNumberId: wa.phoneNumberId!,
       apiVersion: wa.apiVersion,
+      businessAccountId: wa.businessAccountId,
     }),
     reason: 'enabled: Meta Cloud API',
   };

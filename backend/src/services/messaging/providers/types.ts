@@ -61,4 +61,17 @@ export interface WhatsAppProvider {
   /** True only for a provider that really contacts WhatsApp. */
   readonly sendsRealMessages: boolean;
   sendTemplate(req: SendTemplateRequest): Promise<SendResult>;
+  /**
+   * Template approval statuses from the provider (B9 cache refresh). Optional: the
+   * dry-run provider has none. Never throws — returns null when unavailable.
+   */
+  listTemplates?(): Promise<TemplateStatusEntry[] | null>;
+}
+
+export interface TemplateStatusEntry {
+  name: string;
+  /** Meta language code, e.g. "en", "hi". */
+  language: string;
+  /** Upper-case Meta status, e.g. APPROVED, PENDING, REJECTED, PAUSED, DISABLED. */
+  status: string;
 }
