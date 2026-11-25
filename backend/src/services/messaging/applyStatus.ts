@@ -1,4 +1,5 @@
 import prisma, { PrismaClientOrTx } from '../../lib/prisma';
+import { recordActivityForMessage, MessageEvent } from './activity';
 
 // Phase 32 B8a (PHASE32_TODO.md §12, §19.5): the ONE place a provider-reported status
 // (sent / delivered / read / failed) is applied to a message — used by the webhook
@@ -79,6 +80,19 @@ export async function applyProviderStatus(input: ApplyStatusInput, client: Prism
          AND (${RANK_SQL} < $2 OR ${col} IS NULL)`,
       row.id, NEW_RANK[input.status], input.status, input.at
     );
+  }
+  // C4: one history entry per real change (duplicates / late reports change nothing).
+  if (changed > 0) {
+    const current = await client.outboundMessage.findUnique({ where: { id: row.id }, select: { status: true } });
+    const event: MessageEvent | null =
+      input.status === 'FAILED' ? 'failed'
+        : current?.status === 'READ' && input.status === 'READ' ? 'read'
+          : current?.status === 'DELIVERED' && input.status === 'DELIVERED' ? 'delivered'
+            : current?.status === 'SENT' && input.status === 'SENT' && reconciled ? 'sent'
+              : null;
+    if (event) {
+      await recordActivityForMessage(row.id, event, input.status === 'FAILED' ? (input.errorMessage ?? input.errorCode ?? null) : reconciled ? 'confirmed by WhatsApp report' : null, client);
+    }
   }
   return { messageId: row.id, applied: changed > 0, reconciled };
 }

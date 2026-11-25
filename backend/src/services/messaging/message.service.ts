@@ -6,6 +6,7 @@ import { toWhatsappNumber } from '../../utils/phone';
 import { loadOrderMessageSnapshot } from './snapshot';
 import { buildConfirmationParams, buildDispatchParams } from './templates/builders';
 import { metaTemplateName } from './templates/definitions';
+import { recordMessageActivity } from './activity';
 
 // Phase 32 B7 (PHASE32_TODO.md §6, §7, §7.1, §10): create the WhatsApp message record
 // for an order event — INSIDE the caller's transaction (order creation / reorder /
@@ -154,6 +155,17 @@ async function writeRecord(
   });
   const row = await tx.outboundMessage.findUnique({ where: { eventKey }, select: { id: true, status: true, skipReason: true } });
   if (!row) throw new Error(`WhatsApp record ${eventKey} missing after insert`);
+  if (count === 1) {
+    // C4: one history entry for the new record (never for a duplicate event).
+    await recordMessageActivity({
+      orderId,
+      type,
+      event: row.status === 'SKIPPED' ? 'skipped' : 'queued',
+      detail: row.skipReason,
+      toPhone: d.toPhone ?? null,
+      createdById: actingUserId ?? null,
+    }, tx);
+  }
   return {
     status: row.status === 'SKIPPED' ? 'SKIPPED' : 'QUEUED',
     skipReason: row.skipReason ?? undefined,

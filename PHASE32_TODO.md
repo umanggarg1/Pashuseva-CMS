@@ -1283,7 +1283,18 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     - WhatsApp OFF **14/14**, ON (dry-run) **22/22**
     - existing-code workflows **17/17 OFF and ON**
     - 0 send attempts
-- [ ] C4. Order activity: "WhatsApp order confirmation sent / delivered / failed: <reason> / skipped: <reason>", the same for dispatch, resend with the user + reason
+- [x] C4. **DONE 2026-11-25.** `services/messaging/activity.ts`: order Activity entries
+  "WhatsApp order confirmation / dispatch notification queued · sent · delivered · read
+  by the customer · failed · not sent · status unknown (an Admin will check)", with the
+  masked number and the reason.
+  - Written only after a write that only one caller can win: unique-event insert,
+    claim-guarded worker writes, sweep `UPDATE … RETURNING`, monotonic
+    `applyProviderStatus`. So repeated webhooks, late reports, repeated sweeps and
+    retries never duplicate an entry.
+  - No entry per retry wait or pause.
+  - The entry is written in the order transaction at enqueue (inside the savepoint).
+  - Tests **14/14**; regressions: worker 51/51, integration OFF 14/14 + ON 22/22,
+    workflows 17/17 + 17/17.
 - [ ] C5. Permissions `message:resend`, `message:manage` in `permission.schema.ts` + defaults (Q9) + permissions UI labels + a **grant backfill migration for existing users** (`message:resend` to existing active Managers/Employees, following `20260910100000_backfill_order_export_permission`; Admin passes all checks already); the exact rule is confirmed against that migration in C5
 - [ ] C6. Routes `/orders/:id/messages*` (**every one** behind `checkOrderAccess` / the order data-scope, same as other order routes), `/messaging/*` (§14)
 - [ ] C7. Webhook router (§12): raw body, HMAC, zod, dedupe, monotonic, reconciliation, STOP → consent NO, rate limit; mounted before `express.json()`

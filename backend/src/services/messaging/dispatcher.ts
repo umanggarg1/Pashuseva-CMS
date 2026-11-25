@@ -9,6 +9,7 @@ import type { SendResult, WhatsAppProvider } from './providers/types';
 import { SKIP_REASONS } from './message.service';
 import { buildConfirmationParams, buildDispatchParams, ConfirmationSnapshot, DispatchSnapshot } from './templates/builders';
 import { applyProviderStatus } from './applyStatus';
+import { recordActivityForMessage } from './activity';
 import {
   getTemplateStatus,
   notifyAdmins,
@@ -119,7 +120,9 @@ async function release(c: Claimed): Promise<boolean> {
   return guarded(c, { status: 'QUEUED', attempts: { decrement: 1 }, sendStartedAt: null, ...unlock });
 }
 async function skip(c: Claimed, reason: string): Promise<'SKIPPED'> {
-  await guarded(c, { status: 'SKIPPED', skipReason: reason, ...unlock });
+  if (await guarded(c, { status: 'SKIPPED', skipReason: reason, ...unlock })) {
+    await recordActivityForMessage(c.id, 'skipped', reason);
+  }
   return 'SKIPPED';
 }
 
@@ -198,7 +201,9 @@ export async function processClaimed(c: Claimed, deps: DispatcherDeps = {}): Pro
     if (!m0 || m0.claimToken !== c.claimToken || m0.status !== 'PROCESSING') return 'LOST_CLAIM';
 
     if (m0.expiresAt < new Date()) {
-      await guarded(c, { status: 'FAILED', failedAt: new Date(), lastError: 'Expired before it could be sent', errorKind: 'PERMANENT', ...unlock });
+      if (await guarded(c, { status: 'FAILED', failedAt: new Date(), lastError: 'Expired before it could be sent', errorKind: 'PERMANENT', ...unlock })) {
+        await recordActivityForMessage(c.id, 'failed', 'Expired before it could be sent');
+      }
       return 'FAILED';
     }
     const reason = await eligibility(m0);
@@ -235,7 +240,9 @@ export async function processClaimed(c: Claimed, deps: DispatcherDeps = {}): Pro
     logger.error(`[whatsapp] message ${c.id} processing error (${sendStarted ? 'after' : 'before'} send started): ${message}`);
     if (sendStarted) {
       // We can't know whether Meta got it → UNKNOWN, never resent automatically.
-      await guarded(c, { status: 'UNKNOWN', errorKind: 'AMBIGUOUS', lastError: `internal error after send started: ${message}`.slice(0, 500), ...unlock });
+      if (await guarded(c, { status: 'UNKNOWN', errorKind: 'AMBIGUOUS', lastError: `internal error after send started: ${message}`.slice(0, 500), ...unlock })) {
+        await recordActivityForMessage(c.id, 'unknown', 'Interrupted after sending started');
+      }
       return 'UNKNOWN';
     }
     return retryOrFail(c, { kind: 'TEMPORARY', code: 'INTERNAL', message: `internal error before sending: ${message}` });
@@ -246,7 +253,9 @@ async function retryOrFail(c: Claimed, e: { kind: 'TEMPORARY'; code: string; mes
   const row = await prisma.outboundMessage.findUnique({ where: { id: c.id }, select: { attempts: true, maxAttempts: true } });
   const attempts = row?.attempts ?? 1;
   if (attempts >= (row?.maxAttempts ?? 5)) {
-    await guarded(c, { status: 'FAILED', failedAt: new Date(), errorKind: 'TEMPORARY', errorCode: e.code, lastError: `Retries exhausted: ${e.message}`.slice(0, 500), sendStartedAt: null, ...unlock });
+    if (await guarded(c, { status: 'FAILED', failedAt: new Date(), errorKind: 'TEMPORARY', errorCode: e.code, lastError: `Retries exhausted: ${e.message}`.slice(0, 500), sendStartedAt: null, ...unlock })) {
+      await recordActivityForMessage(c.id, 'failed', `Retries exhausted: ${e.message}`.slice(0, 300));
+    }
     return 'FAILED';
   }
   const backoff = BACKOFF_SECONDS[Math.min(attempts - 1, BACKOFF_SECONDS.length - 1)];
@@ -263,17 +272,22 @@ async function handleResult(c: Claimed, m: Msg, r: SendResult): Promise<ProcessO
     const ok = await guarded(c, { status: 'SENT', providerMessageId: r.providerMessageId, sentAt: new Date(), errorKind: null, lastError: null, ...unlock });
     if (ok) {
       logger.info(`[whatsapp] message ${c.id} SENT to ${maskWhatsappNumber(m.toPhone)} (${m.templateName}/${langCode(m.language)}) id=${r.providerMessageId}`);
+      await recordActivityForMessage(c.id, 'sent', m.fallbackFromLanguage ? 'English (Hindi template unavailable)' : null);
       return 'SENT';
     }
     return lateAcceptance(c.id, r.providerMessageId);
   }
   if (r.outcome === 'AMBIGUOUS') {
-    await guarded(c, { status: 'UNKNOWN', errorKind: 'AMBIGUOUS', errorCode: r.code, lastError: r.message.slice(0, 500), ...unlock });
+    if (await guarded(c, { status: 'UNKNOWN', errorKind: 'AMBIGUOUS', errorCode: r.code, lastError: r.message.slice(0, 500), ...unlock })) {
+      await recordActivityForMessage(c.id, 'unknown', r.message.slice(0, 300));
+    }
     return 'UNKNOWN';
   }
   // REJECTED: Meta definitely did not accept it.
   if (r.kind === 'PERMANENT') {
-    await guarded(c, { status: 'FAILED', failedAt: new Date(), errorKind: 'PERMANENT', errorCode: r.code, lastError: r.message.slice(0, 500), sendStartedAt: null, ...unlock });
+    if (await guarded(c, { status: 'FAILED', failedAt: new Date(), errorKind: 'PERMANENT', errorCode: r.code, lastError: r.message.slice(0, 500), sendStartedAt: null, ...unlock })) {
+      await recordActivityForMessage(c.id, 'failed', r.message.slice(0, 300));
+    }
     return 'FAILED';
   }
   if (r.kind === 'TEMPORARY') {
@@ -303,7 +317,10 @@ async function lateAcceptance(id: number, wamid: string): Promise<ProcessOutcome
     where: { id, status: 'UNKNOWN', providerMessageId: null, resolvedById: null },
     data: { status: 'SENT', providerMessageId: wamid, sentAt: new Date(), lastError: null, errorKind: null },
   });
-  if (attached.count === 1) return 'SENT';
+  if (attached.count === 1) {
+    await recordActivityForMessage(id, 'sent', 'confirmed after a delayed response');
+    return 'SENT';
+  }
   const row = await prisma.outboundMessage.findUnique({ where: { id }, select: { providerMessageId: true } });
   if (row?.providerMessageId !== wamid) {
     await prisma.outboundMessage.update({
@@ -319,16 +336,22 @@ async function lateAcceptance(id: number, wamid: string): Promise<ProcessOutcome
 
 /** Expired locks: send started → UNKNOWN (never re-queued); not started → retry (counted). */
 export async function recoverExpiredLocks(): Promise<{ unknown: number; requeued: number; failed: number }> {
-  const unknown = await prisma.$executeRawUnsafe(
+  const unknownRows = await prisma.$queryRawUnsafe<{ id: number }[]>(
     `UPDATE "OutboundMessage" SET status = 'UNKNOWN', "errorKind" = 'AMBIGUOUS',
        "lastError" = 'Worker stopped after the send started; Meta may have accepted it', "claimToken" = NULL, "lockedUntil" = NULL, "lockedBy" = NULL, "updatedAt" = now()
-     WHERE status = 'PROCESSING' AND "lockedUntil" < now() AND "sendStartedAt" IS NOT NULL`
+     WHERE status = 'PROCESSING' AND "lockedUntil" < now() AND "sendStartedAt" IS NOT NULL
+     RETURNING id`
   );
-  const failed = await prisma.$executeRawUnsafe(
+  for (const r of unknownRows) await recordActivityForMessage(r.id, 'unknown', 'Interrupted after sending started');
+  const failedRows = await prisma.$queryRawUnsafe<{ id: number }[]>(
     `UPDATE "OutboundMessage" SET status = 'FAILED', "failedAt" = now(), "errorKind" = 'TEMPORARY',
        "lastError" = 'Retries exhausted: worker stopped before sending', "claimToken" = NULL, "lockedUntil" = NULL, "lockedBy" = NULL, "updatedAt" = now()
-     WHERE status = 'PROCESSING' AND "lockedUntil" < now() AND "sendStartedAt" IS NULL AND attempts >= "maxAttempts"`
+     WHERE status = 'PROCESSING' AND "lockedUntil" < now() AND "sendStartedAt" IS NULL AND attempts >= "maxAttempts"
+     RETURNING id`
   );
+  for (const r of failedRows) await recordActivityForMessage(r.id, 'failed', 'Retries exhausted');
+  const unknown = unknownRows.length;
+  const failed = failedRows.length;
   const requeued = await prisma.$executeRawUnsafe(
     `UPDATE "OutboundMessage" SET status = 'RETRY_WAIT', "nextAttemptAt" = now(),
        "lastError" = 'Worker stopped before sending; retrying', "claimToken" = NULL, "lockedUntil" = NULL, "lockedBy" = NULL, "updatedAt" = now()
@@ -339,10 +362,13 @@ export async function recoverExpiredLocks(): Promise<{ unknown: number; requeued
 
 /** QUEUED / RETRY_WAIT past expiresAt → FAILED "Expired" (never sent stale). */
 export async function expireStale(): Promise<number> {
-  return prisma.$executeRawUnsafe(
+  const rows = await prisma.$queryRawUnsafe<{ id: number }[]>(
     `UPDATE "OutboundMessage" SET status = 'FAILED', "failedAt" = now(), "errorKind" = 'PERMANENT', "lastError" = 'Expired before it could be sent', "updatedAt" = now()
-     WHERE status IN ('QUEUED', 'RETRY_WAIT') AND "expiresAt" < now()`
+     WHERE status IN ('QUEUED', 'RETRY_WAIT') AND "expiresAt" < now()
+     RETURNING id`
   );
+  for (const r of rows) await recordActivityForMessage(r.id, 'failed', 'Expired before it could be sent');
+  return rows.length;
 }
 
 /** Oldest QUEUED waiting > 15 min while enabled and not paused → Admin alert (max hourly). */
