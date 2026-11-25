@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import PDFDocument from 'pdfkit';
 import { getOrderPaymentSummary } from './orderPayment';
+import { getOrderTotalWeight, formatTotalWeight } from '../utils/orderWeight';
 import { PARCEL_SETTINGS } from '../constants/parcelSettings';
 import type { orderRepository } from '../repositories/order.repository';
 
@@ -20,16 +21,6 @@ const HINDI_NOTE =
 
 type OrderWithDetails = NonNullable<Awaited<ReturnType<typeof orderRepository.findById>>>;
 
-// Only G/KG are a mass unit here — ML/L are volume, so a product priced/packaged by
-// volume has nothing meaningful to contribute to a shipment's total weight.
-function gramsFor(item: OrderWithDetails['items'][number]) {
-  const weightValue = item.product?.weightValue;
-  const weightUnit = item.product?.weightUnit;
-  if (!weightValue || !weightUnit) return 0;
-  if (weightUnit === 'KG') return weightValue * 1000 * item.quantity;
-  if (weightUnit === 'G') return weightValue * item.quantity;
-  return 0;
-}
 
 function formatDate(date: Date) {
   return new Date(date)
@@ -76,7 +67,9 @@ export async function generateParcelSummaryPdf(order: OrderWithDetails): Promise
   // Every phone on file, primary first — a courier may need an alternate number if
   // the primary one doesn't answer.
   const phones = [...order.customer.phones].sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary));
-  const totalWeightGrams = order.items.reduce((sum, item) => sum + gramsFor(item), 0);
+  // Phase 32 Q18: the shared total-weight rule — null (section hidden) unless EVERY
+  // product's weight is known; never a partial total (utils/orderWeight.ts).
+  const totalWeightGrams = getOrderTotalWeight(order.items);
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 40 });
@@ -129,13 +122,9 @@ export async function generateParcelSummaryPdf(order: OrderWithDetails): Promise
     for (const item of order.items) {
       doc.text(`${item.productName}    x${item.quantity}`);
     }
-    if (totalWeightGrams > 0) {
-      const display =
-        totalWeightGrams >= 1000
-          ? `${(totalWeightGrams / 1000).toFixed(2)} KG`
-          : `${totalWeightGrams} G`;
+    if (totalWeightGrams !== null) {
       doc.moveDown(0.25);
-      doc.font('Helvetica-Bold').text(`TOTAL WEIGHT: ${display}`);
+      doc.font('Helvetica-Bold').text(`TOTAL WEIGHT: ${formatTotalWeight(totalWeightGrams)}`);
     }
     doc.moveDown(0.75);
     hr(doc);

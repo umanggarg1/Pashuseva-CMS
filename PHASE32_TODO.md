@@ -1,6 +1,6 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Progress: A0 · A1 · A2 · A3 · B0 · B1 · B2 · B3 · B4 done (all local; nothing pushed, no deploy; 0 real WhatsApp requests). B6 Hindi wording approved. Two new architecture requirements recorded in §20 (product per line; total-weight rule); their designs await the user's approval before any code. Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
+**Progress: A0 · A1 · A2 · A3 · B0 · B1 · B2 · B3 · B4 done (all local; nothing pushed, no deploy; 0 real WhatsApp requests). B6 Hindi wording approved. Q17 (20 product-per-line templates) and Q18 (central total-weight rule) implemented and verified locally (§20). Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
 
 **Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
@@ -1382,7 +1382,7 @@ dispatch time; a resend uses current data (§13). Tests: E16, E31, E32, E32a.
 
 ---
 
-## 20. New architecture requirements (user, 2026-11-25), DESIGN ONLY, awaiting approval
+## 20. New architecture requirements (user, 2026-11-25), Q17 + Q18 IMPLEMENTED (local, 2026-11-25)
 
 The user's words: *"This is an architecture requirement, not permission to start
 coding."* Nothing in this section has been implemented.
@@ -1422,8 +1422,32 @@ line breaks must be in the **fixed template text**, which means each product nee
 - §17 step 8 becomes 20 templates.
 - Tests (E42) are added for every variant and language.
 
-**Q17 DECISION (user, 2026-11-25): 5 template sizes. Confirmed by Claude; NOT
-implemented, waiting for the user's explicit GO.** This replaces options A/B/C above.
+**Q17 DECISION (user, 2026-11-25): 5 template sizes. IMPLEMENTED 2026-11-25 after
+the user's GO.** This replaces options A/B/C above.
+
+**Implementation (local, dry-run only):**
+- `templates/definitions.ts` generates the 20 templates from the approved base texts.
+  `{{ITEMS}}` expands to one placeholder per line, and values are filled by named
+  slot because `{{n}}` numbering shifts with size. Helpers: `getTemplate(key, lang,
+  size)`, `allTemplates()`, `metaTemplateName(base, size)`.
+- `templates/builders.ts` picks size = min(products, 5) and keeps lines 1–4 whole;
+  line 5 holds the rest joined by "; ". Only if the 1024 limit is hit does line 5
+  end "… +N more items". The 80-char name cap is removed. A last-resort line
+  shortening is flagged (`shortenedLine`).
+- `templates.verify.ts` **123/123** (E42):
+  - all 20 templates pass the structure rules, each product placeholder alone on its
+    own line
+  - sizes 1–5 × type × language
+  - the user's 7-product example reproduced exactly
+  - 6 and 12 products: every product present in full, "; " only on line 5
+  - 40 long products: "+N more" with the exact count, shown names complete
+  - 3000-char name: last resort
+  - no line break or tab in any parameter
+  - all earlier B4/B6/Q12 checks kept
+- Samples regenerated in `PHASE32_TEMPLATES_REVIEW.md`, incl. the 20-name table.
+- Open point for Meta review: product lines are placeholders separated only by line
+  breaks (the user's exact layout). If Meta's review rejects adjacent placeholder
+  lines, the smallest fix is a "• " before each product line (needs the user's OK).
 
 - **20 Meta templates:** sizes 1, 2, 3, 4, 5 products × {confirmation, dispatch} ×
   {en, hi}. Names `ps_order_confirmation_1`…`_5` and `ps_order_dispatched_1`…`_5`.
@@ -1454,6 +1478,21 @@ implemented, waiting for the user's explicit GO.** This replaces options A/B/C a
   omitted, "; " on line 5 only), the 1024 fallback, and no newline/tab in any line.
 
 ### 20.2 Total Weight shown only when every product's weight is known (everywhere)
+
+**Q18 IMPLEMENTED (user GO 2026-11-25).**
+- `utils/orderWeight.ts` is the one rule: `getOrderTotalWeight(items)` returns grams,
+  or null when any item's mass is unknown (no product, value ≤ 0, or a unit other than
+  G/KG: ML/L count as unknown). `formatTotalWeight` keeps the old display.
+- The parcel label prints TOTAL WEIGHT only when the result isn't null.
+- `orderWeight.verify.ts` **19/19** (E43).
+- **All 444 active orders' labels** were rendered before/after on a disposable copy
+  (stability proven: same code twice = 0 differences):
+  - **424 byte-identical**
+  - **20 differ ONLY by the removed TOTAL WEIGHT line**
+  - 0 other differences
+- After the change, 265 labels show a total and 179 don't. (The extractor reported
+  263 because 2 labels' streams weren't decoded; the shared function confirms both show
+  a total: 8.00 KG and 5.00 KG.)
 
 **Requirement.**
 - Show Total Weight only when every product in the order has a known weight.
@@ -1501,6 +1540,6 @@ implemented, waiting for the user's explicit GO.** This replaces options A/B/C a
 ### 20.3 Decisions needed
 
 - **Q17: DECIDED** (5 sizes, line 5 joined by "; ", see above). Waiting for GO.
-- **Q18:** total-weight rule as designed in §20.2, with ML/L counting as "no known
+- **Q18: DECIDED + IMPLEMENTED** (see §20.2). Original question: total-weight rule as designed in §20.2, with ML/L counting as "no known
   weight", applied to the parcel label now (the only total-weight display), and as
   the mandatory rule for any future screen?
