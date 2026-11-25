@@ -6,6 +6,16 @@ interface PhoneInput {
   phone: string;
   label?: string;
   isPrimary: boolean;
+  isWhatsapp?: boolean; // Phase 32 C1
+}
+
+// Phase 32 C1: consent/language columns (see utils/whatsappConsent.ts).
+interface WhatsappFields {
+  preferredLanguage?: 'EN' | 'HI';
+  whatsappConsent?: 'YES' | 'NO';
+  whatsappConsentAt?: Date;
+  whatsappConsentById?: number;
+  whatsappConsentSource?: 'STAFF' | 'CUSTOMER_STOP_REPLY' | 'BACKFILL';
 }
 
 interface AddressInput {
@@ -24,6 +34,7 @@ interface ExistingPhoneRow {
   phone: string;
   label: string | null;
   isPrimary: boolean;
+  isWhatsapp: boolean;
 }
 
 interface ExistingAddressRow {
@@ -67,22 +78,30 @@ async function syncPhones(
   const existingByPhone = new Map(existing.map((p) => [p.phone, p]));
   const incomingNumbers = new Set(phones.map((p) => p.phone));
 
-  for (const incoming of phones) {
-    const match = existingByPhone.get(incoming.phone);
-    const label = incoming.label ?? null;
-    if (!match) {
-      await tx.customerPhone.create({ data: { ...incoming, label, customerId } });
-    } else if (match.label !== label || match.isPrimary !== incoming.isPrimary) {
-      await tx.customerPhone.update({
-        where: { id: match.id },
-        data: { label, isPrimary: incoming.isPrimary },
-      });
-    }
-  }
-
+  // Phase 32 C1: the database allows only ONE WhatsApp-flagged phone per customer
+  // (partial unique index). To let staff move the flag to another number in a single
+  // save, removed rows are deleted first and every row that ends up UNflagged is
+  // written before the one that ends up flagged.
   const removedIds = existing.filter((p) => !incomingNumbers.has(p.phone)).map((p) => p.id);
   if (removedIds.length > 0) {
     await tx.customerPhone.deleteMany({ where: { id: { in: removedIds } } });
+  }
+
+  const ordered = [...phones].sort((a, b) => Number(Boolean(a.isWhatsapp)) - Number(Boolean(b.isWhatsapp)));
+  for (const incoming of ordered) {
+    const match = existingByPhone.get(incoming.phone);
+    const label = incoming.label ?? null;
+    const isWhatsapp = Boolean(incoming.isWhatsapp);
+    if (!match) {
+      await tx.customerPhone.create({
+        data: { phone: incoming.phone, label, isPrimary: incoming.isPrimary, isWhatsapp, customerId },
+      });
+    } else if (match.label !== label || match.isPrimary !== incoming.isPrimary || match.isWhatsapp !== isWhatsapp) {
+      await tx.customerPhone.update({
+        where: { id: match.id },
+        data: { label, isPrimary: incoming.isPrimary, isWhatsapp },
+      });
+    }
   }
 }
 
@@ -240,7 +259,7 @@ export const customerRepository = {
       assignedEmployeeId?: number;
       phones: PhoneInput[];
       address?: AddressInput;
-    },
+    } & WhatsappFields,
     client: PrismaClientOrTx = prisma
   ) {
     return client.customer.create({
@@ -250,10 +269,17 @@ export const customerRepository = {
         notes: data.notes,
         createdById: data.createdById,
         assignedManagerId: data.assignedManagerId,
+        preferredLanguage: data.preferredLanguage,
+        whatsappConsent: data.whatsappConsent,
+        whatsappConsentAt: data.whatsappConsentAt,
+        whatsappConsentById: data.whatsappConsentById,
+        whatsappConsentSource: data.whatsappConsentSource,
         ...(data.assignedEmployeeId !== undefined && {
           assignedEmployees: { create: [{ employeeId: data.assignedEmployeeId }] },
         }),
-        phones: { create: data.phones },
+        phones: {
+          create: data.phones.map((p) => ({ phone: p.phone, label: p.label, isPrimary: p.isPrimary, isWhatsapp: Boolean(p.isWhatsapp) })),
+        },
         ...(data.address && { addresses: { create: data.address } }),
       },
       include: { phones: true, addresses: true },
@@ -274,7 +300,7 @@ export const customerRepository = {
       notes?: string;
       phones?: PhoneInput[];
       address?: AddressInput;
-    },
+    } & WhatsappFields,
     existingPhones: ExistingPhoneRow[] = [],
     existingAddresses: ExistingAddressRow[] = []
   ) {
@@ -289,7 +315,17 @@ export const customerRepository = {
 
       return tx.customer.update({
         where: { id },
-        data: { name: data.name, email: data.email, notes: data.notes },
+        data: {
+          name: data.name,
+          email: data.email,
+          notes: data.notes,
+          // Phase 32 C1 (undefined = unchanged)
+          preferredLanguage: data.preferredLanguage,
+          whatsappConsent: data.whatsappConsent,
+          whatsappConsentAt: data.whatsappConsentAt,
+          whatsappConsentById: data.whatsappConsentById,
+          whatsappConsentSource: data.whatsappConsentSource,
+        },
         include: { phones: true, addresses: true },
       });
     });

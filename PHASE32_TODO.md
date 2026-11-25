@@ -1,6 +1,6 @@
 # Phase 32 — WhatsApp Automation (order confirmation + dispatch notification)
 
-**Progress: A0 · A1 · A2 · A3 · B0 · B1 · B2 · B3 · B4 done (all local; nothing pushed, no deploy; 0 real WhatsApp requests). B6 Hindi wording approved. Q17 + Q18 implemented (§20). B5 · B7 · C2 · C3 · B8–B11 done: records created inside order creation/reorder/dispatch, sent by the worker (verified only against a fake local Meta server / dry-run; 0 real requests). Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
+**Progress: A0 · A1 · A2 · A3 · B0 · B1 · B2 · B3 · B4 done (all local; nothing pushed, no deploy; 0 real WhatsApp requests). B6 Hindi wording approved. Q17 + Q18 implemented (§20). B5 · B7 · C2 · C3 · B8–B11 · C1 done: records created inside order creation/reorder/dispatch, sent by the worker (verified only against a fake local Meta server / dry-run; 0 real requests). Migration revised to all-or-nothing (`BEGIN … COMMIT`) and re-verified (A3-R). Next: backend implementation B and C + tests. A4 not started; nothing pushed; the migration must not be pushed before A4.**
 
 **Status: FROZEN — FINAL ARCHITECTURE (2026-11-24). Decisions Q1–Q15 made (§16), Q3 updated by the user on 2026-11-24 (existing customers → consent YES via the backfill), Q16 decided NO (no messages for orders created before go-live). Failure-scenario review 2 resolved (§19). No code written yet. Implementation starts at A0 (read-only inspection) only when the user says START.**
 
@@ -1243,7 +1243,24 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
 - [x] B11. **DONE.** WhatsApp config (B2) plus go-live, set once at worker start only
   for a provider that really sends (`setGoLiveOnce`).
 - [ ] C0. `customer.repository` `syncPhones`: also update a row when **only `isWhatsapp`** changed (today it compares only label/isPrimary); **clear the old WhatsApp flag before setting the new one** in the same transaction (so a swap doesn't trip the partial index); map the unique violation (P2002) → 409 "Customer was changed by someone else, reload" (§19.1)
-- [ ] C1. `customer.schema.ts`: `isWhatsapp` (+ valid-number refine, + at-most-one refine), `preferredLanguage`, `whatsappConsent` (enum YES/NO, **required on create**, optional on update; the service stamps `whatsappConsentAt/ById/Source` on every change); customer repository writes them; activity text `9876543210 (primary, WhatsApp)`, consent changes logged with **previous value, new value, employee and timestamp** (STOP logged as "by customer"), language changes logged
+- [x] C1. **DONE 2026-11-25** (report:
+  `D:\pashuseva\backups\phase32-verification\C1-REPORT.md`).
+  - **Validation:** `isWhatsapp` per phone (independent of primary and of consent), at
+    most one, and a flagged number must be a valid Indian mobile (B1). Unflagged
+    numbers aren't checked, as before.
+  - `whatsappConsent` YES/NO + `preferredLanguage` EN/HI on create, update and the
+    inline new customer of Create Order.
+  - Staff consent is stamped who/when/STAFF (`utils/whatsappConsent.ts`). History:
+    "WhatsApp consent recorded" / "WhatsApp consent changed" (previous → new, with
+    the employee and the time), language changes, and phone changes with a "WhatsApp"
+    tag.
+  - `syncPhones` updates on a flag-only change and lets the flag move in one save
+    (unflag first). A simultaneous conflict hits the DB index → 409.
+  - **Consent is OPTIONAL in the API until D1** (today's screens keep working; omitted
+    = the safe default NO). **D1 makes it required on create, together with the
+    preselected-YES form.**
+  - Tests **29/29**. Regressions: workflows 17/17 ON + OFF, integration 14/14 + 22/22,
+    worker 51/51.
 - [x] C2. **DONE 2026-11-25.**
   - `POST /orders` and `POST /orders/:id/reorder` accept an optional `Idempotency-Key`
     header (8–128 `[A-Za-z0-9_-]`, otherwise 400). The key + `sha256(user + canonical
@@ -1272,7 +1289,7 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
 - [ ] C7. Webhook router (§12): raw body, HMAC, zod, dedupe, monotonic, reconciliation, STOP → consent NO, rate limit; mounted before `express.json()`
 
 ### D. Frontend
-- [ ] D1. Customer form (AddCustomerDialog + CustomerDetail edit): a **WhatsApp** toggle next to **Primary** on each phone row (at most one; the first row is ON by default per Q2); **WhatsApp Message Language** dropdown (`English` default / `Hindi`); **WhatsApp Consent** with two radio options, `YES – Customer agreed` (**preselected on create**) / `NO – Customer declined`; on edit it shows the current value + "last changed by X on date". Both fields also appear in the inline new-customer section of Create Order. The CRM UI stays English
+- [ ] D1. **Also: make `whatsappConsent` REQUIRED on customer create in the API (`createCustomerSchema`/inline new customer), in the same step as the form change (C1 kept it optional so today's screens keep working).** Customer form (AddCustomerDialog + CustomerDetail edit): a **WhatsApp** toggle next to **Primary** on each phone row (at most one; the first row is ON by default per Q2); **WhatsApp Message Language** dropdown (`English` default / `Hindi`); **WhatsApp Consent** with two radio options, `YES – Customer agreed` (**preselected on create**) / `NO – Customer declined`; on edit it shows the current value + "last changed by X on date". Both fields also appear in the inline new-customer section of Create Order. The CRM UI stays English
 - [ ] D2. WhatsApp icon beside flagged numbers in CustomerDetail, CustomerPicker, GlobalSearch and the OrderDetail customer card; a **Consent: YES / NO** badge (NO shown in red)
 - [ ] D3. Create Order: a hint "Confirmation will be sent on WhatsApp to 98xxxx3210 (Hindi)", or an amber "No WhatsApp number / WhatsApp consent is NO, no message will be sent"; for an existing customer it shows the saved consent and language (no consent field); **post-save toast with two separate lines: "Order saved: ORD-…" and "WhatsApp: Queued for sending / Not sent: <reason>"** (§0.1, from `whatsapp` in the create response); `Idempotency-Key` kept in **sessionStorage** for the Create Order page, cleared only on a successful response, so a page refresh after a lost response reuses it (§19.2); a 422 shows "This order may already exist: ORD-…, open it". The same for the Reorder button
 - [ ] D4. OrderDetail **WhatsApp messages** card (§0.1): rows per message (type, masked number, language, status chip with time, reason for FAILED/SKIPPED, next retry time for RETRY_WAIT, "resend of #", by whom); **status help text per §0.1 (SENT explicitly "not yet delivered")**; auto-refresh every 10 s while any row is QUEUED/PROCESSING/RETRY_WAIT/SENT

@@ -1,4 +1,12 @@
 import prisma from '../lib/prisma';
+import {
+  staffConsentFields,
+  consentLabel,
+  languageLabel,
+  CONSENT_RECORDED_ACTIVITY,
+  CONSENT_CHANGED_ACTIVITY,
+  LANGUAGE_CHANGED_ACTIVITY,
+} from '../utils/whatsappConsent';
 import { Prisma } from '../generated/prisma/client';
 import { customerRepository } from '../repositories/customer.repository';
 import { userRepository } from '../repositories/user.repository';
@@ -28,7 +36,7 @@ type ActingUser = {
 // customer), so saving with zero real edits still logged both as changed every
 // time. These do a real value comparison instead, the same way name/email
 // already do just above.
-type PhoneValue = { phone: string; label?: string | null; isPrimary: boolean };
+type PhoneValue = { phone: string; label?: string | null; isPrimary: boolean; isWhatsapp?: boolean };
 type AddressValue = {
   line1: string;
   line2?: string | null;
@@ -41,7 +49,7 @@ type AddressValue = {
 };
 
 function normalizePhone(p: PhoneValue) {
-  return { phone: p.phone, label: p.label || null, isPrimary: p.isPrimary };
+  return { phone: p.phone, label: p.label || null, isPrimary: p.isPrimary, isWhatsapp: Boolean(p.isWhatsapp) };
 }
 
 function phonesEqual(a: PhoneValue[], b: PhoneValue[]): boolean {
@@ -75,7 +83,10 @@ function formatPhonesForActivity(phones: PhoneValue[]): string {
   return phones
     .slice()
     .sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary))
-    .map((p) => `${p.phone}${p.isPrimary ? ' (primary)' : ''}`)
+    .map((p) => {
+      const tags = [p.isPrimary ? 'primary' : null, p.isWhatsapp ? 'WhatsApp' : null].filter(Boolean);
+      return `${p.phone}${tags.length ? ` (${tags.join(', ')})` : ''}`;
+    })
     .join(', ');
 }
 
@@ -308,8 +319,18 @@ export const customerService = {
       assignedEmployeeId: actingUser.role === 'EMPLOYEE' ? actingUser.id : undefined,
       phones: input.phones,
       address: input.address,
+      // Phase 32 C1: consent recorded by staff (stamped who/when/STAFF) + language.
+      preferredLanguage: input.preferredLanguage,
+      ...(input.whatsappConsent ? staffConsentFields(input.whatsappConsent, actingUser.id) : {}),
     });
     await customerRepository.recordActivity(customer.id, 'Customer created', actingUser.id);
+    if (input.whatsappConsent) {
+      await customerRepository.recordActivity(customer.id, CONSENT_RECORDED_ACTIVITY, actingUser.id, {
+        from: consentLabel(null),
+        to: consentLabel(input.whatsappConsent),
+        source: 'STAFF',
+      });
+    }
     return customer;
   },
 
@@ -348,13 +369,55 @@ export const customerService = {
       }
     }
 
+    // Phase 32 C1: consent and language changes — recorded with the previous and
+    // new value; the Activity entry itself carries the employee and the timestamp.
+    const consentChanged = input.whatsappConsent !== undefined && input.whatsappConsent !== existing.whatsappConsent;
+    if (consentChanged) {
+      changes.push({
+        activity: CONSENT_CHANGED_ACTIVITY,
+        from: consentLabel(existing.whatsappConsent),
+        to: consentLabel(input.whatsappConsent),
+      });
+    }
+    if (input.preferredLanguage !== undefined && input.preferredLanguage !== existing.preferredLanguage) {
+      changes.push({
+        activity: LANGUAGE_CHANGED_ACTIVITY,
+        from: languageLabel(existing.preferredLanguage),
+        to: languageLabel(input.preferredLanguage),
+      });
+    }
+
     // Pass the phones/addresses already fetched above straight through, rather
     // than having the repository re-query for the same rows inside its own
     // transaction — cuts two redundant DB round trips off every save.
-    const customer = await customerRepository.update(id, input, existing.phones, existing.addresses);
+    let customer;
+    try {
+      customer = await customerRepository.update(
+        id,
+        {
+          ...input,
+          // Consent is only (re)stamped when it actually changes.
+          whatsappConsent: undefined,
+          ...(consentChanged ? staffConsentFields(input.whatsappConsent!, actingUser.id) : {}),
+        },
+        existing.phones,
+        existing.addresses
+      );
+    } catch (err) {
+      // Two people flagging different WhatsApp numbers for the same customer at the
+      // same moment: the database's one-WhatsApp-number rule rejects the second save.
+      if ((err as { code?: string })?.code === 'P2002') {
+        throw new HttpError(409, 'This customer was changed by someone else at the same time. Reload and try again.');
+      }
+      throw err;
+    }
     await Promise.all(
       changes.map((c) =>
-        customerRepository.recordActivity(id, c.activity, actingUser.id, { from: c.from, to: c.to })
+        customerRepository.recordActivity(id, c.activity, actingUser.id, {
+          from: c.from,
+          to: c.to,
+          ...(c.activity === CONSENT_CHANGED_ACTIVITY ? { source: 'STAFF' } : {}),
+        })
       )
     );
     return customer;

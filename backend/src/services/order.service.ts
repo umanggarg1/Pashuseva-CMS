@@ -16,6 +16,7 @@ import type { Role, OrderStatus, DeliveryStatus, PaymentStatus, DataScope } from
 import { createHash } from 'node:crypto';
 import { enqueueOrderMessage, eventKeyFor } from './messaging/message.service';
 import { kickOrderMessages } from './messaging/dispatcher';
+import { staffConsentFields, consentLabel, CONSENT_RECORDED_ACTIVITY } from '../utils/whatsappConsent';
 import type {
   CreateOrderInput,
   UpdateOrderInput,
@@ -567,6 +568,11 @@ export const orderService = {
             assignedEmployeeId: actingUser.role === 'EMPLOYEE' ? actingUser.id : undefined,
             phones: input.newCustomer.phones,
             address: input.newCustomer.address,
+            // Phase 32 C1: same consent/language recording as Add Customer.
+            preferredLanguage: input.newCustomer.preferredLanguage,
+            ...(input.newCustomer.whatsappConsent
+              ? staffConsentFields(input.newCustomer.whatsappConsent, actingUser.id)
+              : {}),
           },
           tx
         );
@@ -577,6 +583,15 @@ export const orderService = {
           undefined,
           tx
         );
+        if (input.newCustomer.whatsappConsent) {
+          await customerRepository.recordActivity(
+            createdCustomer.id,
+            CONSENT_RECORDED_ACTIVITY,
+            actingUser.id,
+            { from: consentLabel(null), to: consentLabel(input.newCustomer.whatsappConsent), source: 'STAFF' },
+            tx
+          );
+        }
         customerId = createdCustomer.id;
         addresses = createdCustomer.addresses;
       } else {
