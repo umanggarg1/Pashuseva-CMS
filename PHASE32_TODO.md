@@ -1666,12 +1666,18 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
       the history check uses the new wording), C7 29/29, templates 123/123,
       providers 50/50, D1 37/37 + 19/19, D2 19/19, D3 8/8 + 27/27, D4 31/31, D5
       35/35, D5 concurrency 6/6, integration 14/14 + 22/22, workflows 17/17 + 17/17.
-    - **Open:** B8–B10 (worker) and C4 (activity) need a clean rerun. The local
-      Docker database clock has drifted 2.4–3.0 s behind this computer, and those
-      suites use 1-second time margins. The PRE-D6 code (commit 4e495a0) fails the
-      same way on the same clock (B8 49/51, C4 11/14), and results vary from run to
-      run. D6 does not touch the worker. Rerun them after resyncing the Docker
-      clock.
+    - **B8–B10 and C4, resolved 2026-11-26.**
+      - The first reruns failed on timing checks, because the test environment's
+        clocks were wrong. Windows was not time-synced ("Local CMOS Clock", 3.1 s
+        off NTP). The Docker/WSL VM clock ran about 10% fast and was stepped back
+        about 2.6 s every ~17 s, so the database was 0.4–3.0 s behind the computer.
+        The pre-D6 code failed the same way.
+      - Fix, user-approved, environment only: Windows time sync turned on (now
+        within 2 ms of NTP); `docker desktop stop` + `wsl --shutdown` + `docker
+        desktop start`. A 30-sample check afterwards: PostgreSQL within ±18 ms of
+        Windows, Docker VM within 18–59 ms, no jumps, -15 ms over 30 s.
+      - Reruns with the scripts, tests and code unchanged: **B8–B10 51/51, C4
+        14/14.** D6 is fully verified.
 - [ ] D7. Types + API client + react-query hooks for all of the above
 - [ ] D8. **Permission picker (`frontend/src/lib/permissions.ts`): add `message:resend` ("Resend WhatsApp message") and `message:manage` ("Manage WhatsApp messaging").** Required before release: the picker saves a user's FULL permission list, so without these two entries saving anyone's permissions would silently remove `message:resend` (found in C5).
 
