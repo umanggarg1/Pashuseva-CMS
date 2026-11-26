@@ -195,7 +195,7 @@ export default function MessagingSettings() {
             <AlertTriangle className="h-4 w-4 text-amber-600" aria-hidden="true" /> Needs attention
           </CardTitle>
           <p className="text-xs text-muted-foreground">
-            Unconfirmed (UNKNOWN) messages waiting for an Admin decision, failed messages, and late answers from WhatsApp.
+            Unconfirmed (UNKNOWN) messages waiting for a decision by an authorized staff member, failed messages, and late answers from WhatsApp.
           </p>
         </CardHeader>
         <CardContent className="space-y-2">
@@ -241,7 +241,7 @@ export default function MessagingSettings() {
               </p>
               {m.resolvedAt && (
                 <p className="text-xs text-muted-foreground">
-                  Resolved by {m.resolvedBy?.name ?? 'an Admin'} on {fmt(m.resolvedAt)}: {m.resolutionNote}
+                  Resolved by {m.resolvedBy?.name || 'a staff member'} on {fmt(m.resolvedAt)}: {m.resolutionNote}
                 </p>
               )}
               {m.lateResponseNote && <p className="text-xs text-amber-800">Late answer from WhatsApp: {m.lateResponseNote}</p>}

@@ -115,7 +115,10 @@ export async function resolveUnknown(id: number, action: ResolveAction, reason: 
   }
   const m = await prisma.outboundMessage.findUnique({ where: { id } });
   if (!m) throw new NotFoundError('Message not found');
-  if (m.resolvedById) throw new HttpError(409, 'This message was already resolved by another Admin — reload to see their decision');
+  if (m.resolvedById) {
+    const by = (await prisma.user.findUnique({ where: { id: m.resolvedById }, select: { name: true } }))?.name ?? 'another staff member';
+    throw new HttpError(409, `This message was already resolved by ${by} — reload to see their decision`);
+  }
   if (m.status !== 'UNKNOWN') throw new HttpError(409, `Only an unresolved UNKNOWN message can be resolved (this one is now ${m.status}) — reload the list`);
 
   const markSent = action === 'mark-sent';
@@ -130,7 +133,7 @@ export async function resolveUnknown(id: number, action: ResolveAction, reason: 
     });
     if (r.count !== 1) throw new HttpError(409, 'This message was resolved or changed at the same time — reload and try again');
     await recordMessageActivity(
-      { orderId: m.orderId, type: m.type, event: markSent ? 'marked-sent' : 'marked-failed', toPhone: m.toPhone, detail: `by ${adminName}: ${reason}`, createdById: admin.id },
+      { orderId: m.orderId, type: m.type, event: markSent ? 'marked-sent' : 'marked-failed', toPhone: m.toPhone, detail: `Reason: ${reason}`, createdById: admin.id, actorName: adminName },
       tx
     );
     await tx.auditLog.create({

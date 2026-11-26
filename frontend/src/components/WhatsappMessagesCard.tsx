@@ -64,7 +64,7 @@ export function statusHelp(m: Pick<OrderMessage, 'status' | 'skipReason' | 'last
     case 'FAILED':
       return `Could not be sent: ${m.lastError ?? 'no reason recorded'}${m.errorCode ? ` (code ${m.errorCode})` : ''}`;
     case 'UNKNOWN':
-      return 'Not confirmed whether it was sent; an Admin will check (shown in Needs attention)';
+      return 'Not confirmed whether it was sent. An authorized staff member will review this message.';
     case 'SKIPPED':
       return `Not sent: ${m.skipReason ?? 'no reason recorded'}`;
   }
@@ -72,9 +72,10 @@ export function statusHelp(m: Pick<OrderMessage, 'status' | 'skipReason' | 'last
 
 /** D6: an Admin-resolved message must not read as a WhatsApp report. */
 export function helpFor(m: OrderMessage): string {
-  if (m.resolvedAt && m.status === 'SENT') return 'Marked as sent by an Admin; WhatsApp never confirmed it';
+  const by = m.resolvedBy?.name || 'a staff member';
+  if (m.resolvedAt && m.status === 'SENT') return `Marked as sent by ${by}; WhatsApp never confirmed it`;
   if (m.resolvedAt && m.status === 'FAILED') {
-    return `Marked as failed by an Admin${m.lastError ? ` (original error: ${m.lastError}${m.errorCode ? `, code ${m.errorCode}` : ''})` : ''}`;
+    return `Marked as failed by ${by}${m.lastError ? ` (original error: ${m.lastError}${m.errorCode ? `, code ${m.errorCode}` : ''})` : ''}`;
   }
   return statusHelp(m);
 }
@@ -211,7 +212,7 @@ export default function WhatsappMessagesCard({
             {m.resolvedAt && (
               <p data-testid="message-resolution" className="mt-1 text-xs text-muted-foreground">
                 Status was unknown; marked as {m.status === 'SENT' ? 'sent' : 'failed'} by{' '}
-                {m.resolvedBy?.name ?? 'an Admin'} on {formatTime(m.resolvedAt)}
+                {m.resolvedBy?.name || 'a staff member'} on {formatTime(m.resolvedAt)}
                 {m.resolutionNote && `. Reason: ${m.resolutionNote}`}
               </p>
             )}

@@ -1709,6 +1709,20 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
       Browser **4/4**: the disabled option and its note; mark as failed from the
       page; both permissions enabled. Regressions: D6 44/44 + 24/24, D7 24/24 +
       13/13, C6 38/38 + 3/3.
+  - **Wording (user-approved 2026-11-26).** Since Managers with message:manage can
+    resolve messages, "Admin" was replaced by the staff member's NAME, or by "an
+    authorized staff member":
+    - order history: "WhatsApp order confirmation marked as sent/failed by Rahul",
+      new value "to 98XXXX… — Reason: …";
+    - order card: "Marked as sent by Rahul; WhatsApp never confirmed it" / "Marked
+      as failed by Rahul (original error: …)";
+    - UNKNOWN help and history: "An authorized staff member will review this
+      message";
+    - the resend block: "…an authorized staff member must resolve it first";
+    - the 409: "already resolved by <name>".
+    No permission or behaviour change. Tests: D4 31/31, D6 44/44 + 24/24, D6b
+    10/10 + 4/4 (adds the Manager's name in the history), D7 24/24 + 13/13, C6
+    38/38 + 3/3, D5x 6/6, B8 51/51, C4 14/14.
 - [x] D7. Types + API client + react-query hooks for all of the above
   - **Done (2026-11-26, local only), frontend only (no backend or architecture
     change).**

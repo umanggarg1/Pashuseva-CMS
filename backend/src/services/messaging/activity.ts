@@ -24,16 +24,18 @@ const EVENT_LABEL: Record<MessageEvent, string> = {
   read: 'read by the customer',
   failed: 'failed',
   skipped: 'not sent',
-  unknown: 'status unknown (an Admin will check)',
+  unknown: 'status unknown (an authorized staff member will review this message)',
   resent: 'resent',
-  // Phase 32 D6: an Admin's explicit decision on an UNKNOWN message — worded so the
-  // history never reads as if WhatsApp itself reported it.
-  'marked-sent': 'marked as sent by an Admin',
-  'marked-failed': 'marked as failed by an Admin',
+  // Phase 32 D6: a staff member's explicit decision on an UNKNOWN message — worded so
+  // the history never reads as if WhatsApp itself reported it. The decider's name is
+  // appended by messageActivityAction ("… marked as sent by Rahul").
+  'marked-sent': 'marked as sent by',
+  'marked-failed': 'marked as failed by',
 };
 
-export function messageActivityAction(type: string, event: MessageEvent): string {
-  return `WhatsApp ${TYPE_LABEL[type] ?? 'message'} ${EVENT_LABEL[event]}`;
+export function messageActivityAction(type: string, event: MessageEvent, actorName?: string | null): string {
+  const base = `WhatsApp ${TYPE_LABEL[type] ?? 'message'} ${EVENT_LABEL[event]}`;
+  return event === 'marked-sent' || event === 'marked-failed' ? `${base} ${actorName || 'a staff member'}` : base;
 }
 
 export async function recordMessageActivity(
@@ -45,6 +47,8 @@ export async function recordMessageActivity(
     detail?: string | null;
     toPhone?: string | null;
     createdById?: number | null;
+    /** The staff member who made a manual decision (marked-sent / marked-failed). */
+    actorName?: string | null;
   },
   client: PrismaClientOrTx = prisma
 ): Promise<void> {
@@ -55,7 +59,7 @@ export async function recordMessageActivity(
     await client.orderActivity.create({
       data: {
         orderId: input.orderId,
-        action: messageActivityAction(input.type, input.event),
+        action: messageActivityAction(input.type, input.event, input.actorName),
         newValue,
         createdById: input.createdById ?? null,
       },

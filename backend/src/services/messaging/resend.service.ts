@@ -167,7 +167,7 @@ async function buildPreview(orderId: number, type: MessageTypeParam, opts: { ski
   else if (customer.whatsappConsent !== 'YES') blockedReason = 'The customer has not agreed to WhatsApp messages (consent NO)';
   else if (!toPhone) blockedReason = 'The customer has no valid WhatsApp number — set one in Customer Details first';
   else if (history.some((m) => ['QUEUED', 'PROCESSING', 'RETRY_WAIT'].includes(m.status))) blockedReason = 'A message of this type is already being sent for this order';
-  else if (!opts.skipUnknownCheck && history.some((m) => m.status === 'UNKNOWN' && !m.resolvedById)) blockedReason = 'An earlier message has an unknown status — an Admin must resolve it first';
+  else if (!opts.skipUnknownCheck && history.some((m) => m.status === 'UNKNOWN' && !m.resolvedById)) blockedReason = 'An earlier message has an unknown status — an authorized staff member must resolve it first';
   else if (last && Date.now() - last.createdAt.getTime() < COOLDOWN_MS) {
     blockedReason = `Please wait ${Math.ceil((COOLDOWN_MS - (Date.now() - last.createdAt.getTime())) / 1000)} seconds before resending`;
   }
