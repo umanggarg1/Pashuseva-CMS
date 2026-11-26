@@ -247,7 +247,10 @@ export const customerRepository = {
       select: {
         id: true,
         name: true,
-        phones: { select: { phone: true, isPrimary: true } },
+        // Phase 32 D2: the WhatsApp flag and the YES/NO consent only (shown as an
+        // icon/badge in the Create Order picker) — still no profile fields.
+        phones: { select: { phone: true, isPrimary: true, isWhatsapp: true } },
+        whatsappConsent: true,
         addresses: { select: { city: true }, take: 1 },
         assignedEmployees: { select: { employee: { select: { id: true, name: true } } } },
       },

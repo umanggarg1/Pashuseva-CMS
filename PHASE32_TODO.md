@@ -1414,7 +1414,31 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     - Regressions: integration 14/14 + 22/22, workflows 17/17 + 17/17 (the workflow
       script now sends consent NO when it creates customers), worker 51/51,
       activity 14/14, C6 38/38 + 3/3, webhook 29/29.
-- [ ] D2. WhatsApp icon beside flagged numbers in CustomerDetail, CustomerPicker, GlobalSearch and the OrderDetail customer card; a **Consent: YES / NO** badge (NO shown in red)
+- [x] D2. WhatsApp icon beside flagged numbers in CustomerDetail, CustomerPicker, GlobalSearch and the OrderDetail customer card; a **Consent: YES / NO** badge (NO shown in red)
+  - **Done (2026-11-26, local only), display only.** `components/WhatsappBadges.tsx`:
+    - `WhatsappIcon`: green icon, labelled "WhatsApp number".
+    - `ConsentBadge`: "WhatsApp Consent: YES" in green, or "WhatsApp Consent: NO" in
+      red.
+    - `CompactWhatsapp`: for rows showing one number. It shows the icon when the
+      shown primary is the WhatsApp number, or the icon plus the alternate number
+      when WhatsApp is on the alternate.
+  - Where they appear:
+    - CustomerDetail Contact card: icon on the flagged phone, consent badge, and
+      "WhatsApp message language: English/Hindi" (an English CRM label).
+    - OrderDetail customer card: icon and badge. The printed invoice is unchanged.
+    - Create Order picker: icon in the results; icon and badge on the selected
+      customer. Rows now show the primary number (previously the first stored
+      phone).
+    - Global search: icon on customer results.
+  - Backend: the lean `searchForOrder` shape gained only `phones[].isWhatsapp` and
+    `whatsappConsent`; still no profile fields. No template, builder, i18n or
+    product-line code changed (templates check 123/123; `git diff` of
+    `services/messaging` is empty).
+  - Tests: browser **19/19**, with fixtures of WhatsApp on the primary, on the
+    alternate, and consent NO with no number. Covers all four screens, the exact
+    shape of the picker API, no Hindi script anywhere in the CRM, the printed invoice
+    untouched, and viewing writes nothing. Regressions: D1 37/37 + 19/19,
+    integration 14/14 + 22/22, workflows 17/17 + 17/17.
 - [ ] D3. Create Order: a hint "Confirmation will be sent on WhatsApp to 98xxxx3210 (Hindi)", or an amber "No WhatsApp number / WhatsApp consent is NO, no message will be sent"; for an existing customer it shows the saved consent and language (no consent field); **post-save toast with two separate lines: "Order saved: ORD-…" and "WhatsApp: Queued for sending / Not sent: <reason>"** (§0.1, from `whatsapp` in the create response); `Idempotency-Key` kept in **sessionStorage** for the Create Order page, cleared only on a successful response, so a page refresh after a lost response reuses it (§19.2); a 422 shows "This order may already exist: ORD-…, open it". The same for the Reorder button
 - [ ] D4. OrderDetail **WhatsApp messages** card (§0.1): rows per message (type, masked number, language, status chip with time, reason for FAILED/SKIPPED, next retry time for RETRY_WAIT, "resend of #", by whom); **status help text per §0.1 (SENT explicitly "not yet delivered")**; auto-refresh every 10 s while any row is QUEUED/PROCESSING/RETRY_WAIT/SENT
 - [ ] D5. **Resend dialog** (§13): type, **current WhatsApp number (no picker; link to Customer Details to change it)**, previous status, required reason, text preview, delivered warning, confirm with `previewHash`; on 409 show the new preview and ask again; button disabled while pending; idempotency key

@@ -8,11 +8,12 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
 import { formatPrice } from '@/lib/pricing';
+import { CompactWhatsapp, displayedPhone } from '@/components/WhatsappBadges';
 
 interface SearchCustomer {
   id: number;
   name: string;
-  phones: { phone: string; isPrimary: boolean }[];
+  phones: { phone: string; isPrimary: boolean; isWhatsapp: boolean }[];
 }
 interface SearchOrder {
   id: number;
@@ -186,7 +187,8 @@ export default function GlobalSearch({
                       onClick={() => go(item.path)}
                       onMouseEnter={() => setActiveIndex(index)}
                       title={c.name}
-                      subtitle={c.phones.find((p) => p.isPrimary)?.phone ?? c.phones[0]?.phone}
+                      subtitle={displayedPhone(c.phones)?.phone}
+                      extra={<CompactWhatsapp phones={c.phones} shown={displayedPhone(c.phones)} />}
                     />
                   );
                 })}
@@ -309,12 +311,15 @@ function ResultRow({
   onMouseEnter,
   title,
   subtitle,
+  extra,
 }: {
   active: boolean;
   onClick: () => void;
   onMouseEnter: () => void;
   title: string;
   subtitle?: string;
+  /** Phase 32 D2: e.g. the WhatsApp icon after a customer's number. */
+  extra?: React.ReactNode;
 }) {
   return (
     <button
@@ -326,7 +331,12 @@ function ResultRow({
       }`}
     >
       <span className="min-w-0 truncate font-medium">{title}</span>
-      {subtitle && <span className="shrink-0 text-xs text-muted-foreground">{subtitle}</span>}
+      {subtitle && (
+        <span className="flex shrink-0 items-center text-xs text-muted-foreground">
+          {subtitle}
+          {extra}
+        </span>
+      )}
     </button>
   );
 }

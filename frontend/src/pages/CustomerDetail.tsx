@@ -44,6 +44,7 @@ import {
   type WhatsappConsent,
 } from '@/lib/whatsapp';
 import { PhoneRowErrors, WhatsappConsentFields, WhatsappPhoneToggle } from '@/components/WhatsappCustomerFields';
+import { ConsentBadge, WhatsappIcon } from '@/components/WhatsappBadges';
 
 interface Phone {
   id: number;
@@ -268,13 +269,21 @@ export default function CustomerDetail() {
           <CardContent className="space-y-2">
             {customer.phones.map((phone) => (
               <div key={phone.id} className="flex items-center justify-between text-sm">
-                <span>📞 {phone.phone}</span>
+                <span>
+                  📞 {phone.phone}
+                  {phone.isWhatsapp && <WhatsappIcon className="ml-1.5" />}
+                </span>
                 <span className="text-xs text-muted-foreground">
                   {phone.isPrimary ? 'Primary' : phone.label || 'Alternate'}
                 </span>
               </div>
             ))}
             {customer.email && <div className="pt-2 text-sm">✉️ {customer.email}</div>}
+            {/* Phase 32 D2 */}
+            <div className="flex flex-wrap items-center gap-2 pt-2 text-xs text-muted-foreground">
+              <ConsentBadge consent={customer.whatsappConsent} />
+              <span>WhatsApp message language: {customer.preferredLanguage === 'HI' ? 'Hindi' : 'English'}</span>
+            </div>
           </CardContent>
         </Card>
 

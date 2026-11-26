@@ -8,6 +8,8 @@ import AddCustomerDialog, { type CreatedCustomer } from '@/components/AddCustome
 import { apiFetch } from '@/lib/api';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
+import type { WhatsappConsent } from '@/lib/whatsapp';
+import { CompactWhatsapp, ConsentBadge, displayedPhone } from '@/components/WhatsappBadges';
 
 export interface CustomerOption {
   id: number;
@@ -16,7 +18,8 @@ export interface CustomerOption {
   // limited order-search shape — optional here since nothing in Create Order reads
   // it (creating an order for an Inactive customer is exactly what reactivates them).
   status?: 'ACTIVE' | 'INACTIVE';
-  phones: { phone: string; isPrimary: boolean }[];
+  phones: { phone: string; isPrimary: boolean; isWhatsapp?: boolean }[];
+  whatsappConsent?: WhatsappConsent; // Phase 32 D2
 }
 
 // Phase 19 §A: the order-creation-time search's fixed limited shape — name/phone/
@@ -25,7 +28,8 @@ export interface CustomerOption {
 interface OrderSearchResult {
   id: number;
   name: string;
-  phones: { phone: string; isPrimary: boolean }[];
+  phones: { phone: string; isPrimary: boolean; isWhatsapp: boolean }[];
+  whatsappConsent: WhatsappConsent;
   addresses: { city: string }[];
   assignedEmployees: { employee: { id: number; name: string | null } }[];
 }
@@ -60,18 +64,23 @@ export default function CustomerPicker({
   });
 
   function handleCreated(customer: CreatedCustomer) {
-    onChange({ id: customer.id, name: customer.name, status: 'ACTIVE', phones: customer.phones });
+    onChange({ id: customer.id, name: customer.name, status: 'ACTIVE', phones: customer.phones, whatsappConsent: customer.whatsappConsent });
     setSearch('');
   }
 
   if (value) {
+    const shown = displayedPhone(value.phones);
     return (
       <div className="flex items-center justify-between gap-3 rounded-md border p-3">
         <div className="min-w-0">
           <p className="truncate font-medium">{value.name}</p>
-          {value.phones[0] && (
-            <p className="text-sm text-muted-foreground">📞 {value.phones[0].phone}</p>
+          {shown && (
+            <p className="text-sm text-muted-foreground">
+              📞 {shown.phone}
+              <CompactWhatsapp phones={value.phones} shown={shown} />
+            </p>
           )}
+          {value.whatsappConsent && <ConsentBadge consent={value.whatsappConsent} className="mt-1" />}
         </div>
         <Button variant="ghost" size="sm" className="shrink-0" onClick={() => onChange(null)}>
           <X className="mr-1 h-4 w-4" /> Change
@@ -98,7 +107,7 @@ export default function CustomerPicker({
             <button
               key={c.id}
               type="button"
-              onClick={() => onChange({ id: c.id, name: c.name, phones: c.phones })}
+              onClick={() => onChange({ id: c.id, name: c.name, phones: c.phones, whatsappConsent: c.whatsappConsent })}
               className="flex w-full items-center justify-between gap-3 p-2 text-left text-sm hover:bg-accent"
             >
               <span className="min-w-0 truncate">
@@ -110,7 +119,8 @@ export default function CustomerPicker({
                 )}
               </span>
               <span className="shrink-0 text-right text-muted-foreground">
-                {c.phones[0]?.phone}
+                {displayedPhone(c.phones)?.phone}
+                <CompactWhatsapp phones={c.phones} shown={displayedPhone(c.phones)} />
                 {c.addresses[0]?.city && <span className="block text-xs">{c.addresses[0].city}</span>}
               </span>
             </button>

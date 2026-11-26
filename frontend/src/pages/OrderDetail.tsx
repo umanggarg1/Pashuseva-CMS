@@ -46,6 +46,8 @@ import ChangeDeliveryStatusDialog from '@/components/ChangeDeliveryStatusDialog'
 import { DELIVERY_STEPS } from '@/lib/deliveryStatus';
 import { TRASH_RETENTION_DAYS } from '@/lib/trash';
 import { formatPrice, paymentStatusLabel } from '@/lib/pricing';
+import { ConsentBadge, WhatsappIcon } from '@/components/WhatsappBadges';
+import type { WhatsappConsent } from '@/lib/whatsapp';
 
 const LOCATION_UPDATE_STATUSES = [
   'DISPATCHED',
@@ -109,8 +111,9 @@ interface OrderDetailData {
   customer: {
     id: number;
     name: string;
-    phones: { phone: string; isPrimary: boolean }[];
+    phones: { phone: string; isPrimary: boolean; isWhatsapp: boolean }[];
     notes: string | null;
+    whatsappConsent: WhatsappConsent; // Phase 32 D2
   };
   assignedEmployees: { employeeId: number; employee: { id: number; name: string | null } }[];
   createdBy: { id: number; name: string | null } | null;
@@ -503,8 +506,12 @@ export default function OrderDetail() {
             {order.customer.phones.map((p) => (
               <p key={p.phone} className="text-muted-foreground">
                 📞 {p.phone}
+                {p.isWhatsapp && <WhatsappIcon className="ml-1.5" />}
               </p>
             ))}
+            <div className="pt-1">
+              <ConsentBadge consent={order.customer.whatsappConsent} />
+            </div>
             {order.address && (
               <p className="pt-2 text-muted-foreground">
                 {order.address.addressLine}

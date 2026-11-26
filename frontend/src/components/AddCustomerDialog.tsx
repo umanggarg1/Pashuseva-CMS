@@ -32,7 +32,8 @@ import { PhoneRowErrors, WhatsappConsentFields, WhatsappPhoneToggle } from '@/co
 export interface CreatedCustomer {
   id: number;
   name: string;
-  phones: { phone: string; isPrimary: boolean }[];
+  phones: { phone: string; isPrimary: boolean; isWhatsapp?: boolean }[];
+  whatsappConsent?: 'YES' | 'NO'; // Phase 32 D2: shown by the Create Order picker
 }
 
 interface PossibleDuplicate extends CreatedCustomer {
