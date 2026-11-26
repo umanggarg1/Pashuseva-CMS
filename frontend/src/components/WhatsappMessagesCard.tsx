@@ -1,14 +1,18 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { MessageCircle } from 'lucide-react';
 
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import ResendMessageDialog, { type ResendType } from '@/components/ResendMessageDialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { apiFetch } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
 // Phase 32 D4 (PHASE32_TODO.md §0.1): Order Details → WhatsApp messages card.
-// READ-ONLY: it only ever GETs /orders/:id/messages (masked numbers only). It never
-// creates, resends or changes a message; Resend arrives in D5 behind message:resend.
+// Viewing is READ-ONLY: it only ever GETs /orders/:id/messages (masked numbers only).
+// D5: users with message:resend get a Resend button on the latest message of each
+// type, which opens the confirmation dialog; nothing is sent without that dialog.
 
 export type MessageStatus =
   | 'QUEUED'
@@ -136,7 +140,17 @@ export function actorLabel(m: Pick<OrderMessage, 'isResend' | 'triggeredBy'>): s
   return m.isResend ? `Requested by: ${name}` : `Triggered by: ${name}`;
 }
 
-export default function WhatsappMessagesCard({ orderId }: { orderId: number }) {
+export default function WhatsappMessagesCard({
+  orderId,
+  customerId,
+  canResend,
+}: {
+  orderId: number;
+  customerId: number;
+  /** message:resend — without it no Resend button is rendered at all. */
+  canResend: boolean;
+}) {
+  const [resendType, setResendType] = useState<ResendType | null>(null);
   const query = useQuery({
     queryKey: ['order', orderId, 'whatsapp-messages'],
     queryFn: () => apiFetch<OrderMessage[]>(`/orders/${orderId}/messages`),
@@ -157,7 +171,10 @@ export default function WhatsappMessagesCard({ orderId }: { orderId: number }) {
         {query.data && query.data.length === 0 && (
           <p className="text-sm text-muted-foreground">No WhatsApp messages for this order.</p>
         )}
-        {query.data?.map((m) => (
+        {query.data?.map((m) => {
+          // The Resend button sits on the newest message of each type.
+          const latestOfType = Math.max(...query.data.filter((x) => x.type === m.type).map((x) => x.id)) === m.id;
+          return (
           <div key={m.id} data-testid="whatsapp-message-row" data-message-id={m.id} className="rounded-md border p-2 text-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="font-medium">
@@ -172,6 +189,11 @@ export default function WhatsappMessagesCard({ orderId }: { orderId: number }) {
                   {STATUS_LABEL[m.status]}
                 </span>
                 <span className="text-xs text-muted-foreground">{formatTime(statusTime(m))}</span>
+                {canResend && latestOfType && (
+                  <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setResendType(m.type)}>
+                    Resend
+                  </Button>
+                )}
               </span>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -196,8 +218,18 @@ export default function WhatsappMessagesCard({ orderId }: { orderId: number }) {
               {statusHelp(m)}
             </p>
           </div>
-        ))}
+          );
+        })}
       </CardContent>
+      {canResend && resendType && (
+        <ResendMessageDialog
+          orderId={orderId}
+          customerId={customerId}
+          type={resendType}
+          open={resendType !== null}
+          onOpenChange={(o) => !o && setResendType(null)}
+        />
+      )}
     </Card>
   );
 }

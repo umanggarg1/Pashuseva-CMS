@@ -658,7 +658,11 @@ export default function OrderDetail() {
       )}
 
       {/* Phase 32 D4: read-only WhatsApp message history for this order. */}
-      <WhatsappMessagesCard orderId={id} />
+      <WhatsappMessagesCard
+        orderId={id}
+        customerId={order.customer.id}
+        canResend={hasPermission(currentUser, 'message:resend')}
+      />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <NotesPanel orderId={id} notes={notesQuery.data} isPending={notesQuery.isPending} />

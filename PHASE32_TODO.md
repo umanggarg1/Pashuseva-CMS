@@ -1530,7 +1530,46 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     - an Employee with order:view only sees the same rows, no Resend, and no
       Admin-only fields.
     Regressions: D2 19/19, D3 8/8 + 27/27.
-- [ ] D5. **Resend dialog** (§13): type, **current WhatsApp number (no picker; link to Customer Details to change it)**, previous status, required reason, text preview, delivered warning, confirm with `previewHash`; on 409 show the new preview and ask again; button disabled while pending; idempotency key
+- [x] D5. **Resend dialog** (§13): type, **current WhatsApp number (no picker; link to Customer Details to change it)**, previous status, required reason, text preview, delivered warning, confirm with `previewHash`; on 409 show the new preview and ask again; button disabled while pending; idempotency key
+  - **Done (2026-11-26, local only), frontend only (C6 endpoints unchanged).**
+    `components/ResendMessageDialog.tsx` is opened from a **Resend** button that the
+    WhatsApp messages card shows on the newest message of each type, only when the
+    user has message:resend. The API also returns 403 without it. The dialog shows:
+    - the message type;
+    - "To 98XXXX3210 (current WhatsApp number)". There is no picker; the link
+      "Change the WhatsApp number in Customer Details" goes to /customers/:id;
+    - the language;
+    - the previous message as "#id · status · time";
+    - an amber "already received" warning when a previous message was
+      DELIVERED/READ;
+    - the server's exact header/body/footer;
+    - a required reason (4 options; "Other" needs at least 3 characters of text);
+    - why a resend is blocked, if it is.
+  - The preview is reloaded from the server every time the dialog opens. Confirm
+    sends its `previewHash`.
+  - On 409 PREVIEW_CHANGED the new preview replaces the old one with "The message
+    changed… Nothing was sent… press Confirm again". The dialog stays open and the
+    reason is kept. On another 409 (blocked meanwhile) the preview is reloaded.
+  - Confirm is disabled and reads "Queuing…" while the request is pending, and a
+    second click is ignored.
+  - Idempotency-Key per resend submission (`resend:<order>:<type>`, the same helper
+    as orders): kept across retries and the 409, cleared after success.
+  - Tests: browser **30/30**:
+    - the permission (no button and a 403 without it; a button with it);
+    - all dialog contents, including that the non-WhatsApp phone is never offered;
+    - the preview matches the server exactly (Hindi message, stored product names);
+    - the reason rules; the pending state with a double click giving 1 request and
+      1 record;
+    - the previewHash is sent, the new record is a RESEND of the original with its
+      reason and requester, and the original is byte-identical;
+    - the card row "Requested by: …"; the blocked state right after;
+    - the 409 after the number changed (nothing queued, new preview, then 1 resend
+      to the new number with the same key);
+    - a lost response retried with the same key gives 1 resend; the key is cleared
+      after success;
+    - the dialog wording stays English.
+    Regressions: D4 31/31 (its Admin check now expects one Resend button per type),
+    D3 8/8 + 27/27.
 - [ ] D6. Admin **Messaging** page (Settings area, `message:manage`): enabled/paused state + Resume, rate-limited-until, template approval statuses + Refresh, **queue size + oldest queued age**, a **Needs attention** list (UNKNOWN / FAILED / late-response notes) with Resolve actions
 - [ ] D7. Types + API client + react-query hooks for all of the above
 - [ ] D8. **Permission picker (`frontend/src/lib/permissions.ts`): add `message:resend` ("Resend WhatsApp message") and `message:manage` ("Manage WhatsApp messaging").** Required before release: the picker saves a user's FULL permission list, so without these two entries saving anyone's permissions would silently remove `message:resend` (found in C5).
