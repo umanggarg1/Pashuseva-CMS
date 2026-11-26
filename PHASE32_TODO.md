@@ -1494,7 +1494,39 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     - Regressions: D1 37/37 + 19/19, D2 19/19 (its picker-shape check now expects
       the D3 language field), integration 14/14 + 22/22, workflows 17/17 + 17/17,
       C6 38/38 + 3/3; 0 non-local requests.
-- [ ] D4. OrderDetail **WhatsApp messages** card (§0.1): rows per message (type, masked number, language, status chip with time, reason for FAILED/SKIPPED, next retry time for RETRY_WAIT, "resend of #", by whom); **status help text per §0.1 (SENT explicitly "not yet delivered")**; auto-refresh every 10 s while any row is QUEUED/PROCESSING/RETRY_WAIT/SENT
+- [x] D4. OrderDetail **WhatsApp messages** card (§0.1): rows per message (type, masked number, language, status chip with time, reason for FAILED/SKIPPED, next retry time for RETRY_WAIT, "resend of #", by whom); **status help text per §0.1 (SENT explicitly "not yet delivered")**; auto-refresh every 10 s while any row is QUEUED/PROCESSING/RETRY_WAIT/SENT
+  - **Done (2026-11-26, local only), read-only.**
+    `components/WhatsappMessagesCard.tsx` is placed on Order Detail after
+    Delivery/Payment and hidden when printing. It only GETs `/orders/:id/messages`
+    (C6, order:view): no create, resend or change, and no backend change.
+  - One row per message, oldest first, keyed by message id. Each row shows:
+    - "#id · Order confirmation / Dispatch notification", or "Resend: …" plus
+      "Resend of #… · Reason: …";
+    - "To 98XXXX3210" (masked by the server; the full number is never sent to the
+      browser);
+    - the language, with "(Hindi template not available)" when it fell back;
+    - "by <staff>" or "automatic";
+    - a status chip with the time of the current status, with the §0.1 help text as
+      the tooltip and as a line under the row. SENT reads "Accepted by WhatsApp, not
+      yet delivered". FAILED reads "Could not be sent: <reason> (code …)". SKIPPED
+      reads "Not sent: <reason>". RETRY_WAIT reads "…will retry automatically at
+      <time>".
+  - Refreshes every 10 s only while a row is QUEUED/PROCESSING/RETRY_WAIT/SENT.
+  - No Resend action yet; D5 adds it behind message:resend. The Admin-only late
+    response note is never displayed.
+  - Tests: browser **30/30**:
+    - every one of the 9 statuses (wording, chip and time);
+    - FAILED and SKIPPED reasons, the RETRY_WAIT time, the resend row with reason
+      and who, the language fallback;
+    - masked number only, in both the card and the API response;
+    - English only;
+    - auto-refresh: 2 refreshes in 23 s while active, a database change shown
+      without a reload, no duplicate rows, and no refresh when nothing is active;
+    - read-only: only GET requests, no new messages, rows byte-identical after
+      viewing;
+    - an Employee with order:view only sees the same rows, no Resend, and no
+      Admin-only fields.
+    Regressions: D2 19/19, D3 8/8 + 27/27.
 - [ ] D5. **Resend dialog** (§13): type, **current WhatsApp number (no picker; link to Customer Details to change it)**, previous status, required reason, text preview, delivered warning, confirm with `previewHash`; on 409 show the new preview and ask again; button disabled while pending; idempotency key
 - [ ] D6. Admin **Messaging** page (Settings area, `message:manage`): enabled/paused state + Resume, rate-limited-until, template approval statuses + Refresh, **queue size + oldest queued age**, a **Needs attention** list (UNKNOWN / FAILED / late-response notes) with Resolve actions
 - [ ] D7. Types + API client + react-query hooks for all of the above

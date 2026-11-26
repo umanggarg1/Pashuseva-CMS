@@ -48,6 +48,7 @@ import { TRASH_RETENTION_DAYS } from '@/lib/trash';
 import { formatPrice, paymentStatusLabel } from '@/lib/pricing';
 import { ConsentBadge, WhatsappIcon } from '@/components/WhatsappBadges';
 import { useReorder } from '@/lib/useReorder';
+import WhatsappMessagesCard from '@/components/WhatsappMessagesCard';
 import type { WhatsappConsent } from '@/lib/whatsapp';
 
 const LOCATION_UPDATE_STATUSES = [
@@ -655,6 +656,9 @@ export default function OrderDetail() {
           onChanged={invalidatePayments}
         />
       )}
+
+      {/* Phase 32 D4: read-only WhatsApp message history for this order. */}
+      <WhatsappMessagesCard orderId={id} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <NotesPanel orderId={id} notes={notesQuery.data} isPending={notesQuery.isPending} />
