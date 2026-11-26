@@ -72,6 +72,13 @@ export const PERMISSION_MODULES: PermissionModule[] = [
     label: 'Reports',
     permissions: [{ value: 'report:view', label: 'View' }],
   },
+  {
+    // Phase 32 D8: the Resend dialog on Order Details. A business permission
+    // (default for Employees and Managers, like the backend), but only an Admin can
+    // grant or remove it (enforced by the server).
+    label: 'WhatsApp messages',
+    permissions: [{ value: 'message:resend', label: 'Resend WhatsApp message' }],
+  },
 ];
 
 // Every business permission — everything in PERMISSION_MODULES, flattened. Does NOT
@@ -83,6 +90,15 @@ export const ALL_BUSINESS_PERMISSIONS = PERMISSION_MODULES.flatMap((m) =>
 );
 
 export const EMPLOYEE_MANAGE_PERMISSIONS_GRANT = 'employee:manage-permissions';
+
+// Phase 32 D8: Settings → WhatsApp Messaging (resolve unconfirmed messages, resume
+// sending, refresh template statuses). Administrative, like the grant above: never
+// in a preset, never in ALL_BUSINESS_PERMISSIONS, shown and changeable by an Admin only.
+export const MESSAGE_MANAGE_GRANT = 'message:manage';
+
+// Phase 32 D8: only an Admin can grant or remove these (the server refuses anyone
+// else); the picker keeps them exactly as saved for every other editor.
+export const ADMIN_ONLY_PERMISSIONS = ['message:resend', MESSAGE_MANAGE_GRANT];
 
 export type DataScope = 'ALL' | 'ASSIGNED';
 
@@ -103,6 +119,8 @@ const DEFAULT_EMPLOYEE_PERMISSIONS = [
   // Phase 19 §A: standard now, not opt-in — see the backend's comment.
   'order:customerSearchAll',
   'product:view',
+  // Phase 32 C5/D8: standard for Employees (backend DEFAULT_EMPLOYEE_PERMISSIONS).
+  'message:resend',
 ];
 
 export const PERMISSION_PRESETS: {

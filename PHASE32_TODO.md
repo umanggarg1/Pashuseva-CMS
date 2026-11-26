@@ -1731,7 +1731,50 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
         received.
     - Regressions: D3 8/8 + 27/27, D4 31/31, D5 35/35, D5 concurrency 6/6, D6 44/44
       + 24/24. TypeScript and the frontend build pass. 0 non-local requests.
-- [ ] D8. **Permission picker (`frontend/src/lib/permissions.ts`): add `message:resend` ("Resend WhatsApp message") and `message:manage` ("Manage WhatsApp messaging").** Required before release: the picker saves a user's FULL permission list, so without these two entries saving anyone's permissions would silently remove `message:resend` (found in C5).
+- [x] D8. **Permission picker (`frontend/src/lib/permissions.ts`): add `message:resend` ("Resend WhatsApp message") and `message:manage` ("Manage WhatsApp messaging").** Required before release: the picker saves a user's FULL permission list, so without these two entries saving anyone's permissions would silently remove `message:resend` (found in C5).
+  - **Done (2026-11-26, local only).** Root cause: every preset REPLACES the whole
+    list and none contained the two keys, so applying any preset (or approving a
+    sign-up with one) silently dropped `message:resend` / `message:manage`.
+    - Picker (`lib/permissions.ts`, `PermissionPicker.tsx`): a new **WhatsApp
+      messages** section, "Resend WhatsApp message" (`message:resend`). It is in
+      the Standard Employee / Standard Manager / Full Access presets, in step with
+      the backend defaults (C5).
+    - An **Administrative** "Manage WhatsApp messaging" (`message:manage`): shown
+      only to an Admin editor, never in a preset or ALL_BUSINESS_PERMISSIONS.
+    - Applying a preset never changes message:manage or
+      employee:manage-permissions. For a non-Admin editor it also leaves
+      message:resend unchanged, and that checkbox is disabled with "(only an Admin
+      can change this)".
+    - Server (`permission.service.replaceForUser`, authoritative): a non-Admin (a
+      Manager with employee:manage-permissions) must send both keys back exactly
+      as stored. Granting or removing either gives 403 "Only an Admin can grant or
+      remove WhatsApp messaging permissions" and NOTHING in that request is saved.
+      Approval stays Admin-only (requireRole). No data migration; nobody's saved
+      permissions were changed.
+  - Tests:
+    - API **12/12**:
+      - Admin: an unrelated edit for a user with both keeps both; assigning or
+        removing message:resend switches resend on/off immediately (preview 200 →
+        403); the same for message:manage and the Messaging status.
+      - Delegated Manager: an unrelated change with the keys unchanged → 200 and
+        preserved; granting message:manage, removing message:resend or removing
+        message:manage → 403 with nothing saved.
+      - A Manager without the delegation → 403. An Employee granting themselves →
+        403.
+    - Browser **15/15**:
+      - Admin picker shows both. Saving an unrelated change keeps both (request
+        body and database). The Standard Employee preset keeps message:manage;
+        Full Access does not grant it.
+      - Unchecking Resend removes the button for that user; checking Resend and
+        Manage gives them the button and the Messaging page.
+      - Delegated Manager picker: Resend disabled with the note and no Manage
+        option. A preset plus an unrelated change keeps BOTH keys, including the
+        message:manage they cannot see.
+      - An untouched control user is unchanged.
+    - Screenshots: `D:\pashuseva\backups\phase32-verification\d8_picker_admin.png`
+      and `d8_picker_delegated_manager.png`.
+    - Regressions: integration 14/14 + 22/22, workflows 17/17 + 17/17, D6 44/44 +
+      24/24.
 
 ### E. Mandatory tests before production (local Docker PG + dry-run, plus a fake-Meta stub server for error responses)
 - [ ] E1. Create an order twice with the same idempotency key → one order, one confirmation

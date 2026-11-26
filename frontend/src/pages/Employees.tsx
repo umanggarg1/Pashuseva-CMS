@@ -762,6 +762,7 @@ function PermissionsDialog({ user, onClose }: { user: EmployeeUser; onClose: () 
             value={current}
             onChange={setState}
             showDelegatedGrant={currentUser?.role === 'ADMIN' && user.role === 'MANAGER'}
+            editorIsAdmin={currentUser?.role === 'ADMIN'}
           />
         )}
         <DialogFooter>
@@ -880,7 +881,8 @@ function ApprovalDialog({ user, onClose }: { user: EmployeeUser; onClose: () => 
           <p className="mb-2 text-xs font-semibold uppercase text-muted-foreground">
             Permissions
           </p>
-          <PermissionPicker value={state} onChange={setState} showDelegatedGrant={role === 'MANAGER'} />
+          {/* Approval is Admin-only (server requireRole('ADMIN')). */}
+          <PermissionPicker value={state} onChange={setState} showDelegatedGrant={role === 'MANAGER'} editorIsAdmin />
         </div>
 
         <DialogFooter className="gap-2 sm:justify-between">
