@@ -14,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import { ApiError } from '@/lib/api';
+import { hasPermission, useCurrentUser } from '@/lib/auth';
 import { queueSize as queueSizeOf, type AttentionMessage, type ResolveDecision } from '@/lib/messaging';
 import {
   isPermissionDenied,
@@ -283,6 +284,10 @@ type Decision = ResolveDecision;
  * explicit choice (nothing preselected) and a reason is mandatory.
  */
 function ResolveDialog({ message: m, onClose }: { message: AttentionMessage; onClose: () => void }) {
+  const { data: currentUser } = useCurrentUser();
+  // The combined "mark failed and resend" also needs message:resend (the server
+  // refuses it otherwise); without it the option is shown but disabled.
+  const canResend = hasPermission(currentUser, 'message:resend');
   const [decision, setDecision] = useState<Decision | null>(null);
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -297,6 +302,7 @@ function ResolveDialog({ message: m, onClose }: { message: AttentionMessage; onC
       {
         onSuccess: (r) => {
           if (decision === 'mark-sent') toast.success(`Message #${m.id} marked as sent`);
+          else if (decision === 'mark-failed') toast.success(`Message #${m.id} marked as failed; nothing was resent`);
           else if (r.resend) toast.success(`Message #${m.id} marked as failed; resend queued as message #${r.resend.messageId}`);
           else toast.warning(`Message #${m.id} marked as failed; no resend was queued`, { description: r.resendBlockedReason ?? undefined });
           onClose();
@@ -355,11 +361,30 @@ function ResolveDialog({ message: m, onClose }: { message: AttentionMessage; onC
                 resent.
               </span>
             </label>
-            <label className="flex cursor-pointer items-start gap-2">
-              <input type="radio" name="decision" className="mt-1" checked={decision === 'mark-failed-and-resend'} onChange={() => setDecision('mark-failed-and-resend')} />
+            <label className={cn('flex items-start gap-2', canResend ? 'cursor-pointer' : 'cursor-not-allowed opacity-60')}>
+              <input
+                type="radio"
+                name="decision"
+                className="mt-1"
+                disabled={!canResend}
+                checked={decision === 'mark-failed-and-resend'}
+                onChange={() => setDecision('mark-failed-and-resend')}
+              />
               <span>
                 <span className="font-medium">Mark as failed and resend</span>: a NEW message is queued to the
                 customer&apos;s current WhatsApp number (normal checks apply). This one stays as it is.
+                {!canResend && (
+                  <span className="block text-xs text-muted-foreground" data-testid="resend-permission-note">
+                    Needs the &quot;Resend WhatsApp message&quot; permission as well.
+                  </span>
+                )}
+              </span>
+            </label>
+            <label className="flex cursor-pointer items-start gap-2">
+              <input type="radio" name="decision" className="mt-1" checked={decision === 'mark-failed'} onChange={() => setDecision('mark-failed')} />
+              <span>
+                <span className="font-medium">Mark as failed</span>: the customer most likely did not receive it.
+                Nothing is resent now; it can be resent later from the order.
               </span>
             </label>
           </fieldset>

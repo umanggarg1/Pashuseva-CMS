@@ -147,7 +147,8 @@ export interface Page<T> {
   data: T[];
 }
 
-export type ResolveDecision = 'mark-sent' | 'mark-failed-and-resend';
+// "mark-failed-and-resend" also needs message:resend (server-enforced; Admin bypasses).
+export type ResolveDecision = 'mark-sent' | 'mark-failed' | 'mark-failed-and-resend';
 export interface ResolveResult {
   messageId: number;
   status: 'SENT' | 'FAILED';

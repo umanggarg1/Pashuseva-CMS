@@ -1678,6 +1678,37 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
         Windows, Docker VM within 18–59 ms, no jumps, -15 ms over 30 s.
       - Reruns with the scripts, tests and code unchanged: **B8–B10 51/51, C4
         14/14.** D6 is fully verified.
+  - **Follow-up after D8 (user decision 2026-11-26): permission structure confirmed.**
+    - Kept unchanged:
+      - Admin bypasses all permission checks, so always has both permissions.
+      - message:resend stays a default for new Employees and Managers and is in
+        the standard presets.
+      - The C5 one-time grant to existing users with order:update is
+        **intentional** and will apply at A4.
+      - message:manage is never a default.
+      - Only an Admin grants or removes either key.
+      - Managers keep delegated editing of their own Employees' other permissions.
+    - **Changed:** "Mark as failed and resend" now needs message:manage AND
+      message:resend. It is server-enforced before anything is written: 403 with
+      "…also needs the Resend WhatsApp message permission… Nothing was changed",
+      and the message stays UNKNOWN.
+    - New decision **"mark-failed"** (Mark as failed, nothing resent). Needs
+      message:manage only; afterwards the UNKNOWN block is lifted, so the message
+      can be resent later from the order by someone with message:resend.
+    - The dialog shows "Mark as failed and resend" disabled, with "Needs the
+      Resend WhatsApp message permission as well.", for users without it.
+    - Tests: API **9/9**:
+      - manage-only gets 403 for failed+resend with nothing changed (no audit, no
+        message);
+      - manage-only can mark as failed (audited as "mark-failed", original error
+        kept, nothing queued) and can mark as sent;
+      - someone with resend can resend afterwards;
+      - a Manager with both can do failed+resend, with the resend requested by
+        them; Admin with no grants can too;
+      - an Employee with resend only gets 403 on every resolve action.
+      Browser **4/4**: the disabled option and its note; mark as failed from the
+      page; both permissions enabled. Regressions: D6 44/44 + 24/24, D7 24/24 +
+      13/13, C6 38/38 + 3/3.
 - [x] D7. Types + API client + react-query hooks for all of the above
   - **Done (2026-11-26, local only), frontend only (no backend or architecture
     change).**

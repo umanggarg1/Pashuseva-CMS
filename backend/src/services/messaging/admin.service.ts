@@ -8,13 +8,17 @@ import { getMessagingState, resumeSending } from './messagingState';
 import { refreshTemplateStatuses } from './dispatcher';
 import { recordMessageActivity } from './activity';
 import { createResend } from './resend.service';
+import { hasPermission } from '../../utils/permissions';
+import type { Role } from '../../generated/prisma/enums';
+
+export type ResolveAction = 'mark-sent' | 'mark-failed' | 'mark-failed-and-resend';
 
 // Phase 32 C6 (PHASE32_TODO.md §9.5, §11, §14): the Admin Messaging page actions —
 // status overview, "needs attention" list, resolving UNKNOWN messages, resuming a
 // paused sender, refreshing template statuses. Route-gated on message:manage
 // (Admin-only by default); every action is written to the audit log.
 
-type ActingUser = { id: number; name?: string | null };
+type ActingUser = { id: number; name?: string | null; role?: Role | null; permissions?: string[] };
 
 export async function messagingStatus() {
   const state = await getMessagingState();
@@ -86,7 +90,12 @@ export async function listMessages(q: { status?: string; needsAttention?: boolea
  * UNKNOWN → an Admin decides (§9.5). Nothing is ever resent without this decision.
  *
  * Phase 32 D6 data-integrity rules:
- *  - the decision is explicit (mark-sent / mark-failed-and-resend), never inferred;
+ *  - the decision is explicit (mark-sent / mark-failed / mark-failed-and-resend),
+ *    never inferred;
+ *  - permissions (user decision after D8): resolving needs message:manage (route);
+ *    "mark-failed-and-resend" ALSO needs message:resend — checked here, before
+ *    anything is written, so a refusal leaves the message untouched (Admin bypasses
+ *    every permission check as everywhere in the CRM);
  *  - a reason is mandatory and stored in resolutionNote, the time in resolvedAt;
  *  - the original lastError, errorCode, sentAt and failedAt are NEVER changed (no
  *    send or failure time is invented — resolvedAt is the decision time);
@@ -97,7 +106,13 @@ export async function listMessages(q: { status?: string; needsAttention?: boolea
  *    unresolved, so of two Admins resolving at once exactly one wins; the other
  *    gets 409 and nothing of theirs is written.
  */
-export async function resolveUnknown(id: number, action: 'mark-sent' | 'mark-failed-and-resend', reason: string, admin: ActingUser) {
+export async function resolveUnknown(id: number, action: ResolveAction, reason: string, admin: ActingUser) {
+  if (action === 'mark-failed-and-resend' && !hasPermission({ role: admin.role ?? null, permissions: admin.permissions }, 'message:resend')) {
+    throw new HttpError(
+      403,
+      '"Mark as failed and resend" also needs the Resend WhatsApp message permission (message:resend). Nothing was changed; you can still mark it as failed.'
+    );
+  }
   const m = await prisma.outboundMessage.findUnique({ where: { id } });
   if (!m) throw new NotFoundError('Message not found');
   if (m.resolvedById) throw new HttpError(409, 'This message was already resolved by another Admin — reload to see their decision');
@@ -128,6 +143,9 @@ export async function resolveUnknown(id: number, action: 'mark-sent' | 'mark-fai
   });
 
   if (markSent) return { messageId: id, status: 'SENT', resend: null, resendBlockedReason: null };
+  // "mark-failed": resolved as failed, nothing queued (a resend can be done later
+  // from the order by someone with message:resend — the UNKNOWN block is lifted).
+  if (action === 'mark-failed') return { messageId: id, status: 'FAILED', resend: null, resendBlockedReason: null };
   if (!m.orderId) return { messageId: id, status: 'FAILED', resend: null, resendBlockedReason: null };
   // The resend is a SEPARATE new message and gets every normal check (consent,
   // number, go-live, order state). If one blocks it, the resolution still stands and
