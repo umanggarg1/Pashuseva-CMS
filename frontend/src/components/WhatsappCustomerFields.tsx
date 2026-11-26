@@ -2,14 +2,13 @@ import { useFormContext } from 'react-hook-form';
 import { MessageCircle } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import { Checkbox } from '@/components/ui/checkbox';
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import {
   CONSENT_OPTIONS,
+  CONSENT_REMINDER,
   LANGUAGE_OPTIONS,
-  needsAgreementConfirmation,
   type MessageLanguage,
   type WhatsappConsent,
 } from '@/lib/whatsapp';
@@ -21,7 +20,6 @@ import {
 interface WhatsappShape {
   phones: { phone: string; label?: string; isPrimary: boolean; isWhatsapp: boolean }[];
   whatsappConsent: WhatsappConsent;
-  whatsappConfirmed: boolean;
   preferredLanguage: MessageLanguage;
 }
 
@@ -57,8 +55,6 @@ export function WhatsappConsentFields({
   lastChange?: string | null;
 }) {
   const form = useFormContext<WhatsappShape>();
-  const consent = form.watch('whatsappConsent');
-  const showConfirm = needsAgreementConfirmation(consent, savedConsent);
 
   return (
     <div className="space-y-3 rounded-md border p-3">
@@ -80,16 +76,14 @@ export function WhatsappConsentFields({
                     name={field.name}
                     value={o.value}
                     checked={field.value === o.value}
-                    onChange={() => {
-                      field.onChange(o.value);
-                      form.setValue('whatsappConfirmed', false);
-                    }}
+                    onChange={() => field.onChange(o.value)}
                     className="h-4 w-4 accent-primary"
                   />
                   <span className={cn(o.value === 'NO' && field.value === 'NO' && 'text-red-600')}>{o.label}</span>
                 </label>
               ))}
             </div>
+            <p className="text-xs text-amber-700">{CONSENT_REMINDER}</p>
             {savedConsent && (
               <p className="text-xs text-muted-foreground">
                 Saved: {savedConsent === 'YES' ? 'YES – Customer agreed' : 'NO – Customer declined'}
@@ -100,31 +94,6 @@ export function WhatsappConsentFields({
           </FormItem>
         )}
       />
-
-      {showConfirm && (
-        <FormField
-          control={form.control}
-          name="whatsappConfirmed"
-          render={({ field }) => (
-            <FormItem>
-              <label className="flex cursor-pointer items-start gap-2 text-sm">
-                <FormControl>
-                  <Checkbox
-                    checked={field.value}
-                    onCheckedChange={(v) => field.onChange(v === true)}
-                    className="mt-0.5"
-                    aria-label="Customer agreed to WhatsApp messages"
-                  />
-                </FormControl>
-                <span>
-                  I asked the customer, and they agreed to receive order updates on WhatsApp.
-                </span>
-              </label>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
-      )}
 
       <FormField
         control={form.control}

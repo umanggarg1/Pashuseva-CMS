@@ -1387,27 +1387,30 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
       phone-number check).
     - `components/WhatsappCustomerFields.tsx` holds the WhatsApp section and the
       per-phone toggle.
-    - Add Customer: YES is preselected and NO is available. While YES is selected,
-      saving needs a ticked box: "I asked the customer, and they agreed to receive
-      order updates on WhatsApp". It starts unticked and resets on every change.
-      This makes the preselected YES reflect the customer's actual agreement, per
+    - Add Customer: YES is preselected and NO is available. Directly under the choice:
+      "Select YES only after the customer has agreed to receive WhatsApp order
+      updates." The YES/NO selection itself is the consent record.
+      **Decision (user, D1 review, 2026-11-26):** the mandatory staff confirmation
+      checkbox from the first D1 version was removed (one action for staff serving
+      rural customers; no separate staff attestation). The reminder text meets
       condition (b).
     - The first phone is the WhatsApp number by default (Q2). At most one phone can
       be the WhatsApp number, and an invalid number shows an error before sending.
     - Message language: English by default, or Hindi. A note says names and products
       stay in English and the CRM stays English.
     - Edit Customer: shows "Saved: … · Last changed by X on date" (or "Customer
-      replied STOP…"). Changing to YES needs the same confirmation; keeping YES or
-      changing to NO does not. Consent is sent only when it changed, so a plain
-      re-save does not re-stamp it.
+      replied STOP…") and the same reminder. Consent is sent only when it changed,
+      so a plain re-save does not re-stamp it.
     - **Fixes a latent bug:** the edit form previously left out `isWhatsapp`, which
       would have cleared the WhatsApp flag on every save. It now always sends it.
   - Tests:
     - API **37/37**: both paths × Admin and Employee × 6 invalid forms → 400 with
       nothing created; YES and NO → 201 with the stamp and history entry. Existing
       customer order, edit and reorder unaffected.
-    - Browser (Playwright, local only) **22/22**: Customers page, Create Order
-      picker and Edit flows, checking the request bodies and the database.
+    - Browser (Playwright, local only) **19/19** (after the checkbox removal):
+      Customers page, Create Order picker and Edit flows. Checks the reminder, that
+      there is no checkbox, that YES saves in one action, the request bodies and the
+      database.
     - Regressions: integration 14/14 + 22/22, workflows 17/17 + 17/17 (the workflow
       script now sends consent NO when it creates customers), worker 51/51,
       activity 14/14, C6 38/38 + 3/3, webhook 29/29.

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -625,6 +625,7 @@ const editBaseSchema = z.object({
   pincode: z.string().min(1, 'Pincode is required'),
   landmark: z.string().optional(),
 });
+const editSchema = editBaseSchema.superRefine(refineWhatsapp());
 type EditValues = z.infer<typeof editBaseSchema>;
 
 function EditCustomerDialog({ customer }: { customer: CustomerDetailData }) {
@@ -632,13 +633,6 @@ function EditCustomerDialog({ customer }: { customer: CustomerDetailData }) {
   const queryClient = useQueryClient();
 
   const currentAddress = customer.addresses[0];
-  // Phase 32 D1: changing consent to YES needs the staff confirmation; keeping the
-  // saved YES (or changing to NO) does not.
-  const editSchema = useMemo(
-    () => editBaseSchema.superRefine(refineWhatsapp(customer.whatsappConsent)),
-    [customer.whatsappConsent]
-  );
-
   const form = useForm<EditValues>({
     resolver: zodResolver(editSchema),
     defaultValues: {
@@ -653,7 +647,6 @@ function EditCustomerDialog({ customer }: { customer: CustomerDetailData }) {
         isWhatsapp: p.isWhatsapp,
       })),
       whatsappConsent: customer.whatsappConsent,
-      whatsappConfirmed: false,
       preferredLanguage: customer.preferredLanguage,
       line1: currentAddress?.line1 ?? '',
       city: currentAddress?.city ?? '',

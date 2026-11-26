@@ -35,28 +35,23 @@ export const LANGUAGE_OPTIONS: { value: MessageLanguage; label: string }[] = [
 ];
 
 export const WHATSAPP_NUMBER_ERROR = 'WhatsApp number must be a valid 10-digit Indian mobile number';
-export const CONFIRM_AGREEMENT_ERROR =
-  'Confirm that you asked the customer and they agreed — or choose NO';
+// Shown directly under the YES/NO choice. The YES/NO selection itself is the consent
+// record; there is deliberately no extra confirmation step (user decision after D1
+// review, 2026-11-26: keep it to one action for staff serving rural customers).
+export const CONSENT_REMINDER = 'Select YES only after the customer has agreed to receive WhatsApp order updates.';
 
 /** The WhatsApp part of a customer form (create or edit). */
 export const whatsappFormFields = {
   whatsappConsent: z.enum(['YES', 'NO'], { error: 'Choose YES or NO' }),
-  whatsappConfirmed: z.boolean(),
   preferredLanguage: z.enum(['EN', 'HI']),
 };
 
 interface WhatsappFormValues {
   phones: { phone: string; isWhatsapp: boolean }[];
-  whatsappConsent: WhatsappConsent;
-  whatsappConfirmed: boolean;
 }
 
-/**
- * Shared rules: at most one WhatsApp number, it must be a valid Indian mobile, and a
- * YES that is being newly recorded (always on create; on edit only when it changes
- * to YES) needs the staff member's explicit confirmation that the customer agreed.
- */
-export function refineWhatsapp(savedConsent: WhatsappConsent | null) {
+/** Shared phone rules: at most one WhatsApp number, and it must be a valid Indian mobile. */
+export function refineWhatsapp() {
   return (values: WhatsappFormValues, ctx: z.RefinementCtx) => {
     const flagged = values.phones.map((p, i) => ({ p, i })).filter(({ p }) => p.isWhatsapp);
     if (flagged.length > 1) {
@@ -67,14 +62,7 @@ export function refineWhatsapp(savedConsent: WhatsappConsent | null) {
         ctx.addIssue({ code: 'custom', path: ['phones', i, 'phone'], message: WHATSAPP_NUMBER_ERROR });
       }
     }
-    if (needsAgreementConfirmation(values.whatsappConsent, savedConsent) && !values.whatsappConfirmed) {
-      ctx.addIssue({ code: 'custom', path: ['whatsappConfirmed'], message: CONFIRM_AGREEMENT_ERROR });
-    }
   };
-}
-
-export function needsAgreementConfirmation(selected: WhatsappConsent | undefined, saved: WhatsappConsent | null) {
-  return selected === 'YES' && saved !== 'YES';
 }
 
 /** "Last changed by Asha on 25 Nov 2026" (or the customer's STOP reply / the initial setup). */

@@ -61,21 +61,19 @@ const customerFormSchema = z.object({
   landmark: z.string().optional(),
   notes: z.string().optional(),
 })
-  // Phase 32 D1: a new customer has no saved consent, so a YES always needs the
-  // staff member's confirmation that the customer actually agreed.
-  .superRefine(refineWhatsapp(null));
+  // Phase 32 D1: one WhatsApp number at most, and it must be a valid mobile.
+  .superRefine(refineWhatsapp());
 
 type CustomerFormValues = z.infer<typeof customerFormSchema>;
 
 // Phase 32 D1 defaults (Q2): the first phone is the WhatsApp number, consent YES is
-// preselected (NO stays one click away) but is only accepted once staff tick the
-// confirmation, message language English.
+// preselected with the reminder to select it only after the customer agreed (NO is
+// one click away), message language English.
 const DEFAULT_VALUES: CustomerFormValues = {
   name: '',
   email: '',
   phones: [{ phone: '', label: 'Personal', isPrimary: true, isWhatsapp: true }],
   whatsappConsent: 'YES',
-  whatsappConfirmed: false,
   preferredLanguage: 'EN',
   line1: '',
   city: '',
