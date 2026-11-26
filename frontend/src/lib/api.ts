@@ -15,23 +15,28 @@ export function apiUrl(path: string) {
 
 export class ApiError extends Error {
   status: number;
+  /** The parsed error body, incl. any structured extras (e.g. Phase 32's existingOrderNumber). */
+  body?: Record<string, unknown>;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, body?: Record<string, unknown>) {
     super(message);
     this.status = status;
+    this.body = body;
   }
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  // `...init` first, then the merged headers — otherwise a caller passing its own
+  // header (Phase 32 D3: Idempotency-Key) would silently drop the JSON Content-Type.
   const res = await fetch(`${API_BASE_URL}${path}`, {
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...init?.headers },
     ...init,
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
   });
 
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new ApiError(res.status, body?.error ?? res.statusText);
+    throw new ApiError(res.status, body?.error ?? res.statusText, body ?? undefined);
   }
 
   if (res.status === 204) return undefined as T;

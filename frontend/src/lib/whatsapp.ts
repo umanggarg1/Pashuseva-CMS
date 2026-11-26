@@ -81,3 +81,11 @@ export function describeConsentChange(info: {
   if (info.whatsappConsentSource === 'BACKFILL') return `Set when WhatsApp messages were introduced (${date})`;
   return `Last changed by ${info.whatsappConsentBy?.name ?? 'a staff member'} on ${date}`;
 }
+
+/** Masked number for staff screens (§0.1): 98XXXX3210; '' when not a valid mobile. Same as the backend. */
+export function maskWhatsappNumber(raw: string | null | undefined): string {
+  const n = toWhatsappNumber(raw);
+  if (!n) return '';
+  const national = n.slice(2);
+  return `${national.slice(0, 2)}XXXX${national.slice(6)}`;
+}

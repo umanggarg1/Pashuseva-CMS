@@ -9,7 +9,7 @@ import { apiFetch } from '@/lib/api';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
 import type { WhatsappConsent } from '@/lib/whatsapp';
-import { CompactWhatsapp, ConsentBadge, displayedPhone } from '@/components/WhatsappBadges';
+import { CompactWhatsapp, ConsentBadge, displayedPhone, WhatsappOrderHint } from '@/components/WhatsappBadges';
 
 export interface CustomerOption {
   id: number;
@@ -20,6 +20,7 @@ export interface CustomerOption {
   status?: 'ACTIVE' | 'INACTIVE';
   phones: { phone: string; isPrimary: boolean; isWhatsapp?: boolean }[];
   whatsappConsent?: WhatsappConsent; // Phase 32 D2
+  preferredLanguage?: 'EN' | 'HI'; // Phase 32 D3
 }
 
 // Phase 19 §A: the order-creation-time search's fixed limited shape — name/phone/
@@ -30,6 +31,7 @@ interface OrderSearchResult {
   name: string;
   phones: { phone: string; isPrimary: boolean; isWhatsapp: boolean }[];
   whatsappConsent: WhatsappConsent;
+  preferredLanguage: 'EN' | 'HI';
   addresses: { city: string }[];
   assignedEmployees: { employee: { id: number; name: string | null } }[];
 }
@@ -64,7 +66,7 @@ export default function CustomerPicker({
   });
 
   function handleCreated(customer: CreatedCustomer) {
-    onChange({ id: customer.id, name: customer.name, status: 'ACTIVE', phones: customer.phones, whatsappConsent: customer.whatsappConsent });
+    onChange({ id: customer.id, name: customer.name, status: 'ACTIVE', phones: customer.phones, whatsappConsent: customer.whatsappConsent, preferredLanguage: customer.preferredLanguage });
     setSearch('');
   }
 
@@ -81,6 +83,7 @@ export default function CustomerPicker({
             </p>
           )}
           {value.whatsappConsent && <ConsentBadge consent={value.whatsappConsent} className="mt-1" />}
+          <WhatsappOrderHint phones={value.phones} consent={value.whatsappConsent} language={value.preferredLanguage} />
         </div>
         <Button variant="ghost" size="sm" className="shrink-0" onClick={() => onChange(null)}>
           <X className="mr-1 h-4 w-4" /> Change
@@ -107,7 +110,7 @@ export default function CustomerPicker({
             <button
               key={c.id}
               type="button"
-              onClick={() => onChange({ id: c.id, name: c.name, phones: c.phones, whatsappConsent: c.whatsappConsent })}
+              onClick={() => onChange({ id: c.id, name: c.name, phones: c.phones, whatsappConsent: c.whatsappConsent, preferredLanguage: c.preferredLanguage })}
               className="flex w-full items-center justify-between gap-3 p-2 text-left text-sm hover:bg-accent"
             >
               <span className="min-w-0 truncate">

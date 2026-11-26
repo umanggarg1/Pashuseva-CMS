@@ -27,6 +27,15 @@ import ErrorState from '@/components/ErrorState';
 import CustomerPicker, { type CustomerOption } from '@/components/CustomerPicker';
 import EmployeeMultiSelect from '@/components/EmployeeMultiSelect';
 import { apiFetch, ApiError } from '@/lib/api';
+import {
+  clearSubmissionKey,
+  CREATE_ORDER_SCOPE,
+  existingOrderFrom,
+  orderSavedToast,
+  retryNetworkErrors,
+  submissionKey,
+  type CreatedOrderResponse,
+} from '@/lib/orderSubmit';
 import { useCurrentUser } from '@/lib/auth';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
 import { packagingUnitLabel } from '@/lib/productUnits';
@@ -223,10 +232,18 @@ export default function CreateOrder() {
     setItems((prev) => prev.filter((i) => i.productId !== productId));
   }
 
+  // Phase 32 D3: a second click while a submission is in flight is ignored here (the
+  // button also disables), and in any case reuses the same Idempotency-Key, so the
+  // server can never create two orders from one submission.
+  const submitting = useRef(false);
+
   const createOrder = useMutation({
+    retry: retryNetworkErrors,
+    retryDelay: 1000,
     mutationFn: () =>
-      apiFetch<{ id: number; orderNumber: string }>('/orders', {
+      apiFetch<CreatedOrderResponse>('/orders', {
         method: 'POST',
+        headers: { 'Idempotency-Key': submissionKey(CREATE_ORDER_SCOPE) },
         body: JSON.stringify({
           customerId: selectedCustomer!.id,
           items: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
@@ -241,17 +258,44 @@ export default function CreateOrder() {
         }),
       }),
     onSuccess: (order) => {
+      // Done: the next order on this page is a new submission with a new key.
+      clearSubmissionKey(CREATE_ORDER_SCOPE);
       queryClient.invalidateQueries({ queryKey: ['orders'] });
       // A new order shifts dashboard/report totals — both are computed live from the
       // database, but the cached copies still need to be told to refetch rather than
       // keep showing pre-creation numbers.
       queryClient.invalidateQueries({ queryKey: ['dashboard'] });
       queryClient.invalidateQueries({ queryKey: ['reports'] });
-      toast.success('Order created');
+      orderSavedToast(order);
       navigate(`/orders/${order.orderNumber}`);
     },
-    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to create order'),
+    onError: (err) => {
+      const existing = existingOrderFrom(err);
+      if (existing) {
+        // The key already created a different order (details changed after a lost
+        // response). Replace it so pressing Create Order again makes a new order.
+        clearSubmissionKey(CREATE_ORDER_SCOPE);
+        toast.error(`This order may already exist: ${existing}`, {
+          description: 'Open it to check. If this is a different order, press Create Order again.',
+          action: { label: 'Open it', onClick: () => navigate(`/orders/${existing}`) },
+          duration: 15000,
+        });
+        return;
+      }
+      // Any other failure: no order was created (or we don't know yet) — the key is
+      // kept, so pressing Create Order again retries this same submission safely.
+      toast.error(err instanceof ApiError ? err.message : 'Failed to create order');
+    },
+    onSettled: () => {
+      submitting.current = false;
+    },
   });
+
+  function submitOrder() {
+    if (submitting.current) return;
+    submitting.current = true;
+    createOrder.mutate();
+  }
 
   const canSubmit =
     selectedCustomer && items.length > 0 && items.every((i) => i.quantity > 0) && partialAmountValid && discountValid;
@@ -555,9 +599,11 @@ export default function CreateOrder() {
           {createOrder.isError && (
             <ErrorState
               message={
-                createOrder.error instanceof ApiError
-                  ? createOrder.error.message
-                  : 'Failed to create order.'
+                existingOrderFrom(createOrder.error)
+                  ? `This order may already exist: ${existingOrderFrom(createOrder.error)}. Open it to check, or press Create Order again if this is a different order.`
+                  : createOrder.error instanceof ApiError
+                    ? createOrder.error.message
+                    : 'Failed to create order.'
               }
             />
           )}
@@ -565,7 +611,7 @@ export default function CreateOrder() {
           <Button
             className="w-full"
             disabled={!canSubmit || createOrder.isPending}
-            onClick={() => createOrder.mutate()}
+            onClick={submitOrder}
           >
             {createOrder.isPending ? 'Creating…' : 'Create Order'}
           </Button>

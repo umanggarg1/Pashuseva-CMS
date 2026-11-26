@@ -47,6 +47,7 @@ import { DELIVERY_STEPS } from '@/lib/deliveryStatus';
 import { TRASH_RETENTION_DAYS } from '@/lib/trash';
 import { formatPrice, paymentStatusLabel } from '@/lib/pricing';
 import { ConsentBadge, WhatsappIcon } from '@/components/WhatsappBadges';
+import { useReorder } from '@/lib/useReorder';
 import type { WhatsappConsent } from '@/lib/whatsapp';
 
 const LOCATION_UPDATE_STATUSES = [
@@ -336,15 +337,8 @@ export default function OrderDetail() {
     },
   });
 
-  const reorder = useMutation({
-    mutationFn: () =>
-      apiFetch<{ id: number; orderNumber: string }>(`/orders/${id}/reorder`, { method: 'POST' }),
-    onSuccess: (newOrder) => {
-      toast.success('New order created from this one');
-      navigate(`/orders/${newOrder.orderNumber}`);
-    },
-    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to reorder'),
-  });
+  // Phase 32 D3: one Idempotency-Key per Reorder action (see lib/useReorder.ts).
+  const reorder = useReorder();
 
   if (orderQuery.isPending) return <Skeleton className="h-96 w-full" />;
   if (orderQuery.isError || !order || !id) {
@@ -412,7 +406,7 @@ export default function OrderDetail() {
           ) : (
             <span className="text-sm text-muted-foreground">Order Status: {order.orderStatus}</span>
           )}
-          <Button variant="outline" onClick={() => reorder.mutate()} disabled={reorder.isPending}>
+          <Button variant="outline" onClick={() => id && reorder.reorder(id)} disabled={reorder.isPending}>
             Reorder
           </Button>
           <Button

@@ -45,6 +45,7 @@ import {
 } from '@/lib/whatsapp';
 import { PhoneRowErrors, WhatsappConsentFields, WhatsappPhoneToggle } from '@/components/WhatsappCustomerFields';
 import { ConsentBadge, WhatsappIcon } from '@/components/WhatsappBadges';
+import { useReorder } from '@/lib/useReorder';
 
 interface Phone {
   id: number;
@@ -464,17 +465,8 @@ function OrderHistoryCard({
   orders: OrderRow[];
   total: number;
 }) {
-  const navigate = useNavigate();
-
-  const reorder = useMutation({
-    mutationFn: (orderId: number) =>
-      apiFetch<{ orderNumber: string }>(`/orders/${orderId}/reorder`, { method: 'POST' }),
-    onSuccess: (newOrder) => {
-      toast.success('New order created from this one');
-      navigate(`/orders/${newOrder.orderNumber}`);
-    },
-    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Failed to reorder'),
-  });
+  // Phase 32 D3: one Idempotency-Key per Reorder action (see lib/useReorder.ts).
+  const reorder = useReorder();
 
   return (
     <Card>
@@ -498,7 +490,7 @@ function OrderHistoryCard({
               size="sm"
               variant="outline"
               disabled={reorder.isPending}
-              onClick={() => reorder.mutate(order.id)}
+              onClick={() => reorder.reorder(order.id)}
             >
               Reorder
             </Button>

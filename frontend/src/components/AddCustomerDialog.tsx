@@ -34,6 +34,7 @@ export interface CreatedCustomer {
   name: string;
   phones: { phone: string; isPrimary: boolean; isWhatsapp?: boolean }[];
   whatsappConsent?: 'YES' | 'NO'; // Phase 32 D2: shown by the Create Order picker
+  preferredLanguage?: 'EN' | 'HI'; // Phase 32 D3: Create Order hint
 }
 
 interface PossibleDuplicate extends CreatedCustomer {

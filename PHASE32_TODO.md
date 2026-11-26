@@ -1439,7 +1439,61 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     shape of the picker API, no Hindi script anywhere in the CRM, the printed invoice
     untouched, and viewing writes nothing. Regressions: D1 37/37 + 19/19,
     integration 14/14 + 22/22, workflows 17/17 + 17/17.
-- [ ] D3. Create Order: a hint "Confirmation will be sent on WhatsApp to 98xxxx3210 (Hindi)", or an amber "No WhatsApp number / WhatsApp consent is NO, no message will be sent"; for an existing customer it shows the saved consent and language (no consent field); **post-save toast with two separate lines: "Order saved: ORD-…" and "WhatsApp: Queued for sending / Not sent: <reason>"** (§0.1, from `whatsapp` in the create response); `Idempotency-Key` kept in **sessionStorage** for the Create Order page, cleared only on a successful response, so a page refresh after a lost response reuses it (§19.2); a 422 shows "This order may already exist: ORD-…, open it". The same for the Reorder button
+- [x] D3. Create Order: a hint "Confirmation will be sent on WhatsApp to 98xxxx3210 (Hindi)", or an amber "No WhatsApp number / WhatsApp consent is NO, no message will be sent"; for an existing customer it shows the saved consent and language (no consent field); **post-save toast with two separate lines: "Order saved: ORD-…" and "WhatsApp: Queued for sending / Not sent: <reason>"** (§0.1, from `whatsapp` in the create response); `Idempotency-Key` kept in **sessionStorage** for the Create Order page, cleared only on a successful response, so a page refresh after a lost response reuses it (§19.2); a 422 shows "This order may already exist: ORD-…, open it". The same for the Reorder button
+  - **Done (2026-11-26, local only).**
+    - **Key lifecycle** (`lib/orderSubmit.ts`):
+      - One Idempotency-Key per submission, kept in sessionStorage (per tab) under
+        `create-order` or `reorder:<sourceOrderId>`.
+      - It is reused by a double-click, by the automatic network retry (React Query,
+        network errors only, at most 2 retries), by pressing the button again after
+        an error, and after a page refresh.
+      - It is cleared after a successful response (201, or a 200 replay), so the next
+        order, even an identical one, gets a fresh key.
+      - A failed request keeps the key; since the server never stored it, re-sending
+        it (even with corrected details) creates the order.
+      - On a 422 the key is replaced and the page shows "This order may already
+        exist: ORD-…" with an "Open it" action. Pressing the button again then
+        deliberately creates a new order.
+    - **Double submission:** the Create Order button and both Reorder buttons (Order
+      Detail and Customer Detail's order history, sharing `lib/useReorder.ts`) also
+      ignore a second click while a submission is in flight.
+    - **Backend:** the 422 now also returns `existingOrderNumber`. The lean
+      order-time customer search gained `preferredLanguage`, for the hint.
+    - **Fixed a latent bug:** `apiFetch` used to drop the JSON Content-Type whenever a
+      caller passed its own header.
+    - **Hint** (under the selected customer, information only):
+      - consent YES with a WhatsApp number: "Confirmation will be sent on WhatsApp
+        to 98XXXX3210 (Hindi)";
+      - otherwise, in amber: "WhatsApp consent is NO, no message will be sent" or
+        "No WhatsApp number, no message will be sent".
+      - The hint describes the customer, not the global switch. While WhatsApp is
+        disabled, the toast reports "Not sent: WhatsApp disabled".
+    - **Toast:** "Order saved: ORD-…" (or "Order already saved: …" for a replay),
+      plus a second line "WhatsApp: Queued for sending" or "WhatsApp: Not sent:
+      <reason>".
+  - Tests:
+    - API **8/8**: 8 simultaneous creates with one key give 1 order, stock reduced
+      once, 1 message. A changed body gives 422 with the order number. A new key
+      makes a legitimate second order. A rejected request leaves its key unused.
+      6 simultaneous Reorders give 1 order.
+    - Browser **27/27**:
+      - the hint in three variants;
+      - a triple click on Create Order gives 1 request and 1 order;
+      - the key is cleared after success, and a second identical order gets a new
+        key;
+      - a lost response is retried with the same key, with no duplicate;
+      - when every answer is lost, the key is kept, and a refresh plus resubmit
+        opens the existing order;
+      - changed details give "may already exist", then a deliberate new order;
+      - network down gives 3 attempts with 1 key and no order, and the next press
+        creates the order;
+      - a server rejection keeps the key, and the corrected order is created;
+      - the toast lines, including the consent-NO reason;
+      - Reorder on Order Detail: triple click, a fresh key for each new action, and
+        a lost-response retry; Reorder on Customer Detail: double click.
+    - Regressions: D1 37/37 + 19/19, D2 19/19 (its picker-shape check now expects
+      the D3 language field), integration 14/14 + 22/22, workflows 17/17 + 17/17,
+      C6 38/38 + 3/3; 0 non-local requests.
 - [ ] D4. OrderDetail **WhatsApp messages** card (§0.1): rows per message (type, masked number, language, status chip with time, reason for FAILED/SKIPPED, next retry time for RETRY_WAIT, "resend of #", by whom); **status help text per §0.1 (SENT explicitly "not yet delivered")**; auto-refresh every 10 s while any row is QUEUED/PROCESSING/RETRY_WAIT/SENT
 - [ ] D5. **Resend dialog** (§13): type, **current WhatsApp number (no picker; link to Customer Details to change it)**, previous status, required reason, text preview, delivered warning, confirm with `previewHash`; on 409 show the new preview and ask again; button disabled while pending; idempotency key
 - [ ] D6. Admin **Messaging** page (Settings area, `message:manage`): enabled/paused state + Resume, rate-limited-until, template approval statuses + Refresh, **queue size + oldest queued age**, a **Needs attention** list (UNKNOWN / FAILED / late-response notes) with Resolve actions

@@ -1,7 +1,7 @@
 import { MessageCircle } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
-import type { WhatsappConsent } from '@/lib/whatsapp';
+import { maskWhatsappNumber, type WhatsappConsent } from '@/lib/whatsapp';
 
 // Phase 32 D2: read-only WhatsApp markers for CRM screens (UI stays English).
 
@@ -57,5 +57,44 @@ export function CompactWhatsapp({ phones, shown }: { phones: PhoneLike[]; shown?
     <span className="ml-1 inline-flex items-center gap-0.5 text-xs text-green-700">
       <WhatsappIcon /> {wa.phone}
     </span>
+  );
+}
+
+/**
+ * Phase 32 D3: Create Order hint for the selected customer — where the confirmation
+ * will go, or why none will be sent. Information only (no field, no extra click);
+ * the post-save toast reports what actually happened.
+ */
+export function WhatsappOrderHint({
+  phones,
+  consent,
+  language,
+}: {
+  phones: PhoneLike[];
+  consent?: WhatsappConsent;
+  language?: 'EN' | 'HI';
+}) {
+  if (!consent) return null;
+  const wa = phones.find((p) => p.isWhatsapp);
+  const masked = wa ? maskWhatsappNumber(wa.phone) : '';
+  let text: string;
+  let ok = false;
+  if (consent === 'NO') text = 'WhatsApp consent is NO, no message will be sent';
+  else if (!masked) text = 'No WhatsApp number, no message will be sent';
+  else {
+    ok = true;
+    text = `Confirmation will be sent on WhatsApp to ${masked} (${language === 'HI' ? 'Hindi' : 'English'})`;
+  }
+  return (
+    <p
+      data-testid="whatsapp-order-hint"
+      className={cn(
+        'mt-2 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs',
+        ok ? 'bg-green-50 text-green-800' : 'bg-amber-50 text-amber-800'
+      )}
+    >
+      <MessageCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      {text}
+    </p>
   );
 }

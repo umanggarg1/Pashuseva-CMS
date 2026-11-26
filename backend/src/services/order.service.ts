@@ -1586,9 +1586,12 @@ type IdempotentOrder = NonNullable<Awaited<ReturnType<typeof orderRepository.fin
  */
 async function replayIdempotentOrder(prior: IdempotentOrder, hash: string) {
   if (prior.idempotencyHash !== hash) {
+    // Phase 32 D3: the existing order number is also returned as structured data so
+    // the page can link to it ("This order may already exist: ORD-…, open it").
     throw new HttpError(
       422,
-      `This submission key was already used for a different order (${prior.orderNumber}). Reload the page to start a new order.`
+      `This submission key was already used for a different order (${prior.orderNumber}). Reload the page to start a new order.`,
+      { existingOrderNumber: prior.orderNumber }
     );
   }
   const message = await prisma.outboundMessage.findUnique({
