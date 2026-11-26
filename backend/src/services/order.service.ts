@@ -16,7 +16,7 @@ import type { Role, OrderStatus, DeliveryStatus, PaymentStatus, DataScope } from
 import { createHash } from 'node:crypto';
 import { enqueueOrderMessage, eventKeyFor } from './messaging/message.service';
 import { kickOrderMessages } from './messaging/dispatcher';
-import { staffConsentFields, consentLabel, CONSENT_RECORDED_ACTIVITY } from '../utils/whatsappConsent';
+import { staffConsentFields, consentLabel, CONSENT_RECORDED_ACTIVITY, CONSENT_CHANGED_ACTIVITY } from '../utils/whatsappConsent';
 import type {
   CreateOrderInput,
   UpdateOrderInput,
@@ -713,6 +713,15 @@ export const orderService = {
         const newStatus = orderService.paidStatusFor(0, total);
         await orderRepository.setPaymentStatus(created.id, newStatus, tx);
         created.paymentStatus = newStatus;
+      }
+
+      // Phase 32 (Create Order consent): staff recorded the existing customer's
+      // WhatsApp consent while booking. Same transaction as the order (no order → no
+      // change), and BEFORE the confirmation record below, so it decides that
+      // message. Guarded on the value the form showed: if consent changed meanwhile
+      // (e.g. the customer replied STOP), it is never overwritten.
+      if (input.whatsappConsentChange && !input.newCustomer) {
+        await applyOrderConsentChange(tx, customerId, input.whatsappConsentChange, actingUser.id, created.orderNumber);
       }
 
       // Phase 32 C2: the order-confirmation WhatsApp record, in THIS transaction (it
@@ -1566,6 +1575,66 @@ function stableStringify(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value);
+}
+
+/**
+ * Phase 32 (Create Order consent): save a consent change made while booking an order
+ * for an EXISTING customer, inside the order's transaction.
+ * - Written only if the customer's consent record is exactly what the form showed
+ *   (value `from`, last recorded at `fromAt`), so a STOP reply or another staff change
+ *   made meanwhile is never overwritten, even one that ended on the same value.
+ * - If it changed meanwhile but already equals `to` (the same outcome reached another
+ *   way, e.g. staff choose NO and the customer had replied STOP), nothing to do.
+ * - Otherwise 409: the whole transaction, order included, rolls back, and the form
+ *   shows the current value so staff can check with the customer again.
+ * Recorded like any staff consent change: staff + time on the customer, plus an
+ * activity entry with the previous and new value.
+ */
+async function applyOrderConsentChange(
+  tx: Prisma.TransactionClient,
+  customerId: number,
+  change: { from: 'YES' | 'NO'; to: 'YES' | 'NO'; fromAt: string | null },
+  actingUserId: number,
+  orderNumber: string
+) {
+  const updated = await tx.customer.updateMany({
+    where: {
+      id: customerId,
+      whatsappConsent: change.from,
+      whatsappConsentAt: change.fromAt ? new Date(change.fromAt) : null,
+      deletedAt: null,
+      purgedAt: null,
+    },
+    data: staffConsentFields(change.to, actingUserId),
+  });
+  if (updated.count === 1) {
+    await customerRepository.recordActivity(
+      customerId,
+      CONSENT_CHANGED_ACTIVITY,
+      actingUserId,
+      // A value never recorded (still the column default) reads "(not recorded)", not "declined".
+      { from: consentLabel(change.fromAt ? change.from : null), to: consentLabel(change.to), source: 'STAFF', via: `Create Order ${orderNumber}` },
+      tx
+    );
+    return;
+  }
+  const current = await tx.customer.findUnique({
+    where: { id: customerId },
+    select: { whatsappConsent: true, whatsappConsentSource: true, whatsappConsentAt: true },
+  });
+  if (current && current.whatsappConsent === change.to) return;
+  const stop = current?.whatsappConsentSource === 'CUSTOMER_STOP_REPLY';
+  throw new HttpError(
+    409,
+    `This customer's WhatsApp consent was changed while you were booking (it is now ${consentLabel(current?.whatsappConsent)}${stop ? ': the customer replied STOP on WhatsApp' : ''}). The order was NOT created. Check the consent with the customer and press Create Order again.`,
+    {
+      consentConflict: {
+        current: current?.whatsappConsent ?? null,
+        source: current?.whatsappConsentSource ?? null,
+        at: current?.whatsappConsentAt ?? null,
+      },
+    }
+  );
 }
 
 /** sha256(acting user + canonical request body) — a reused key with different details or by another user won't match. */

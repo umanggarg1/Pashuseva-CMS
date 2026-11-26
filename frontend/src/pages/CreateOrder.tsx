@@ -26,6 +26,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import ErrorState from '@/components/ErrorState';
 import CustomerPicker, { type CustomerOption } from '@/components/CustomerPicker';
 import EmployeeMultiSelect from '@/components/EmployeeMultiSelect';
+import OrderConsentChoice from '@/components/OrderConsentChoice';
+import type { WhatsappConsent } from '@/lib/whatsapp';
 import { apiFetch, ApiError } from '@/lib/api';
 import {
   clearSubmissionKey,
@@ -100,6 +102,18 @@ export default function CreateOrder() {
   const prefillApplied = useRef(false);
 
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerOption | null>(null);
+  // Phase 32 (Create Order consent): the staff's choice for the selected customer's
+  // WhatsApp consent. null = untouched (the saved value applies, nothing is sent).
+  // Cleared whenever a customer is picked (even the same one again), so every pick starts from
+  // that customer's saved value; keyed by id as a second guard.
+  const [consentPick, setConsentPick] = useState<{ customerId: number; value: WhatsappConsent } | null>(null);
+  const consentChoice = consentPick && consentPick.customerId === selectedCustomer?.id ? consentPick.value : null;
+  const savedConsent = selectedCustomer?.whatsappConsent;
+  const shownConsent = consentChoice ?? savedConsent;
+  const consentChange =
+    savedConsent && consentChoice && consentChoice !== savedConsent
+      ? { from: savedConsent, to: consentChoice, fromAt: selectedCustomer?.whatsappConsentAt ?? null }
+      : undefined;
 
   const [items, setItems] = useState<LineItem[]>([]);
   const [productSearch, setProductSearch] = useState('');
@@ -255,6 +269,7 @@ export default function CreateOrder() {
           articleNumber: articleNumber || undefined,
           estimatedDeliveryCharges: estimatedDeliveryCharges || undefined,
           ...(canAssignEmployees && { assignedEmployeeIds }),
+          ...(consentChange && { whatsappConsentChange: consentChange }),
         }),
       }),
     onSuccess: (order) => {
@@ -280,6 +295,18 @@ export default function CreateOrder() {
           action: { label: 'Open it', onClick: () => navigate(`/orders/${existing}`) },
           duration: 15000,
         });
+        return;
+      }
+      // Consent changed by someone else (or a STOP reply) while booking: no order was
+      // created. Show the current value so staff can check with the customer again.
+      const conflict = err instanceof ApiError && err.status === 409 ? err.body?.consentConflict : null;
+      if (conflict && typeof conflict === 'object' && selectedCustomer) {
+        const c = conflict as { current: WhatsappConsent | null; source: CustomerOption['whatsappConsentSource']; at: string | null };
+        if (c.current) {
+          setSelectedCustomer({ ...selectedCustomer, whatsappConsent: c.current, whatsappConsentSource: c.source, whatsappConsentAt: c.at });
+          setConsentPick(null);
+        }
+        toast.error((err as ApiError).message, { duration: 15000 });
         return;
       }
       // Any other failure: no order was created (or we don't know yet) — the key is
@@ -322,7 +349,22 @@ export default function CreateOrder() {
           <CardTitle className="text-base">Customer</CardTitle>
         </CardHeader>
         <CardContent>
-          <CustomerPicker value={selectedCustomer} onChange={setSelectedCustomer} />
+          <CustomerPicker
+            value={selectedCustomer && shownConsent ? { ...selectedCustomer, whatsappConsent: shownConsent } : selectedCustomer}
+            onChange={(customer) => {
+              setSelectedCustomer(customer);
+              setConsentPick(null);
+            }}
+          />
+          {selectedCustomer && savedConsent && shownConsent && (
+            <OrderConsentChoice
+              saved={savedConsent}
+              source={selectedCustomer.whatsappConsentSource}
+              at={selectedCustomer.whatsappConsentAt}
+              value={shownConsent}
+              onChange={(value) => setConsentPick({ customerId: selectedCustomer.id, value })}
+            />
+          )}
         </CardContent>
       </Card>
 

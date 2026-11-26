@@ -1057,7 +1057,28 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   Then run the **old commit's code** on the migrated DB (create/edit customer,
   create/dispatch order, add payment, parcel label) and the new code. Also simulate a
   failed migration and recover with `migrate resolve` (§19.1, E38).
-- [ ] A4. **Controlled production migration**
+- [x] A4. **Controlled production migration: CLOSED, DEPLOYMENT SUCCESSFUL (2026-11-26)**
+  - **Result:** commit 2b461f3 pushed at 10:56:56 UTC. Render applied A3, C5 and D6 at
+    10:57:58 UTC (0.24 s, no errors); backend live 10:58:22, Vercel 10:58:41. The
+    owner approved reopening to staff after the checks below.
+  - Same-day checklist D.0: all passed (backup at 16:20 IST, restore verified, 18.7,
+    29 applied / 3 pending, 0/45, 0 existing grants, 21 predicted, freeze on).
+  - Post-deploy, read-only: 32 applied, 0 failed; A3 45/45; 4 new tables, 0 rows;
+    only `_prisma_migrations` +3 and `UserPermission` +21 changed; the C5 grants match
+    the 21 predicted users exactly (`UserPermission` ids 875–895, one `createdAt`
+    inside C5's run window); `message:manage` 0.
+  - Consent-NO smoke test (ORD-2026-000520, customer #475): one SKIPPED "WhatsApp
+    disabled" record with phone, parameters and snapshot all NULL; nothing queued;
+    the Settings → WhatsApp Messaging status shows Disabled. Resend stays visible to
+    authorized users but is blocked ("Can't resend now: WhatsApp sending is turned
+    off"); the server refuses too. Cleanup: order cancelled (stock 998→999), order and
+    customer moved to Trash (no purge).
+  - Evidence (outside git): `D:\pashuseva\backups\phase32-verification\A4_PREFLIGHT_2026-11-26.md`,
+    `A4_POSTDEPLOY_2026-11-26.md`, `A4_post_counts.txt`, `A4_C5_grants_after_userids.txt`.
+  - **Still in force:** WhatsApp disabled; no A5 backfill, no Meta credentials, no
+    go-live date and no further production migration without a separate GO.
+
+  Original plan, kept for reference:
   - **Migration review APPROVED (owner, 2026-11-26), after 6 revisions.** Report:
     `D:\pashuseva\backups\phase32-verification\PHASE32_MIGRATION_REVIEW.md`,
     plus the `_REDACTED` copy; kept outside git because it lists staff names.
@@ -1085,7 +1106,29 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   code runs on the new schema. Worst case: restore the verified backup using the
   documented procedure (`migrate deploy` + `pg_restore --data-only
   --disable-triggers`).
-- [ ] A5. **One-time backfill script** `scripts/phase32Backfill.ts` (Q3), run **after
+- [ ] A5. **OPTION 2 (owner decision 2026-11-26): mark WhatsApp NUMBERS only; consent is
+  NOT changed.** A phone number stored in the CRM is not proof of consent, so existing
+  customers stay consent NO (never recorded) until staff record the customer's answer.
+  Script written + tested locally; **NOT run on production.**
+  `backend/src/scripts/phase32Backfill.ts`.
+  - Marks the primary phone as WhatsApp only if it is a valid Indian mobile.
+  - Eligible = not trashed, not purged, consent never recorded (source NULL), no
+    WhatsApp number yet, and no staff phone edit since Phase 32 went live
+    (2026-11-26 10:58:22 UTC).
+  - Writes only `CustomerPhone.isWhatsapp` + one `CustomerActivity` entry per customer.
+    No consent change, no `OutboundMessage`.
+  - Dry run is the default and runs read-only. `--apply --expect-phones=N` must equal
+    the reviewed dry run; it refuses if `WHATSAPP_ENABLED=true`. It never reads
+    `backend/.env`. No names in the output, numbers masked.
+  - One transaction per customer, with the customer row locked and every condition
+    re-checked.
+  - Local dry run on the 16:20 backup + 32 migrations: **429 phones marked, 2 not
+    (9 digits: #143, #392), 0 consent changes.**
+  - Tests: 41/41 (`a5_test.ts`), including races with staff edits and idempotency.
+  - The Q3 decision "existing customers → YES" is **superseded** by Option 2.
+  - **Production dry run and apply each need their own GO.**
+
+  Original spec: **One-time backfill script** `scripts/phase32Backfill.ts` (Q3), run **after
   A4 with WhatsApp still disabled**:
   1. sets `whatsappConsent = YES` (source `BACKFILL`, timestamp, customer-activity
      entry) for every existing non-trashed, non-purged customer
@@ -1098,6 +1141,29 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   `CustomerActivity`, and **never creates an `OutboundMessage` or triggers a send**.
   Messages only ever come from the two events (order created, dispatch transition)
   after go-live. Run locally on the restored copy first.
+- [ ] A5b. **Create Order consent (owner GO 2026-11-26, option (a): anyone who can create
+  orders). Built + tested locally; NOT committed or deployed.**
+  - Create Order shows an existing customer's saved consent (YES/NO preselected, with
+    "not asked yet" / STOP notes) and lets staff change it. No extra click or button.
+  - The change is sent as `whatsappConsentChange {from, to, fromAt}` and saved in the
+    order's transaction, before the confirmation record. No order → no change.
+  - Guarded on value AND last-recorded time: any change since the form loaded (incl. a
+    STOP) is never overwritten. If it already equals the choice: no-op. Otherwise
+    409, the order is not created, and the form shows the current value.
+  - Recorded with the staff id and time, plus a "WhatsApp consent changed" activity
+    entry (`via: Create Order <number>`). Never-recorded reads "(not recorded)".
+  - Tests: API 28/28 (`oc_tests.ts`), UI 19/19 (`oc_ui_tests.cjs`), D3 regression
+    API 8/8 + UI 27/27.
+  - **Search fix (owner GO 2026-11-26, local):** the Create Order customer search failed
+    with a 500 for a full 10-digit mobile: the term was also tried as a customer id
+    and overflowed integer. It existed in production before Phase 32.
+    `asCustomerIdSearch` (`customer.service.ts`) now tries the term as an id only for
+    plain digits within 1..2147483647. Name / phone / city matching is unchanged.
+    `1e3` / `0x1A` / `0` / negatives are no longer read as ids.
+    - Tests: 17/17 (`search_tests.ts`). Results are identical to the old search on all
+      71 terms it handled; the data scope is unchanged.
+    - Create Order UI tests now search by the full 10-digit number: 19/19.
+
 - [ ] A6. Customer purge also scrubs `OutboundMessage.toPhone/params/snapshot/lastError`
   and `MessageStatusEvent.raw` for that customer (and any still-pending row → SKIPPED)
 

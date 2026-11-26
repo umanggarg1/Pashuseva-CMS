@@ -211,6 +211,19 @@ function buildCustomerWhere(
   return { AND: filters };
 }
 
+// A search term is also tried as a customer id only when it can BE one: plain digits
+// within PostgreSQL's integer range. A full 10-digit mobile (e.g. 9876543210) is above
+// that range and used to be sent as an id anyway, which made the whole search fail with
+// "value out of range for type integer" (500). Also no longer treats "1e3" or "0x1A"
+// as numbers. The term is still matched against name, phone and city as before.
+const MAX_INT4 = 2147483647;
+export function asCustomerIdSearch(search: string): number | null {
+  const t = search.trim();
+  if (!/^[0-9]{1,10}$/.test(t)) return null;
+  const n = Number(t);
+  return n >= 1 && n <= MAX_INT4 ? n : null;
+}
+
 export const customerService = {
   // Phase 21: powers the Orders export dialog's Area picklist. Not scoped by the
   // acting user's Data Scope — these are just place names, not customer records,
@@ -256,7 +269,7 @@ export const customerService = {
               { name: { contains: search, mode: 'insensitive' } },
               { phones: { some: { phone: { contains: search } } } },
               { addresses: { some: { city: { contains: search, mode: 'insensitive' } } } },
-              ...(Number.isInteger(Number(search)) ? [{ id: Number(search) }] : []),
+              ...(asCustomerIdSearch(search) !== null ? [{ id: asCustomerIdSearch(search)! }] : []),
             ],
           },
         ],

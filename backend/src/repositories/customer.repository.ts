@@ -252,6 +252,10 @@ export const customerRepository = {
         // Order) — still no profile fields.
         phones: { select: { phone: true, isPrimary: true, isWhatsapp: true } },
         whatsappConsent: true,
+        // Create Order consent: where the saved value came from (never recorded /
+        // staff / customer replied STOP) and when, so the form can say so.
+        whatsappConsentSource: true,
+        whatsappConsentAt: true,
         preferredLanguage: true,
         addresses: { select: { city: true }, take: 1 },
         assignedEmployees: { select: { employee: { select: { id: true, name: true } } } },

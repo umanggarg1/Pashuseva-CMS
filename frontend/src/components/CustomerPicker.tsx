@@ -8,7 +8,7 @@ import AddCustomerDialog, { type CreatedCustomer } from '@/components/AddCustome
 import { apiFetch } from '@/lib/api';
 import { useDebouncedValue } from '@/lib/useDebouncedValue';
 import { useCurrentUser, hasPermission } from '@/lib/auth';
-import type { WhatsappConsent } from '@/lib/whatsapp';
+import type { ConsentSource, WhatsappConsent } from '@/lib/whatsapp';
 import { CompactWhatsapp, ConsentBadge, displayedPhone, WhatsappOrderHint } from '@/components/WhatsappBadges';
 
 export interface CustomerOption {
@@ -20,6 +20,8 @@ export interface CustomerOption {
   status?: 'ACTIVE' | 'INACTIVE';
   phones: { phone: string; isPrimary: boolean; isWhatsapp?: boolean }[];
   whatsappConsent?: WhatsappConsent; // Phase 32 D2
+  whatsappConsentSource?: ConsentSource | null; // Create Order consent: never recorded / staff / STOP
+  whatsappConsentAt?: string | null;
   preferredLanguage?: 'EN' | 'HI'; // Phase 32 D3
 }
 
@@ -31,6 +33,8 @@ interface OrderSearchResult {
   name: string;
   phones: { phone: string; isPrimary: boolean; isWhatsapp: boolean }[];
   whatsappConsent: WhatsappConsent;
+  whatsappConsentSource: ConsentSource | null;
+  whatsappConsentAt: string | null;
   preferredLanguage: 'EN' | 'HI';
   addresses: { city: string }[];
   assignedEmployees: { employee: { id: number; name: string | null } }[];
@@ -66,7 +70,7 @@ export default function CustomerPicker({
   });
 
   function handleCreated(customer: CreatedCustomer) {
-    onChange({ id: customer.id, name: customer.name, status: 'ACTIVE', phones: customer.phones, whatsappConsent: customer.whatsappConsent, preferredLanguage: customer.preferredLanguage });
+    onChange({ id: customer.id, name: customer.name, status: 'ACTIVE', phones: customer.phones, whatsappConsent: customer.whatsappConsent, whatsappConsentSource: customer.whatsappConsentSource ?? null, whatsappConsentAt: customer.whatsappConsentAt ?? null, preferredLanguage: customer.preferredLanguage });
     setSearch('');
   }
 
@@ -110,7 +114,7 @@ export default function CustomerPicker({
             <button
               key={c.id}
               type="button"
-              onClick={() => onChange({ id: c.id, name: c.name, phones: c.phones, whatsappConsent: c.whatsappConsent, preferredLanguage: c.preferredLanguage })}
+              onClick={() => onChange({ id: c.id, name: c.name, phones: c.phones, whatsappConsent: c.whatsappConsent, whatsappConsentSource: c.whatsappConsentSource, whatsappConsentAt: c.whatsappConsentAt, preferredLanguage: c.preferredLanguage })}
               className="flex w-full items-center justify-between gap-3 p-2 text-left text-sm hover:bg-accent"
             >
               <span className="min-w-0 truncate">

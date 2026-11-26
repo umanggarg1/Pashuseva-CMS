@@ -96,10 +96,30 @@ export const createOrderSchema = z
     // is assigned yet — it surfaces to Admin/Manager via the customer's assignment
     // chain instead, same as before this feature existed.
     assignedEmployeeIds: z.array(z.coerce.number().int().positive()).optional(),
+    // Phase 32 (Create Order consent): staff changed an EXISTING customer's WhatsApp
+    // consent while booking. Sent only when changed: `from` is the value the form
+    // showed, `to` the staff's choice. Saved in the order's transaction, and only if
+    // the customer's consent record is unchanged since the form loaded (a STOP reply
+    // or another change made meanwhile is never overwritten).
+    whatsappConsentChange: z
+      .object({
+        from: z.enum(['YES', 'NO']),
+        to: z.enum(['YES', 'NO']),
+        // When the shown value was last recorded (null = never). Any consent change
+        // since the form loaded (incl. a STOP reply) is then detected, even one that
+        // ended on the same value.
+        fromAt: z.string().datetime().nullable(),
+      })
+      .refine((c) => c.from !== c.to, { message: 'whatsappConsentChange must change the value' })
+      .optional(),
   })
   .refine((data) => Boolean(data.customerId) !== Boolean(data.newCustomer), {
     message: 'Provide exactly one of customerId or newCustomer',
     path: ['customerId'],
+  })
+  .refine((data) => !(data.whatsappConsentChange && data.newCustomer), {
+    message: 'whatsappConsentChange is only for an existing customer (a new customer has its own whatsappConsent)',
+    path: ['whatsappConsentChange'],
   });
 
 export const updateOrderSchema = z.object({
