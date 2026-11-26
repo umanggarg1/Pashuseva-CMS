@@ -1,12 +1,12 @@
 import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
 import { MessageCircle } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import ResendMessageDialog, { type ResendType } from '@/components/ResendMessageDialog';
 import { Skeleton } from '@/components/ui/skeleton';
-import { apiFetch } from '@/lib/api';
+import type { MessageStatus, OrderMessage } from '@/lib/messaging';
+import { isPermissionDenied, useOrderMessages } from '@/lib/useMessaging';
 import { cn } from '@/lib/utils';
 
 // Phase 32 D4 (PHASE32_TODO.md §0.1): Order Details → WhatsApp messages card.
@@ -14,47 +14,8 @@ import { cn } from '@/lib/utils';
 // D5: users with message:resend get a Resend button on the latest message of each
 // type, which opens the confirmation dialog; nothing is sent without that dialog.
 
-export type MessageStatus =
-  | 'QUEUED'
-  | 'PROCESSING'
-  | 'RETRY_WAIT'
-  | 'SENT'
-  | 'DELIVERED'
-  | 'READ'
-  | 'FAILED'
-  | 'UNKNOWN'
-  | 'SKIPPED';
-
-export interface OrderMessage {
-  id: number;
-  type: 'confirmation' | 'dispatched';
-  status: MessageStatus;
-  isResend: boolean;
-  resendOfId: number | null;
-  resendReason: string | null;
-  to: string | null; // masked by the server: 98XXXX3210
-  language: 'EN' | 'HI';
-  fallbackFromLanguage: 'EN' | 'HI' | null;
-  skipReason: string | null;
-  errorCode: string | null;
-  lastError: string | null;
-  nextAttemptAt: string | null;
-  createdAt: string;
-  sentAt: string | null;
-  deliveredAt: string | null;
-  readAt: string | null;
-  failedAt: string | null;
-  triggeredBy: { id: number; name: string | null } | null;
-  needsAttention: boolean;
-  // Phase 32 D6: an Admin's decision on an UNKNOWN message
-  resolvedBy: { id: number; name: string | null } | null;
-  resolvedAt: string | null;
-  resolutionNote: string | null;
-}
-
-/** While any message is in one of these, the card refreshes every 10 s. */
-export const ACTIVE_STATUSES: MessageStatus[] = ['QUEUED', 'PROCESSING', 'RETRY_WAIT', 'SENT'];
-export const REFRESH_MS = 10_000;
+// Types, API call and refresh rule live in lib/messaging.ts + lib/useMessaging.ts (D7).
+export type { MessageStatus, OrderMessage } from '@/lib/messaging';
 
 const STATUS_LABEL: Record<MessageStatus, string> = {
   QUEUED: 'Queued',
@@ -177,14 +138,8 @@ export default function WhatsappMessagesCard({
   canResend: boolean;
 }) {
   const [resendType, setResendType] = useState<ResendType | null>(null);
-  const query = useQuery({
-    queryKey: ['order', orderId, 'whatsapp-messages'],
-    queryFn: () => apiFetch<OrderMessage[]>(`/orders/${orderId}/messages`),
-    // Auto-refresh only while something can still change.
-    // (A message an Admin resolved is final: no reports will come for it.)
-    refetchInterval: (q) =>
-      q.state.data?.some((m) => ACTIVE_STATUSES.includes(m.status) && !m.resolvedAt) ? REFRESH_MS : false,
-  });
+  // Refreshes every 10 s only while something can still change (lib/useMessaging.ts).
+  const query = useOrderMessages(orderId);
 
   return (
     <Card className="print-hide" data-testid="whatsapp-messages-card">
@@ -195,7 +150,13 @@ export default function WhatsappMessagesCard({
       </CardHeader>
       <CardContent className="space-y-2">
         {query.isPending && <Skeleton className="h-16 w-full" />}
-        {query.isError && <p className="text-sm text-destructive">Could not load WhatsApp messages.</p>}
+        {query.isError && (
+          <p className="text-sm text-destructive">
+            {isPermissionDenied(query.error)
+              ? "You don't have permission to see this order's WhatsApp messages."
+              : 'Could not load WhatsApp messages.'}
+          </p>
+        )}
         {query.data && query.data.length === 0 && (
           <p className="text-sm text-muted-foreground">No WhatsApp messages for this order.</p>
         )}

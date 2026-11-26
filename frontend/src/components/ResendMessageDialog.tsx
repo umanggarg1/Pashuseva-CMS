@@ -10,9 +10,16 @@ import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { apiFetch, ApiError } from '@/lib/api';
+import { ApiError } from '@/lib/api';
 import { clearSubmissionKey, retryNetworkErrors, submissionKey } from '@/lib/orderSubmit';
-import type { MessageStatus } from '@/components/WhatsappMessagesCard';
+import {
+  invalidateAfterResend,
+  messagingApi,
+  type MessageStatus,
+  type MessageType,
+  type ResendPreview,
+  type ResendReason,
+} from '@/lib/messaging';
 
 // Phase 32 D5 (PHASE32_TODO.md §13): the Resend dialog. Only rendered for users with
 // message:resend (the card hides the button otherwise; the API enforces it too).
@@ -25,22 +32,8 @@ import type { MessageStatus } from '@/components/WhatsappMessagesCard';
 //  - One Idempotency-Key per resend submission (same rules as order submissions), so
 //    a double click or a network retry can never queue two resends.
 
-export type ResendType = 'confirmation' | 'dispatched';
-
-interface ResendPreview {
-  type: ResendType;
-  to: string | null;
-  language: 'EN' | 'HI';
-  templateName: string | null;
-  header: string | null;
-  body: string | null;
-  footer: string | null;
-  previewHash: string | null;
-  blockedReason: string | null;
-  previous: { id: number; status: MessageStatus; at: string; statusAt: string | null } | null;
-  alreadyReceived: boolean;
-  lastReceived: { id: number; status: 'READ' | 'DELIVERED'; at: string | null } | null;
-}
+// Types + API calls: lib/messaging.ts (D7).
+export type ResendType = MessageType;
 
 /** "25 Nov at 4:30 pm" */
 function onDateAt(iso: string): string {
@@ -116,7 +109,7 @@ export default function ResendMessageDialog({
     setLoadError(null);
     setLoading(true);
     try {
-      setPreview(await apiFetch<ResendPreview>(`/orders/${orderId}/messages/preview?type=${type}`));
+      setPreview(await messagingApi.resendPreview(orderId, type));
     } catch (err) {
       setLoadError(err instanceof ApiError ? err.message : 'Could not load the preview.');
     } finally {
@@ -137,20 +130,16 @@ export default function ResendMessageDialog({
     retry: retryNetworkErrors,
     retryDelay: 1000,
     mutationFn: (p: ResendPreview) =>
-      apiFetch<{ messageId: number; status: string; replay: boolean }>(`/orders/${orderId}/messages/resend`, {
-        method: 'POST',
-        headers: { 'Idempotency-Key': submissionKey(resendScope(orderId, type)) },
-        body: JSON.stringify({
-          type,
-          reason,
-          note: note.trim() || undefined,
-          previewHash: p.previewHash,
-        }),
-      }),
+      messagingApi.resend(
+        orderId,
+        { type, reason: reason as ResendReason, note: note.trim() || undefined, previewHash: p.previewHash ?? '' },
+        submissionKey(resendScope(orderId, type))
+      ),
     onSuccess: (r) => {
       clearSubmissionKey(resendScope(orderId, type));
-      queryClient.invalidateQueries({ queryKey: ['order', orderId, 'whatsapp-messages'] });
-      queryClient.invalidateQueries({ queryKey: ['order', String(orderId), 'activity'] });
+      // The messages card, the order's activity history (this key previously used a
+      // string id and never matched Order Details' numeric key) and the Admin figures.
+      invalidateAfterResend(queryClient, orderId);
       toast.success(r.replay ? `Resend already queued (#${r.messageId})` : `Resend queued (#${r.messageId})`, {
         description: (
           <>

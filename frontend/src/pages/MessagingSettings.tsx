@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 
@@ -14,51 +13,24 @@ import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
-import { apiFetch, ApiError } from '@/lib/api';
+import { ApiError } from '@/lib/api';
+import { queueSize as queueSizeOf, type AttentionMessage, type ResolveDecision } from '@/lib/messaging';
+import {
+  isPermissionDenied,
+  useMessagingStatus,
+  useNeedsAttention,
+  useRefreshTemplates,
+  useResolveMessage,
+  useResumeSending,
+} from '@/lib/useMessaging';
 import { cn } from '@/lib/utils';
 
 // Phase 32 D6 (PHASE32_TODO.md §9.5, §11, §14): Settings → WhatsApp Messaging.
 // Route-gated on message:manage here AND on every API call. Everything on this page
 // except Resume / Refresh templates / Resolve is read-only.
 
-interface MessagingStatus {
-  enabled: boolean;
-  provider: string;
-  sendsRealMessages: boolean;
-  providerReason: string | null;
-  paused: { at: string; reason: string | null; by: string | null } | null;
-  rateLimitedUntil: string | null;
-  goLiveAt: string | null;
-  counts: Partial<Record<string, number>>;
-  oldestWaitingSince: string | null;
-  needsAttention: number;
-  templates: { name: string; language: string; status: string; checkedAt: string }[];
-}
-
-export interface AttentionMessage {
-  id: number;
-  orderId: number | null;
-  orderNumber: string | null;
-  customerName: string;
-  type: 'confirmation' | 'dispatched';
-  status: string;
-  to: string | null;
-  errorCode: string | null;
-  lastError: string | null;
-  skipReason: string | null;
-  attempts: number;
-  maxAttempts: number;
-  createdAt: string;
-  sendStartedAt: string | null;
-  lastAttemptAt: string | null;
-  sentAt: string | null;
-  acknowledgedByWhatsapp: boolean;
-  statusReports: number;
-  resolvedBy: { id: number; name: string | null } | null;
-  resolvedAt: string | null;
-  resolutionNote: string | null;
-  lateResponseNote: string | null;
-}
+// Types, API calls, hooks and cache invalidation: lib/messaging.ts + lib/useMessaging.ts (D7).
+export type { AttentionMessage } from '@/lib/messaging';
 
 const PAGE_SIZE = 20;
 const fmt = (iso: string | null) =>
@@ -76,44 +48,24 @@ export function ageText(since: string | null, now = Date.now()): string {
 const typeName = (t: 'confirmation' | 'dispatched') => (t === 'confirmation' ? 'Order confirmation' : 'Dispatch notification');
 
 export default function MessagingSettings() {
-  const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [resolving, setResolving] = useState<AttentionMessage | null>(null);
 
-  const status = useQuery({
-    queryKey: ['messaging', 'status'],
-    queryFn: () => apiFetch<MessagingStatus>('/messaging/status'),
-    refetchInterval: 30_000,
-  });
-  const attention = useQuery({
-    queryKey: ['messaging', 'needs-attention', page],
-    queryFn: () => apiFetch<{ total: number; data: AttentionMessage[] }>(`/messaging/messages?needsAttention=true&page=${page}&pageSize=${PAGE_SIZE}`),
-    refetchInterval: 30_000,
-  });
-  const refreshAll = () => queryClient.invalidateQueries({ queryKey: ['messaging'] });
+  const status = useMessagingStatus();
+  const attention = useNeedsAttention(page, PAGE_SIZE);
+  const resume = useResumeSending();
+  const refreshTemplates = useRefreshTemplates();
 
-  const resume = useMutation({
-    mutationFn: () => apiFetch<{ resumed: boolean }>('/messaging/resume', { method: 'POST' }),
-    onSuccess: (r) => {
-      toast.success(r.resumed ? 'WhatsApp sending resumed' : 'Sending was not paused');
-      refreshAll();
-    },
-    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Could not resume'),
-  });
-  const refreshTemplates = useMutation({
-    mutationFn: () => apiFetch<{ updated: number }>('/messaging/templates/refresh', { method: 'POST' }),
-    onSuccess: (r) => {
-      toast.success(`Template statuses refreshed (${r.updated} updated)`);
-      refreshAll();
-    },
-    onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Could not refresh template statuses'),
-  });
-
+  // The server is the authority: if it refuses (e.g. the permission was removed
+  // after this page loaded), say so instead of showing a generic error.
+  if (isPermissionDenied(status.error) || isPermissionDenied(attention.error)) {
+    return <ErrorState message="You don't have access to WhatsApp Messaging (message:manage is required)." />;
+  }
   if (status.isError) return <ErrorState message={status.error instanceof ApiError ? status.error.message : 'Could not load WhatsApp status.'} />;
 
   const s = status.data;
   const c = s?.counts ?? {};
-  const queueSize = (c.QUEUED ?? 0) + (c.RETRY_WAIT ?? 0) + (c.PROCESSING ?? 0);
+  const queueSize = s ? queueSizeOf(s) : 0;
 
   return (
     <div className="space-y-6">
@@ -155,7 +107,12 @@ export default function MessagingSettings() {
                   description="Queued messages will start sending again. Check that the reason for the pause has been fixed first."
                   confirmLabel="Resume"
                   isPending={resume.isPending}
-                  onConfirm={() => resume.mutate()}
+                  onConfirm={() =>
+                    resume.mutate(undefined, {
+                      onSuccess: (r) => toast.success(r.resumed ? 'WhatsApp sending resumed' : 'Sending was not paused'),
+                      onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Could not resume'),
+                    })
+                  }
                 />
               )}
               <Row label="Rate limit">
@@ -193,7 +150,12 @@ export default function MessagingSettings() {
         <Card data-testid="messaging-templates">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle className="text-base">Message templates</CardTitle>
-            <Button size="sm" variant="outline" disabled={refreshTemplates.isPending} onClick={() => refreshTemplates.mutate()}>
+            <Button size="sm" variant="outline" disabled={refreshTemplates.isPending} onClick={() =>
+                refreshTemplates.mutate(undefined, {
+                  onSuccess: (r) => toast.success(`Template statuses refreshed (${r.updated} updated)`),
+                  onError: (err) => toast.error(err instanceof ApiError ? err.message : 'Could not refresh template statuses'),
+                })
+              }>
               <RefreshCw className="mr-1 h-4 w-4" /> {refreshTemplates.isPending ? 'Refreshing…' : 'Refresh from WhatsApp'}
             </Button>
           </CardHeader>
@@ -237,6 +199,11 @@ export default function MessagingSettings() {
         </CardHeader>
         <CardContent className="space-y-2">
           {attention.isPending && <Skeleton className="h-24 w-full" />}
+          {attention.isError && (
+            <p className="text-sm text-destructive">
+              {attention.error instanceof ApiError ? attention.error.message : 'Could not load the Needs attention list.'}
+            </p>
+          )}
           {attention.data?.data.length === 0 && <p className="text-sm text-muted-foreground">Nothing needs attention.</p>}
           {attention.data?.data.map((m) => (
             <div key={m.id} data-testid="attention-row" data-message-id={m.id} className="rounded-md border p-2 text-sm">
@@ -295,7 +262,7 @@ export default function MessagingSettings() {
         </CardContent>
       </Card>
 
-      {resolving && <ResolveDialog message={resolving} onClose={() => setResolving(null)} onDone={refreshAll} />}
+      {resolving && <ResolveDialog message={resolving} onClose={() => setResolving(null)} />}
     </div>
   );
 }
@@ -309,35 +276,34 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
   );
 }
 
-type Decision = 'mark-sent' | 'mark-failed-and-resend';
+type Decision = ResolveDecision;
 
 /**
  * D6: resolving an UNKNOWN message. Shows the evidence first; the decision is an
  * explicit choice (nothing preselected) and a reason is mandatory.
  */
-function ResolveDialog({ message: m, onClose, onDone }: { message: AttentionMessage; onClose: () => void; onDone: () => void }) {
+function ResolveDialog({ message: m, onClose }: { message: AttentionMessage; onClose: () => void }) {
   const [decision, setDecision] = useState<Decision | null>(null);
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const resolve = useMutation({
-    mutationFn: () =>
-      apiFetch<{ messageId: number; status: string; resend: { messageId: number } | null; resendBlockedReason: string | null }>(
-        `/messaging/messages/${m.id}/resolve`,
-        { method: 'POST', body: JSON.stringify({ action: decision, reason: reason.trim() }) }
-      ),
-    onSuccess: (r) => {
-      if (decision === 'mark-sent') toast.success(`Message #${m.id} marked as sent`);
-      else if (r.resend) toast.success(`Message #${m.id} marked as failed; resend queued as message #${r.resend.messageId}`);
-      else toast.warning(`Message #${m.id} marked as failed; no resend was queued`, { description: r.resendBlockedReason ?? undefined });
-      onDone();
-      onClose();
-    },
-    onError: (err) => {
-      setError(err instanceof ApiError ? err.message : 'Could not reach the server. Try again.');
-      onDone(); // e.g. another Admin resolved it meanwhile: refresh the list behind
-    },
-  });
+  // Cache invalidation (status, every Needs attention page, the order's messages card
+  // and activity) happens in the hook, on success AND on a 409 (lib/useMessaging.ts).
+  const resolve = useResolveMessage();
+  const submit = () =>
+    decision &&
+    resolve.mutate(
+      { messageId: m.id, orderId: m.orderId, decision, reason },
+      {
+        onSuccess: (r) => {
+          if (decision === 'mark-sent') toast.success(`Message #${m.id} marked as sent`);
+          else if (r.resend) toast.success(`Message #${m.id} marked as failed; resend queued as message #${r.resend.messageId}`);
+          else toast.warning(`Message #${m.id} marked as failed; no resend was queued`, { description: r.resendBlockedReason ?? undefined });
+          onClose();
+        },
+        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not reach the server. Try again.'),
+      }
+    );
 
   const reasonOk = reason.trim().length >= 3;
   const canConfirm = decision !== null && reasonOk && !resolve.isPending;
@@ -419,7 +385,7 @@ function ResolveDialog({ message: m, onClose, onDone }: { message: AttentionMess
           <Button variant="outline" disabled={resolve.isPending} onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={!canConfirm} onClick={() => resolve.mutate()}>
+          <Button disabled={!canConfirm} onClick={submit}>
             {resolve.isPending ? 'Saving…' : 'Confirm decision'}
           </Button>
         </DialogFooter>

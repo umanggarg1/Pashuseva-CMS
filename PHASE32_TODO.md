@@ -1678,7 +1678,59 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
         Windows, Docker VM within 18–59 ms, no jumps, -15 ms over 30 s.
       - Reruns with the scripts, tests and code unchanged: **B8–B10 51/51, C4
         14/14.** D6 is fully verified.
-- [ ] D7. Types + API client + react-query hooks for all of the above
+- [x] D7. Types + API client + react-query hooks for all of the above
+  - **Done (2026-11-26, local only), frontend only (no backend or architecture
+    change).**
+    - `lib/messaging.ts`:
+      - types for every messaging response (OrderMessage, ResendPreview,
+        ResendRequest/Result, MessagingStatus, TemplateStatus, AttentionMessage,
+        Page, ResolveDecision/Result);
+      - `messagingApi` (orderMessages, resendPreview, resend with Idempotency-Key,
+        status, needsAttention, resolve, resume, refreshTemplates);
+      - `messagingKeys`;
+      - the invalidation rules: Resume and template refresh → status only; Resolve
+        → status, every Needs attention page, and the order's messages and
+        activity; Resend → the order's messages and activity, and the status;
+      - `hasActiveMessages`, `queueSize`.
+    - `lib/useMessaging.ts`: useOrderMessages (10 s refresh while active),
+      useMessagingStatus / useNeedsAttention (30 s), useResumeSending,
+      useRefreshTemplates, useResolveMessage (invalidates on success AND on a 409),
+      `retryUnlessDenied` (401/403/404 are never retried), `isPermissionDenied`.
+    - The D4 card, D5 dialog and D6 page now use them, with no direct requests left
+      in those files. Added a permission-denied state on the order card and the
+      Messaging page (a 403 from the server, e.g. a permission removed
+      mid-session), and an error state for the Needs attention list.
+    - **Fixed:** after a resend the dialog invalidated `['order', '12', 'activity']`
+      (a string id) while Order Details caches `['order', 12, 'activity']`, so the
+      Activity history never refreshed. It now does.
+    - Types completed from the server's actual responses: OrderMessage gained
+      templateName, attempts and lateResponseNote (the last is Admin only and never
+      displayed).
+  - Tests:
+    - Client **24/24**: the real frontend modules bundled with esbuild and run
+      against the local backend.
+      - Every API function returns exactly the typed fields, and a resend with the
+        same key replays.
+      - Employee with message:resend: 403 on all 5 Admin calls; order messages and
+        preview allowed. Viewer: preview and resend 403. Manager with
+        message:manage: 200. No login: 401.
+      - Fake WhatsApp credentials (token, app secret, verify token, phone-number
+        id, WABA id) were planted in the server: none appear in any of the 26
+        responses, and no full customer phone appears either.
+      - Invalidation, checked with a real QueryClient: exactly the right keys, and
+        nothing for other orders or unrelated data.
+    - Browser **13/13**:
+      - Resume refetches the status but not the list; template refresh refetches
+        the status; Resolve refetches the status and the list, and the row leaves
+        without a reload.
+      - Resend refreshes the Activity history without a reload (the bug fix).
+      - A permission removed while the page is open gives a clear denied state,
+        with no retry loop.
+      - Employee: no menu entry, and Resend present. Viewer: no Resend.
+      - No credential or full number in any messaging response the browser
+        received.
+    - Regressions: D3 8/8 + 27/27, D4 31/31, D5 35/35, D5 concurrency 6/6, D6 44/44
+      + 24/24. TypeScript and the frontend build pass. 0 non-local requests.
 - [ ] D8. **Permission picker (`frontend/src/lib/permissions.ts`): add `message:resend` ("Resend WhatsApp message") and `message:manage` ("Manage WhatsApp messaging").** Required before release: the picker saves a user's FULL permission list, so without these two entries saving anyone's permissions would silently remove `message:resend` (found in C5).
 
 ### E. Mandatory tests before production (local Docker PG + dry-run, plus a fake-Meta stub server for error responses)
