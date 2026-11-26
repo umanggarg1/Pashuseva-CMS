@@ -10,7 +10,7 @@ import logger from '../../logger';
 // retries never add duplicate entries. Retry waits and pauses are not logged here
 // (they're visible on the order's WhatsApp card) to keep the history readable.
 
-export type MessageEvent = 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'skipped' | 'unknown' | 'resent';
+export type MessageEvent = 'queued' | 'sent' | 'delivered' | 'read' | 'failed' | 'skipped' | 'unknown' | 'resent' | 'marked-sent' | 'marked-failed';
 
 const TYPE_LABEL: Record<string, string> = {
   ORDER_CONFIRMATION: 'order confirmation',
@@ -26,6 +26,10 @@ const EVENT_LABEL: Record<MessageEvent, string> = {
   skipped: 'not sent',
   unknown: 'status unknown (an Admin will check)',
   resent: 'resent',
+  // Phase 32 D6: an Admin's explicit decision on an UNKNOWN message — worded so the
+  // history never reads as if WhatsApp itself reported it.
+  'marked-sent': 'marked as sent by an Admin',
+  'marked-failed': 'marked as failed by an Admin',
 };
 
 export function messageActivityAction(type: string, event: MessageEvent): string {

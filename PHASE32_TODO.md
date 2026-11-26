@@ -1591,7 +1591,87 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     - Tests: D5 browser **35/35** (adds the numbering, the Read and Delivered times,
       Sent never shown as delivered, no warning when nothing was received, a missing
       time not invented, the toast line). D4 31/31; C6 38/38 + 3/3.
-- [ ] D6. Admin **Messaging** page (Settings area, `message:manage`): enabled/paused state + Resume, rate-limited-until, template approval statuses + Refresh, **queue size + oldest queued age**, a **Needs attention** list (UNKNOWN / FAILED / late-response notes) with Resolve actions
+- [x] D6. Admin **Messaging** page (Settings area, `message:manage`): enabled/paused state + Resume, rate-limited-until, template approval statuses + Refresh, **queue size + oldest queued age**, a **Needs attention** list (UNKNOWN / FAILED / late-response notes) with Resolve actions
+  - **Done (2026-11-26, local only).**
+    - **Migration `20261126120000_phase32_message_resolution`** (user-approved,
+      additive): exactly two nullable columns on OutboundMessage, `resolvedAt
+      TIMESTAMP(3)` and `resolutionNote TEXT`, inside BEGIN/COMMIT. Verified on
+      disposable copies: on a copy with 40 existing message rows, every original
+      column was byte-identical afterwards; the AuditLog was byte-identical; the only
+      other row-count change was +1 in `_prisma_migrations`; the new columns are NULL
+      for all existing rows; `prisma migrate diff` finds no drift.
+    - **Resolve** (`admin.service.resolveUnknown`):
+      - The reason is mandatory: 3–300 characters after trimming (400 otherwise),
+        and the decision must be explicit (mark-sent / mark-failed-and-resend).
+      - Only the status changes (UNKNOWN → SENT/FAILED, so it leaves Needs
+        attention), plus resolvedById, resolvedAt and resolutionNote.
+      - lastError, errorCode, sentAt and failedAt are NEVER written (no send or
+        failure time is invented).
+      - The status change, the order history entry ("WhatsApp … marked as
+        sent/failed by an Admin", by the Admin, with the reason) and the audit entry
+        (decision, previous status, reason, resolvedAt) are written in ONE
+        transaction.
+      - Concurrency: a guarded update (still UNKNOWN and unresolved). One of
+        several simultaneous Admins wins; the others get 409 "already resolved by
+        another Admin — reload".
+      - Mark-failed-and-resend creates a SEPARATE resend through the normal checks.
+        If those block it (e.g. consent NO), the decision stands and
+        `resendBlockedReason` is returned.
+      - Also fixed: history entries for resends and resolutions said "by user #id"
+        (req.user has no name); they now show the staff name.
+    - **Needs attention list** adds sendStartedAt, lastAttemptAt, sentAt,
+      acknowledgedByWhatsapp (a WhatsApp message id was returned), statusReports,
+      maxAttempts, resolvedAt and resolutionNote. The order's message list adds
+      resolvedAt and resolutionNote.
+    - **Frontend:**
+      - `pages/MessagingSettings.tsx` at /settings/messaging (RequirePermission
+        message:manage), with a new **Settings → WhatsApp Messaging** sidebar entry
+        shown only with message:manage.
+      - The page shows: enabled (dry run / real), paused (since, by, reason) with
+        Resume behind a confirmation, the rate-limit expiry, go-live, the queue size
+        (queued + retrying + sending), the oldest waiting age, the needs-attention
+        count, and the template approval table with "Refresh from WhatsApp".
+      - The Needs attention list has a Resolve button on unresolved UNKNOWN rows.
+      - The Resolve dialog shows the evidence first: current status, attempts,
+        sending started, last attempt, WhatsApp acknowledged yes/no, original error
+        and code. Nothing is preselected; a decision and a reason are required.
+      - On the order card, an Admin-resolved message reads "Marked as sent by an
+        Admin; WhatsApp never confirmed it" or "Marked as failed by an Admin
+        (original error: …)", plus "Status was unknown; marked as … by X on <date>.
+        Reason: …". It does not auto-refresh.
+  - Tests:
+    - API **44/44**:
+      - Manager without message:manage and Employee with message:resend get 403 on
+        all 5 routes; a Manager granted message:manage gets 200.
+      - 7 invalid bodies give 400 with nothing changed or audited.
+      - Mark-sent: error and code preserved, sentAt null stays null, an existing
+        sentAt is kept exactly, every other original column unchanged,
+        resolvedAt/note/by correct, one audit entry and one history entry.
+      - Mark-failed-and-resend: the same preservation, plus a separate RESEND
+        record with its own audit entry; when the resend is blocked by consent NO,
+        the decision stands and the reason is returned.
+      - Re-resolving gives 409 with nothing added.
+      - 4 simultaneous resolutions by 2 Admins: exactly 1 succeeds, the stored
+        result is entirely the winner's, one audit entry and one history entry.
+      - An unresolved UNKNOWN blocks resend and is never re-sent by the worker; the
+        block is lifted after resolution.
+      - List and status data; pause/resume and template refresh are audited.
+    - Browser **24/24**: menu and page hidden and denied without message:manage;
+      every state block, queue figure, the template table and Needs attention; the
+      dialog evidence (including acknowledged Yes/No), no preselection, the
+      mandatory reason; mark-sent and mark-failed-and-resend from the page; a stale
+      dialog after another Admin decided is refused and changes nothing; the honest
+      wording on the order card; Resume.
+    - Regressions: C6 38/38 + 3/3 (its Resolve calls now send the mandatory reason;
+      the history check uses the new wording), C7 29/29, templates 123/123,
+      providers 50/50, D1 37/37 + 19/19, D2 19/19, D3 8/8 + 27/27, D4 31/31, D5
+      35/35, D5 concurrency 6/6, integration 14/14 + 22/22, workflows 17/17 + 17/17.
+    - **Open:** B8–B10 (worker) and C4 (activity) need a clean rerun. The local
+      Docker database clock has drifted 2.4–3.0 s behind this computer, and those
+      suites use 1-second time margins. The PRE-D6 code (commit 4e495a0) fails the
+      same way on the same clock (B8 49/51, C4 11/14), and results vary from run to
+      run. D6 does not touch the worker. Rerun them after resyncing the Docker
+      clock.
 - [ ] D7. Types + API client + react-query hooks for all of the above
 - [ ] D8. **Permission picker (`frontend/src/lib/permissions.ts`): add `message:resend` ("Resend WhatsApp message") and `message:manage` ("Manage WhatsApp messaging").** Required before release: the picker saves a user's FULL permission list, so without these two entries saving anyone's permissions would silently remove `message:resend` (found in C5).
 

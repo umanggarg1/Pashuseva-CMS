@@ -63,8 +63,8 @@ export const messagingController = {
 
   async resolve(req: Request, res: Response) {
     const { id } = messageIdParamSchema.parse(req.params);
-    const { action, note } = resolveBodySchema.parse(req.body);
-    res.json(await admin.resolveUnknown(id, action, note, actingUser(req)));
+    const { action, reason } = resolveBodySchema.parse(req.body);
+    res.json(await admin.resolveUnknown(id, action, reason, actingUser(req)));
   },
 
   async resume(req: Request, res: Response) {

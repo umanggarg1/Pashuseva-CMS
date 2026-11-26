@@ -6,7 +6,7 @@ import { auditLogRepository } from '../../repositories/auditLog.repository';
 import { createWhatsAppProvider } from './providers';
 import { getMessagingState, resumeSending } from './messagingState';
 import { refreshTemplateStatuses } from './dispatcher';
-import { recordActivityForMessage } from './activity';
+import { recordMessageActivity } from './activity';
 import { createResend } from './resend.service';
 
 // Phase 32 C6 (PHASE32_TODO.md §9.5, §11, §14): the Admin Messaging page actions —
@@ -48,7 +48,7 @@ export async function listMessages(q: { status?: string; needsAttention?: boolea
       orderBy: { id: 'desc' },
       skip: (q.page - 1) * q.pageSize,
       take: q.pageSize,
-      include: { order: { select: { orderNumber: true } }, customer: { select: { name: true } }, resolvedBy: { select: { id: true, name: true } } },
+      include: { order: { select: { orderNumber: true } }, customer: { select: { name: true } }, resolvedBy: { select: { id: true, name: true } }, _count: { select: { statusEvents: true } } },
     }),
     prisma.outboundMessage.count({ where }),
   ]);
@@ -66,46 +66,84 @@ export async function listMessages(q: { status?: string; needsAttention?: boolea
       lastError: m.lastError,
       skipReason: m.skipReason,
       attempts: m.attempts,
+      maxAttempts: m.maxAttempts,
       createdAt: m.createdAt,
+      // Phase 32 D6: what the Admin needs before deciding on an UNKNOWN.
+      sendStartedAt: m.sendStartedAt,
+      lastAttemptAt: m.lastAttemptAt,
+      sentAt: m.sentAt,
+      acknowledgedByWhatsapp: m.providerMessageId !== null,
+      statusReports: m._count.statusEvents,
       resolvedBy: m.resolvedBy,
+      resolvedAt: m.resolvedAt,
+      resolutionNote: m.resolutionNote,
       lateResponseNote: m.lateResponseNote,
     })),
   };
 }
 
-/** UNKNOWN → an Admin decides (§9.5). Nothing is ever resent without this decision. */
-export async function resolveUnknown(id: number, action: 'mark-sent' | 'mark-failed-and-resend', note: string | undefined, admin: ActingUser) {
+/**
+ * UNKNOWN → an Admin decides (§9.5). Nothing is ever resent without this decision.
+ *
+ * Phase 32 D6 data-integrity rules:
+ *  - the decision is explicit (mark-sent / mark-failed-and-resend), never inferred;
+ *  - a reason is mandatory and stored in resolutionNote, the time in resolvedAt;
+ *  - the original lastError, errorCode, sentAt and failedAt are NEVER changed (no
+ *    send or failure time is invented — resolvedAt is the decision time);
+ *  - status UNKNOWN → SENT / FAILED (so it leaves Needs attention), resolvedById =
+ *    the Admin; the status change, order history entry and audit log entry are
+ *    written in ONE transaction;
+ *  - concurrency: the update only matches a row that is still UNKNOWN and
+ *    unresolved, so of two Admins resolving at once exactly one wins; the other
+ *    gets 409 and nothing of theirs is written.
+ */
+export async function resolveUnknown(id: number, action: 'mark-sent' | 'mark-failed-and-resend', reason: string, admin: ActingUser) {
   const m = await prisma.outboundMessage.findUnique({ where: { id } });
   if (!m) throw new NotFoundError('Message not found');
-  if (m.status !== 'UNKNOWN' || m.resolvedById) throw new HttpError(409, 'Only an unresolved message with an UNKNOWN status can be resolved');
+  if (m.resolvedById) throw new HttpError(409, 'This message was already resolved by another Admin — reload to see their decision');
+  if (m.status !== 'UNKNOWN') throw new HttpError(409, `Only an unresolved UNKNOWN message can be resolved (this one is now ${m.status}) — reload the list`);
 
-  if (action === 'mark-sent') {
-    const r = await prisma.outboundMessage.updateMany({
+  const markSent = action === 'mark-sent';
+  const resolvedAt = new Date();
+  // req.user carries no name, so look it up for the history text (the entry also
+  // stores createdById).
+  const adminName = admin.name ?? (await prisma.user.findUnique({ where: { id: admin.id }, select: { name: true } }))?.name ?? `user #${admin.id}`;
+  await prisma.$transaction(async (tx) => {
+    const r = await tx.outboundMessage.updateMany({
       where: { id, status: 'UNKNOWN', resolvedById: null },
-      data: { status: 'SENT', sentAt: m.sentAt ?? new Date(), resolvedById: admin.id, lastError: note ? `Marked as sent by Admin: ${note}` : 'Marked as sent by Admin' },
+      data: { status: markSent ? 'SENT' : 'FAILED', resolvedById: admin.id, resolvedAt, resolutionNote: reason },
     });
-    if (r.count !== 1) throw new HttpError(409, 'This message was changed at the same time — reload and try again');
-    await recordActivityForMessage(id, 'sent', `marked as sent by ${admin.name ?? 'Admin'}${note ? `: ${note}` : ''}`);
-    await auditLogRepository.create({ userId: admin.id, action: 'WhatsApp UNKNOWN message marked as sent', meta: { messageId: id, orderId: m.orderId, note: note ?? null } });
-    return { messageId: id, status: 'SENT', resend: null };
-  }
-
-  const r = await prisma.outboundMessage.updateMany({
-    where: { id, status: 'UNKNOWN', resolvedById: null },
-    data: { status: 'FAILED', failedAt: new Date(), resolvedById: admin.id, lastError: note ? `Marked as failed by Admin: ${note}` : 'Marked as failed by Admin' },
+    if (r.count !== 1) throw new HttpError(409, 'This message was resolved or changed at the same time — reload and try again');
+    await recordMessageActivity(
+      { orderId: m.orderId, type: m.type, event: markSent ? 'marked-sent' : 'marked-failed', toPhone: m.toPhone, detail: `by ${adminName}: ${reason}`, createdById: admin.id },
+      tx
+    );
+    await tx.auditLog.create({
+      data: {
+        userId: admin.id,
+        action: markSent ? 'WhatsApp UNKNOWN message marked as sent' : 'WhatsApp UNKNOWN message marked as failed',
+        meta: { messageId: id, orderId: m.orderId, decision: action, previousStatus: 'UNKNOWN', reason, resolvedAt: resolvedAt.toISOString() },
+      },
+    });
   });
-  if (r.count !== 1) throw new HttpError(409, 'This message was changed at the same time — reload and try again');
-  await recordActivityForMessage(id, 'failed', `marked as failed by ${admin.name ?? 'Admin'}${note ? `: ${note}` : ''}`);
-  await auditLogRepository.create({ userId: admin.id, action: 'WhatsApp UNKNOWN message marked as failed', meta: { messageId: id, orderId: m.orderId, note: note ?? null } });
-  if (!m.orderId) return { messageId: id, status: 'FAILED', resend: null };
-  // The resend gets every normal check (consent, number, go-live, order state).
-  const resend = await createResend(
-    m.orderId,
-    { type: m.type === 'ORDER_CONFIRMATION' ? 'confirmation' : 'dispatched', reasonText: `Admin resolved unknown message #${id}`, resendOfId: id },
-    admin,
-    { skipUnknownCheck: true, skipCooldown: true }
-  );
-  return { messageId: id, status: 'FAILED', resend };
+
+  if (markSent) return { messageId: id, status: 'SENT', resend: null, resendBlockedReason: null };
+  if (!m.orderId) return { messageId: id, status: 'FAILED', resend: null, resendBlockedReason: null };
+  // The resend is a SEPARATE new message and gets every normal check (consent,
+  // number, go-live, order state). If one blocks it, the resolution still stands and
+  // the Admin is told why no resend was queued.
+  try {
+    const resend = await createResend(
+      m.orderId,
+      { type: m.type === 'ORDER_CONFIRMATION' ? 'confirmation' : 'dispatched', reasonText: `Admin resolved unknown message #${id}: ${reason}`, resendOfId: id },
+      admin,
+      { skipUnknownCheck: true, skipCooldown: true }
+    );
+    return { messageId: id, status: 'FAILED', resend, resendBlockedReason: null };
+  } catch (err) {
+    if (err instanceof HttpError) return { messageId: id, status: 'FAILED', resend: null, resendBlockedReason: err.message };
+    throw err;
+  }
 }
 
 export async function resume(admin: ActingUser) {

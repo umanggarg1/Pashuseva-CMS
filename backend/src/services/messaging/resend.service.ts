@@ -74,6 +74,8 @@ export async function listOrderMessages(orderId: number, opts: { includeAdminNot
     failedAt: m.failedAt,
     triggeredBy: m.triggeredBy,
     resolvedBy: m.resolvedBy,
+    resolvedAt: m.resolvedAt, // Phase 32 D6
+    resolutionNote: m.resolutionNote,
     needsAttention: m.status === 'UNKNOWN' && !m.resolvedById,
     ...(opts.includeAdminNotes ? { lateResponseNote: m.lateResponseNote } : {}),
   }));
@@ -274,7 +276,7 @@ export async function createResend(
       });
       await recordMessageActivity({
         orderId, type: dbType, event: 'resent', toPhone: b.toPhone,
-        detail: `by ${actingUser.name ?? `user #${actingUser.id}`}: ${input.reasonText}`.slice(0, 300),
+        detail: `by ${actingUser.name ?? (await tx.user.findUnique({ where: { id: actingUser.id }, select: { name: true } }))?.name ?? `user #${actingUser.id}`}: ${input.reasonText}`.slice(0, 300),
         createdById: actingUser.id,
       }, tx);
       return row;

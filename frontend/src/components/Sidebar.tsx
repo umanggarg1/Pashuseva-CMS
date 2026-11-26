@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { LayoutDashboard, Users, ShoppingCart, Package, UserCog, BarChart3, Trash2 } from 'lucide-react';
+import { LayoutDashboard, Users, ShoppingCart, Package, UserCog, BarChart3, Trash2, MessageCircle } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
 import { useCurrentUser, hasPermission, type Role } from '@/lib/auth';
@@ -51,6 +51,9 @@ export function NavLinks({
     return true;
   });
 
+  // Phase 32 D6: Settings → WhatsApp Messaging, only for message:manage.
+  const canManageMessaging = hasPermission(user, 'message:manage');
+
   return (
     <nav className={cn('flex flex-col gap-1', className)}>
       {visibleItems.map(({ to, label, icon: Icon }) => (
@@ -81,6 +84,20 @@ export function NavLinks({
                 {trashCountQuery.data.total}
               </span>
             )}
+          </Link>
+        </>
+      )}
+      {canManageMessaging && (
+        <>
+          <div className="my-1 border-t" />
+          <p className="px-3 pt-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Settings</p>
+          <Link
+            to="/settings/messaging"
+            onClick={onNavigate}
+            className="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          >
+            <MessageCircle className="h-4 w-4" />
+            WhatsApp Messaging
           </Link>
         </>
       )}

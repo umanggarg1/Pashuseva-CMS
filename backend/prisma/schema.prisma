@@ -793,6 +793,11 @@ model OutboundMessage {
   // Admin who resolved an UNKNOWN (mark sent / mark failed and resend).
   resolvedBy       User?    @relation("OutboundMessageResolvedBy", fields: [resolvedById], references: [id])
   resolvedById     Int?
+  // Phase 32 D6: when the Admin resolved it and their mandatory reason. The
+  // decision itself is the new status (SENT / FAILED) + resolvedById + the audit
+  // log; lastError and sentAt are never overwritten by a resolution.
+  resolvedAt       DateTime?
+  resolutionNote   String?
   // A Meta answer that arrived after the worker lost its claim (§19.3).
   lateResponseNote String?
   createdAt        DateTime @default(now())

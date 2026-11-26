@@ -32,9 +32,17 @@ export const messagingListQuerySchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(100).default(25),
 });
 
+// Phase 32 D6: the Admin's reason is MANDATORY (stored in resolutionNote).
+export const RESOLUTION_REASON_REQUIRED = 'A reason is required to resolve this message (at least 3 characters)';
 export const resolveBodySchema = z.object({
-  action: z.enum(['mark-sent', 'mark-failed-and-resend']),
-  note: z.string().trim().max(200).optional(),
+  action: z.enum(['mark-sent', 'mark-failed-and-resend'], {
+    errorMap: () => ({ message: 'Choose "mark-sent" or "mark-failed-and-resend"' }),
+  }),
+  reason: z
+    .string({ required_error: RESOLUTION_REASON_REQUIRED, invalid_type_error: RESOLUTION_REASON_REQUIRED })
+    .trim()
+    .min(3, RESOLUTION_REASON_REQUIRED)
+    .max(300, 'The reason can be at most 300 characters'),
 });
 
 export type MessageTypeParam = z.infer<typeof messageTypeSchema>;

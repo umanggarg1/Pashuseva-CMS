@@ -7,6 +7,7 @@ import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import Employees from './pages/Employees';
 import Reports from './pages/Reports';
+import MessagingSettings from '@/pages/MessagingSettings';
 import ChangePassword from './pages/ChangePassword';
 import Customers from './pages/Customers';
 import CustomerDetail from './pages/CustomerDetail';
@@ -90,6 +91,10 @@ export default function App() {
           </Route>
           <Route element={<RequirePermission permission="report:view" />}>
             <Route path="/reports" element={<Reports />} />
+          </Route>
+          {/* Phase 32 D6: Settings → WhatsApp Messaging (message:manage, Admin by default). */}
+          <Route element={<RequirePermission permission="message:manage" />}>
+            <Route path="/settings/messaging" element={<MessagingSettings />} />
           </Route>
           {/* Trash is Admin-only, no exceptions (Phase 3 addendum). */}
           <Route element={<RequireRole roles={['ADMIN']} />}>

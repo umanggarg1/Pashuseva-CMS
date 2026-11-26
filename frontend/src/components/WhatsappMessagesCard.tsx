@@ -46,6 +46,10 @@ export interface OrderMessage {
   failedAt: string | null;
   triggeredBy: { id: number; name: string | null } | null;
   needsAttention: boolean;
+  // Phase 32 D6: an Admin's decision on an UNKNOWN message
+  resolvedBy: { id: number; name: string | null } | null;
+  resolvedAt: string | null;
+  resolutionNote: string | null;
 }
 
 /** While any message is in one of these, the card refreshes every 10 s. */
@@ -105,8 +109,18 @@ export function statusHelp(m: Pick<OrderMessage, 'status' | 'skipReason' | 'last
   }
 }
 
+/** D6: an Admin-resolved message must not read as a WhatsApp report. */
+export function helpFor(m: OrderMessage): string {
+  if (m.resolvedAt && m.status === 'SENT') return 'Marked as sent by an Admin; WhatsApp never confirmed it';
+  if (m.resolvedAt && m.status === 'FAILED') {
+    return `Marked as failed by an Admin${m.lastError ? ` (original error: ${m.lastError}${m.errorCode ? `, code ${m.errorCode}` : ''})` : ''}`;
+  }
+  return statusHelp(m);
+}
+
 /** When the current status happened. */
 function statusTime(m: OrderMessage): string | null {
+  if (m.resolvedAt) return m.resolvedAt;
   switch (m.status) {
     case 'READ':
       return m.readAt;
@@ -167,7 +181,9 @@ export default function WhatsappMessagesCard({
     queryKey: ['order', orderId, 'whatsapp-messages'],
     queryFn: () => apiFetch<OrderMessage[]>(`/orders/${orderId}/messages`),
     // Auto-refresh only while something can still change.
-    refetchInterval: (q) => (q.state.data?.some((m) => ACTIVE_STATUSES.includes(m.status)) ? REFRESH_MS : false),
+    // (A message an Admin resolved is final: no reports will come for it.)
+    refetchInterval: (q) =>
+      q.state.data?.some((m) => ACTIVE_STATUSES.includes(m.status) && !m.resolvedAt) ? REFRESH_MS : false,
   });
 
   return (
@@ -197,7 +213,7 @@ export default function WhatsappMessagesCard({
               <span className="flex items-center gap-2">
                 <span
                   data-testid="message-status"
-                  title={statusHelp(m)}
+                  title={helpFor(m)}
                   className={cn('rounded-full px-2 py-0.5 text-xs font-medium', STATUS_STYLE[m.status])}
                 >
                   {STATUS_LABEL[m.status]}
@@ -229,8 +245,15 @@ export default function WhatsappMessagesCard({
                 m.status === 'FAILED' || m.status === 'UNKNOWN' ? 'text-red-700' : 'text-muted-foreground'
               )}
             >
-              {statusHelp(m)}
+              {helpFor(m)}
             </p>
+            {m.resolvedAt && (
+              <p data-testid="message-resolution" className="mt-1 text-xs text-muted-foreground">
+                Status was unknown; marked as {m.status === 'SENT' ? 'sent' : 'failed'} by{' '}
+                {m.resolvedBy?.name ?? 'an Admin'} on {formatTime(m.resolvedAt)}
+                {m.resolutionNote && `. Reason: ${m.resolutionNote}`}
+              </p>
+            )}
           </div>
           );
         })}
