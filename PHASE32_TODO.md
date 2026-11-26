@@ -1057,7 +1057,26 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   Then run the **old commit's code** on the migrated DB (create/edit customer,
   create/dispatch order, add payment, parcel label) and the new code. Also simulate a
   failed migration and recover with `migrate resolve` (§19.1, E38).
-- [ ] A4. **Controlled production migration** (only after A0–A3 and the backend tests
+- [ ] A4. **Controlled production migration**
+  - **Migration review APPROVED (owner, 2026-11-26), after 6 revisions.** Report:
+    `D:\pashuseva\backups\phase32-verification\PHASE32_MIGRATION_REVIEW.md`,
+    plus the `_REDACTED` copy; kept outside git because it lists staff names.
+    - The migration SQL and the C5 decision (keep all 21 grants) are frozen; don't
+      change them.
+    - A4 is ONE combined deploy (migrations + code) inside a maintenance window. Before
+      it, the same-day checklist D.0 must pass:
+      - a fresh backup and a test restore;
+      - PostgreSQL 18.7 / 180007;
+      - `migrate status` showing 29 applied, 3 pending, none failed;
+      - `a3_signature.sql` reading 0/45;
+      - the C5 queries (a) and (b);
+      - WhatsApp disabled in Render, Render's failed-deploy behaviour known, recovery
+        access ready;
+      - a freeze on orders and permission changes.
+    - Partial-failure recovery: D.7. Inspect first, then `--rolled-back` (absent),
+      `--applied` (present), or stop (mixed).
+    - **A4 itself is NOT yet authorised**; it needs a separate GO/NO-GO after the
+      checklist is reported. (only after A0–A3 and the backend tests
   pass): a fresh verified prod backup taken the same day → push → Render runs
   `migrate deploy` with **`WHATSAPP_ENABLED=false`** → read-only production check:
   same row counts as the backup, the app works as before.
