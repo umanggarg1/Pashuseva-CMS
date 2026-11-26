@@ -1505,7 +1505,10 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     - "To 98XXXX3210" (masked by the server; the full number is never sent to the
       browser);
     - the language, with "(Hindi template not available)" when it fell back;
-    - "by <staff>" or "automatic";
+    - who is accountable (user decision, D4 review): "Triggered by: <staff>" (the
+      staff member who created or dispatched the order), "Requested by: <staff>" for
+      a manual resend, or "Automatic" when there is no staff actor. The CRM is the
+      sender, never the employee;
     - a status chip with the time of the current status, with the §0.1 help text as
       the tooltip and as a line under the row. SENT reads "Accepted by WhatsApp, not
       yet delivered". FAILED reads "Could not be sent: <reason> (code …)". SKIPPED
@@ -1514,7 +1517,7 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   - Refreshes every 10 s only while a row is QUEUED/PROCESSING/RETRY_WAIT/SENT.
   - No Resend action yet; D5 adds it behind message:resend. The Admin-only late
     response note is never displayed.
-  - Tests: browser **30/30**:
+  - Tests: browser **31/31** (after the wording change):
     - every one of the 9 statuses (wording, chip and time);
     - FAILED and SKIPPED reasons, the RETRY_WAIT time, the resend row with reason
       and who, the language fallback;

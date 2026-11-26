@@ -124,6 +124,18 @@ function typeLabel(m: OrderMessage): string {
 
 const languageName = (l: 'EN' | 'HI') => (l === 'HI' ? 'Hindi' : 'English');
 
+/**
+ * Who is accountable (user decision, D4 review): the CRM sends every message itself,
+ * so a staff member is shown as the one who TRIGGERED it (created / dispatched the
+ * order) or REQUESTED it (a manual resend), never as the sender. No staff actor →
+ * "Automatic".
+ */
+export function actorLabel(m: Pick<OrderMessage, 'isResend' | 'triggeredBy'>): string {
+  if (!m.triggeredBy) return 'Automatic';
+  const name = m.triggeredBy.name ?? 'a staff member';
+  return m.isResend ? `Requested by: ${name}` : `Triggered by: ${name}`;
+}
+
 export default function WhatsappMessagesCard({ orderId }: { orderId: number }) {
   const query = useQuery({
     queryKey: ['order', orderId, 'whatsapp-messages'],
@@ -166,7 +178,7 @@ export default function WhatsappMessagesCard({ orderId }: { orderId: number }) {
               To {m.to ?? 'no WhatsApp number'} · {languageName(m.language)}
               {m.fallbackFromLanguage && ` (${languageName(m.fallbackFromLanguage)} template not available)`}
               {' · '}
-              {m.triggeredBy ? `by ${m.triggeredBy.name ?? 'a staff member'}` : 'automatic'}
+              {actorLabel(m)}
             </p>
             {m.isResend && m.resendOfId && (
               <p className="text-xs text-muted-foreground">
