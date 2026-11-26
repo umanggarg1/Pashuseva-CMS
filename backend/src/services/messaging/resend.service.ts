@@ -92,9 +92,16 @@ export interface ResendPreview {
   previewHash: string | null;
   /** Why a resend isn't possible right now (null = allowed). */
   blockedReason: string | null;
-  previous: { id: number; status: string; at: Date } | null;
+  /** `at` = when the previous message was created; `statusAt` = when it reached its
+   *  current status (Read → readAt, Delivered → deliveredAt, Sent → sentAt, Failed →
+   *  failedAt; otherwise null). Phase 32 Step 1: the dialog shows `statusAt`, so a
+   *  creation time is never presented as a delivery time. */
+  previous: { id: number; status: string; at: Date; statusAt: Date | null } | null;
   /** The previous message already reached the customer — warn before resending. */
   alreadyReceived: boolean;
+  /** The most recent earlier message of this type that was Read or Delivered, with
+   *  the time of THAT event (readAt / deliveredAt only — never sentAt or createdAt). */
+  lastReceived: { id: number; status: 'READ' | 'DELIVERED'; at: Date | null } | null;
 }
 
 interface Built {
@@ -104,6 +111,23 @@ interface Built {
   params: string[] | null;
   snapshot: unknown;
   customerId: number;
+}
+
+function statusTimeOf(m: { status: string; readAt: Date | null; deliveredAt: Date | null; sentAt: Date | null; failedAt: Date | null }): Date | null {
+  if (m.status === 'READ') return m.readAt;
+  if (m.status === 'DELIVERED') return m.deliveredAt;
+  if (m.status === 'SENT') return m.sentAt;
+  if (m.status === 'FAILED') return m.failedAt;
+  return null;
+}
+
+/** `history` is newest first. Read wins over Delivered for the same message. */
+function lastReceivedOf(history: { id: number; status: string; readAt: Date | null; deliveredAt: Date | null }[]) {
+  const m = history.find((x) => x.status === 'READ' || x.status === 'DELIVERED');
+  if (!m) return null;
+  return m.status === 'READ'
+    ? { id: m.id, status: 'READ' as const, at: m.readAt ?? null }
+    : { id: m.id, status: 'DELIVERED' as const, at: m.deliveredAt ?? null };
 }
 
 function hashPreview(toPhone: string, templateName: string, language: string, params: string[]): string {
@@ -169,8 +193,9 @@ async function buildPreview(orderId: number, type: MessageTypeParam, opts: { ski
       header, body, footer,
       previewHash,
       blockedReason,
-      previous: last ? { id: last.id, status: last.status, at: last.createdAt } : null,
+      previous: last ? { id: last.id, status: last.status, at: last.createdAt, statusAt: statusTimeOf(last) } : null,
       alreadyReceived: history.some((m) => m.status === 'DELIVERED' || m.status === 'READ'),
+      lastReceived: lastReceivedOf(history),
     },
     toPhone,
     toPhoneId: phone?.id ?? null,

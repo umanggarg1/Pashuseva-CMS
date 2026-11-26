@@ -121,9 +121,21 @@ function statusTime(m: OrderMessage): string | null {
   }
 }
 
-function typeLabel(m: OrderMessage): string {
-  const base = m.type === 'confirmation' ? 'Order confirmation' : 'Dispatch notification';
-  return m.isResend ? `Resend: ${base}` : base;
+/**
+ * Step 1 (after D5): per message type, in chronological order, the original is
+ * "Original" and resends are numbered "Resend #1", "Resend #2", …
+ * e.g. "Order confirmation — Resend #2".
+ */
+export function sequenceLabels(messages: Pick<OrderMessage, 'id' | 'type' | 'isResend'>[]): Map<number, string> {
+  const labels = new Map<number, string>();
+  for (const type of ['confirmation', 'dispatched'] as const) {
+    const base = type === 'confirmation' ? 'Order confirmation' : 'Dispatch notification';
+    let n = 0;
+    for (const m of messages.filter((x) => x.type === type).sort((a, b) => a.id - b.id)) {
+      labels.set(m.id, m.isResend ? `${base} — Resend #${++n}` : `${base} — Original`);
+    }
+  }
+  return labels;
 }
 
 const languageName = (l: 'EN' | 'HI') => (l === 'HI' ? 'Hindi' : 'English');
@@ -171,14 +183,16 @@ export default function WhatsappMessagesCard({
         {query.data && query.data.length === 0 && (
           <p className="text-sm text-muted-foreground">No WhatsApp messages for this order.</p>
         )}
-        {query.data?.map((m) => {
+        {query.data?.map((m, _i, all) => {
+          const label = sequenceLabels(all).get(m.id);
           // The Resend button sits on the newest message of each type.
           const latestOfType = Math.max(...query.data.filter((x) => x.type === m.type).map((x) => x.id)) === m.id;
           return (
           <div key={m.id} data-testid="whatsapp-message-row" data-message-id={m.id} className="rounded-md border p-2 text-sm">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="font-medium">
-                #{m.id} · {typeLabel(m)}
+              <span>
+                <span className="font-medium" data-testid="message-label">{label}</span>{' '}
+                <span className="text-xs text-muted-foreground">(message #{m.id})</span>
               </span>
               <span className="flex items-center gap-2">
                 <span
@@ -204,7 +218,7 @@ export default function WhatsappMessagesCard({
             </p>
             {m.isResend && m.resendOfId && (
               <p className="text-xs text-muted-foreground">
-                Resend of #{m.resendOfId}
+                Resend of message #{m.resendOfId}
                 {m.resendReason && ` · Reason: ${m.resendReason}`}
               </p>
             )}

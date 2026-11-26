@@ -1570,6 +1570,27 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
     - the dialog wording stays English.
     Regressions: D4 31/31 (its Admin check now expects one Resend button per type),
     D3 8/8 + 27/27.
+  - **D5 follow-up, Step 1 (user-approved 2026-11-26), done locally:**
+    - **A.** Per message type, in chronological order: "Order confirmation —
+      Original", "— Resend #1", "— Resend #2", and so on, with "(message #id)" and
+      "Resend of message #…".
+    - **B.** The preview returns `lastReceived`: the most recent earlier
+      Read/Delivered message of the type, with readAt or deliveredAt ONLY (never
+      sentAt or createdAt). The warning reads "A previous confirmation message was
+      read by the customer / delivered on 25 Nov at 4:30 pm. Resending may result in
+      a duplicate message." If no time was recorded it says "(time not recorded)",
+      and there is no warning when nothing was delivered or read.
+    - **Same rule for the "Previous message" line:** it now shows the time of the
+      current status (`previous.statusAt`): read, delivered, sent or failed time,
+      otherwise "created <time>". Before, it showed the creation time next to
+      "Delivered".
+    - **C.** The toast after a resend adds "Follow its status in the WhatsApp
+      messages card."
+    - Resend safeguards unchanged (concurrency check 6/6: 5 tabs → 1 resend, 2
+      employees → 1, UNKNOWN blocks, 10/10 min per employee).
+    - Tests: D5 browser **35/35** (adds the numbering, the Read and Delivered times,
+      Sent never shown as delivered, no warning when nothing was received, a missing
+      time not invented, the toast line). D4 31/31; C6 38/38 + 3/3.
 - [ ] D6. Admin **Messaging** page (Settings area, `message:manage`): enabled/paused state + Resume, rate-limited-until, template approval statuses + Refresh, **queue size + oldest queued age**, a **Needs attention** list (UNKNOWN / FAILED / late-response notes) with Resolve actions
 - [ ] D7. Types + API client + react-query hooks for all of the above
 - [ ] D8. **Permission picker (`frontend/src/lib/permissions.ts`): add `message:resend` ("Resend WhatsApp message") and `message:manage` ("Manage WhatsApp messaging").** Required before release: the picker saves a user's FULL permission list, so without these two entries saving anyone's permissions would silently remove `message:resend` (found in C5).

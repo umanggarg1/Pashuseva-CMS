@@ -37,8 +37,23 @@ interface ResendPreview {
   footer: string | null;
   previewHash: string | null;
   blockedReason: string | null;
-  previous: { id: number; status: MessageStatus; at: string } | null;
+  previous: { id: number; status: MessageStatus; at: string; statusAt: string | null } | null;
   alreadyReceived: boolean;
+  lastReceived: { id: number; status: 'READ' | 'DELIVERED'; at: string | null } | null;
+}
+
+/** "25 Nov at 4:30 pm" */
+function onDateAt(iso: string): string {
+  const d = new Date(iso);
+  return `${d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })} at ${d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })}`;
+}
+
+/** Step 1: the delivered/read warning with the time of THAT event (never a send or creation time). */
+export function receivedWarning(type: ResendType, r: NonNullable<ResendPreview['lastReceived']>): string {
+  const what = type === 'confirmation' ? 'confirmation' : 'dispatch notification';
+  const event = r.status === 'READ' ? 'read by the customer' : 'delivered';
+  const when = r.at ? ` on ${onDateAt(r.at)}` : ' (time not recorded)';
+  return `A previous ${what} message was ${event}${when}. Resending may result in a duplicate message.`;
 }
 
 const REASONS = [
@@ -137,7 +152,13 @@ export default function ResendMessageDialog({
       queryClient.invalidateQueries({ queryKey: ['order', orderId, 'whatsapp-messages'] });
       queryClient.invalidateQueries({ queryKey: ['order', String(orderId), 'activity'] });
       toast.success(r.replay ? `Resend already queued (#${r.messageId})` : `Resend queued (#${r.messageId})`, {
-        description: `${TYPE_LABEL[type]} to ${preview?.to ?? 'the customer'}`,
+        description: (
+          <>
+            {TYPE_LABEL[type]} to {preview?.to ?? 'the customer'}.
+            <br />
+            Follow its status in the WhatsApp messages card.
+          </>
+        ),
       });
       onOpenChange(false);
     },
@@ -201,15 +222,19 @@ export default function ResendMessageDialog({
               <span className="text-muted-foreground">Previous message</span>
               <span data-testid="resend-previous">
                 {preview.previous
-                  ? `#${preview.previous.id} · ${STATUS_TEXT[preview.previous.status]} · ${fmt(preview.previous.at)}`
+                  ? // The time of the CURRENT status (e.g. when it was delivered); for
+                    // statuses without one, the creation time, labelled as such.
+                    `#${preview.previous.id} · ${STATUS_TEXT[preview.previous.status]} · ${
+                      preview.previous.statusAt ? fmt(preview.previous.statusAt) : `created ${fmt(preview.previous.at)}`
+                    }`
                   : 'None yet'}
               </span>
             </div>
 
-            {preview.alreadyReceived && (
+            {preview.lastReceived && (
               <p data-testid="resend-received-warning" className="flex items-start gap-1.5 rounded-md bg-amber-50 p-2 text-amber-900">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
-                The customer already received this message. Resend only if it is really needed.
+                {receivedWarning(type, preview.lastReceived)}
               </p>
             )}
             {changedNotice && (
