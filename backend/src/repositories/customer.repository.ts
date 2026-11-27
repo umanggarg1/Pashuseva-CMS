@@ -1,4 +1,5 @@
 import prisma, { PrismaClientOrTx } from '../lib/prisma';
+import { scrubCustomerMessagingData } from '../services/messaging/purge';
 import { Prisma } from '../generated/prisma/client';
 import type { CustomerStatus } from '../generated/prisma/enums';
 
@@ -507,6 +508,9 @@ export const customerRepository = {
   // Order still referencing it resolves to something instead of breaking.
   permanentDelete(id: number) {
     return prisma.$transaction(async (tx) => {
+      // Phase 32 A6: the WhatsApp records' copies of this customer's data go too, in
+      // this same transaction (see services/messaging/purge.ts).
+      await scrubCustomerMessagingData(tx, id);
       await tx.customerPhone.deleteMany({ where: { customerId: id } });
       await tx.customerAddress.deleteMany({ where: { customerId: id } });
       return tx.customer.update({

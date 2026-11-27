@@ -1106,7 +1106,13 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
   code runs on the new schema. Worst case: restore the verified backup using the
   documented procedure (`migrate deploy` + `pg_restore --data-only
   --disable-triggers`).
-- [ ] A5. **OPTION 2 (owner decision 2026-11-26): mark WhatsApp NUMBERS only; consent is
+- [x] A5. **APPLIED IN PRODUCTION 2026-11-27 07:35 UTC (owner GO): 428 WhatsApp numbers
+  marked, 0 errors, consent unchanged (hash-verified), 0 messages created.** The dry run
+  gave 428 (431 − 1 phone edited by staff since go-live; 2 invalid: #143, #392). The
+  pre-apply backup `pashuseva-full-2026-11-27_1249IST-preA5.dump` was restore-verified.
+  Evidence: `A5_POSTAPPLY_2026-11-27.md`.
+
+  Design record: **OPTION 2 (owner decision 2026-11-26): mark WhatsApp NUMBERS only; consent is
   NOT changed.** A phone number stored in the CRM is not proof of consent, so existing
   customers stay consent NO (never recorded) until staff record the customer's answer.
   Script written + tested locally; **NOT run on production.**
@@ -1164,7 +1170,42 @@ applied** and must contain no `DROP`, `ALTER … DROP`, `RENAME` or `TRUNCATE`.
       71 terms it handled; the data scope is unchanged.
     - Create Order UI tests now search by the full 10-digit number: 19/19.
 
-- [ ] A6. Customer purge also scrubs `OutboundMessage.toPhone/params/snapshot/lastError`
+- [ ] A6. **Built + tested locally (owner GO 2026-11-27); NOT committed or deployed.**
+  `services/messaging/purge.ts` `scrubCustomerMessagingData`, called first inside
+  `customerRepository.permanentDelete`'s transaction (Admin purge and the daily
+  expiry sweep both use it). No migration.
+  - For the purged customer's messages: `toPhone`, `toPhoneId`, `params` and `snapshot`
+    are cleared; `lastError` and `lateResponseNote` are replaced by a marker.
+    QUEUED/RETRY_WAIT → SKIPPED "Customer permanently deleted". A PROCESSING message
+    is left to the worker, which re-checks and skips it.
+  - Status events: `raw` replaced. A5 backfill activity entries: phone list replaced.
+  - Kept: the rows, status, times, staff ids, errorCode, provider id, and the order link.
+  - Tests: 22/22 (`a6_tests.ts`): every state, the worker-held message, isolation of
+    other customers and of unlinked events, rollback when the purge fails, the expiry
+    sweep, a customer with no messages, and both screens. Regressions: C7 29/29,
+    Create Order consent 28/28, search 17/17.
+  - **Phone-history fix (owner GO 2026-11-27, local):** the same transaction also
+    rewrites staff "Phone numbers updated" entries. Every number (8+ digits, any
+    format: spaces, NBSP, +91, dashes) becomes "(number removed)". The entry, the staff
+    member, the time and the primary/WhatsApp tags are kept. The gap predated Phase 32:
+    32 such entries, all on active customers.
+  - Tests: **26/26**. They include a full-database dump scan after each purge path
+    (Admin and expiry): no trace of the purged customer's current or old numbers. The
+    rolled-back customer's numbers are all still found, which proves the scan sees them.
+  - **Name / email / address history fix (owner GO 2026-11-27, local):** "Name
+    updated" / "Email updated" / "Address updated" entries get their old and new
+    values replaced by "(name removed)" / "(email removed)" / "(address removed)". The
+    entry, the staff member and the time are kept. Same transaction.
+  - Tests: **32/32**. The full-dump scan finds no trace of the purged customer's old
+    names, emails or addresses (Admin and expiry paths). The rolled-back customer's are
+    all still there. No other customer got a marker.
+  - **Still kept after a purge (by design or pre-existing, not changed):**
+    - the Admin audit log's "Deleted / Restored / Permanently Deleted Customer"
+      entries store the customer's name at that time;
+    - orders keep their delivery address (order history, kept by design);
+    - free-text staff notes on the customer's orders.
+
+  Original spec: Customer purge also scrubs `OutboundMessage.toPhone/params/snapshot/lastError`
   and `MessageStatusEvent.raw` for that customer (and any still-pending row → SKIPPED)
 
 ### B. Backend — messaging core (`src/services/messaging/`)
